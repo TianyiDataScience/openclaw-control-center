@@ -121,10 +121,11 @@ test("done-checklist route logic builds readiness payload", async () => {
 });
 
 test("backup export command path writes bundle and operation audit entry", async () => {
-  const run = await runCommand("npm", ["run", "command:backup-export"], {
+  const run = await runCommand(process.execPath, ["--import", "tsx", "src/index.ts"], {
     cwd: PROJECT_ROOT,
     env: {
       ...process.env,
+      APP_COMMAND: "backup-export",
       READONLY_MODE: "true",
       APPROVAL_ACTIONS_ENABLED: "false",
       APPROVAL_ACTIONS_DRY_RUN: "true",
@@ -148,7 +149,7 @@ test("backup export command path writes bundle and operation audit entry", async
   const metadata = asRecord(commandEntry.metadata);
   assert.equal(typeof metadata?.path, "string");
   const writtenPath = metadata?.path as string;
-  assert(writtenPath.includes("/runtime/exports/"));
+  assert(writtenPath.replace(/\\/g, "/").includes("/runtime/exports/"));
   assert(await fileExists(writtenPath), "Expected backup export file path from audit metadata to exist.");
 });
 
@@ -182,10 +183,11 @@ test("acks-prune command removes expired records and writes audit entry", async 
   await writeFile(ACKS_PATH, `${JSON.stringify(fixture, null, 2)}\n`, "utf8");
 
   try {
-    const run = await runCommand("npm", ["run", "command:acks-prune"], {
+    const run = await runCommand(process.execPath, ["--import", "tsx", "src/index.ts"], {
       cwd: PROJECT_ROOT,
       env: {
         ...process.env,
+        APP_COMMAND: "acks-prune",
         READONLY_MODE: "true",
         APPROVAL_ACTIONS_ENABLED: "false",
         APPROVAL_ACTIONS_DRY_RUN: "true",

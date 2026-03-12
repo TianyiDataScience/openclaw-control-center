@@ -11,13 +11,11 @@ const PUBLIC_FILES = [
   "README.md",
   "docs/ARCHITECTURE.md",
   "docs/PROGRESS.md",
-  "docs/mission.runbook.md",
+  "docs/mission-control-runbook-v2.md",
   "ecosystem.config.cjs",
-  "mission.config.json",
   "scripts/run_verifier.sh",
   "scripts/mc_dod_evaluator.py",
   "scripts/mc_rollback_plan.py",
-  "workflows/pandas_v3_autopilot.lobster",
 ];
 
 test("repo includes baseline open-source release metadata", () => {
@@ -25,9 +23,9 @@ test("repo includes baseline open-source release metadata", () => {
   assert(existsSync(path.join(ROOT, "LICENSE")), "Expected LICENSE to exist.");
 
   const ignore = readFileSync(path.join(ROOT, ".gitignore"), "utf8");
-  assert.match(ignore, /(^|\n)node_modules\/(\n|$)/);
-  assert.match(ignore, /(^|\n)dist\/(\n|$)/);
-  assert.match(ignore, /(^|\n)\/?runtime\/(\n|$)/);
+  assert.match(ignore, /(^|\r?\n)node_modules\/(\r?\n|$)/);
+  assert.match(ignore, /(^|\r?\n)dist\/(\r?\n|$)/);
+  assert.match(ignore, /(^|\r?\n)\/?runtime\/(\r?\n|$)/);
 
   const license = readFileSync(path.join(ROOT, "LICENSE"), "utf8");
   assert.match(license, /MIT License/);

@@ -181,7 +181,7 @@ test("usage-cost snapshot backfills subscription consumed from runtime usage whe
   assert.equal(usage.subscription.limit, undefined);
   assert(usage.subscription.detail.includes("Provider remaining/limit cannot be derived"));
   assert.equal(usage.subscription.reasonCode, "runtime_backfill_only");
-  assert(usage.subscription.sourcePath?.includes("sessions/*.jsonl"));
+  assert(usage.subscription.sourcePath?.replace(/\\/g, "/").includes("sessions/*.jsonl"));
   assert.equal(usage.connectors.subscriptionUsage, "not_connected");
   assert(
     usage.connectors.todos.some(

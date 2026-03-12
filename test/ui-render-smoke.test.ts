@@ -388,7 +388,7 @@ test("usage dashboard includes token type share and cron token share sections", 
 });
 
 test("memory and workspace sections expose editable file workbenches", async () => {
-  const source = await readFile("src/ui/server.ts", "utf8");
+  const source = (await readFile("src/ui/server.ts", "utf8")).replace(/\r\n/g, "\n");
   assert(source.includes("/api/files"));
   assert(source.includes("/api/files/content"));
   assert(source.includes("scope must be one of: memory, workspace"));
