@@ -8,7 +8,7 @@
     "dev": "node --import tsx src/index.ts",
     "dev:continuous": "MONITOR_CONTINUOUS=true node --import tsx src/index.ts",
     "dev:ui": "UI_MODE=true node --import tsx src/index.ts",
-    "smoke:ui": "bash scripts/ui-smoke.sh",
+    "smoke:ui": "node scripts/ui-smoke.js",
     "command:backup-export": "APP_COMMAND=backup-export node --import tsx src/index.ts",
     "avatars:export": "node --import tsx scripts/export-staff-avatars.ts",
     "command:import-validate": "APP_COMMAND=import-validate node --import tsx src/index.ts",
