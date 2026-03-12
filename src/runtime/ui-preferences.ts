@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { READONLY_MODE } from "../config";
 import type { TaskState } from "../types";
 
 export const UI_PREFERENCES_PATH = join(process.cwd(), "runtime", "ui-preferences.json");
@@ -56,7 +57,9 @@ export async function loadUiPreferences(): Promise<UiPreferencesLoadResult> {
     const fallback = defaultUiPreferences();
     const reason = error instanceof Error ? error.message : "unable to read preference file";
     issues = [`preferences fallback applied: ${reason}`];
-    await writeUiPreferences(fallback);
+    if (!READONLY_MODE) {
+      await writeUiPreferences(fallback);
+    }
     return {
       path: UI_PREFERENCES_PATH,
       preferences: fallback,
@@ -65,7 +68,7 @@ export async function loadUiPreferences(): Promise<UiPreferencesLoadResult> {
   }
 
   const normalized = normalizeUiPreferences(parsed);
-  if (normalized.issues.length > 0) {
+  if (!READONLY_MODE && normalized.issues.length > 0) {
     await writeUiPreferences(normalized.preferences);
   }
 
@@ -78,11 +81,16 @@ export async function loadUiPreferences(): Promise<UiPreferencesLoadResult> {
 
 export async function saveUiPreferences(preferences: UiPreferences): Promise<UiPreferencesLoadResult> {
   const normalized = normalizeUiPreferences(preferences);
-  await writeUiPreferences(normalized.preferences);
+  const issues = [...normalized.issues];
+  if (!READONLY_MODE) {
+    await writeUiPreferences(normalized.preferences);
+  } else {
+    issues.push("preferences were not persisted because readonly mode is enabled");
+  }
   return {
     path: UI_PREFERENCES_PATH,
     preferences: normalized.preferences,
-    issues: normalized.issues,
+    issues,
   };
 }
 

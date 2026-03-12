@@ -106,9 +106,11 @@ For:
 - `LOCAL_TOKEN_AUTH_REQUIRED=true` by default.
 - `IMPORT_MUTATION_ENABLED=false` by default.
 - `IMPORT_MUTATION_DRY_RUN=false` by default.
+- Sensitive local read APIs can also require the local token when auth is enabled.
 - Import/export and all state-changing endpoints require a local token when auth is enabled.
 - Approval actions are hard-gated (`APPROVAL_ACTIONS_ENABLED=false` default).
 - Approval actions are dry-run by default (`APPROVAL_ACTIONS_DRY_RUN=true`).
+- Editable workspace roots are restricted to the main OpenClaw workspace by default; use `EDITABLE_WORKSPACE_ROOTS` to explicitly allow additional roots.
 - No mutation of `~/.openclaw/openclaw.json`.
 
 ## Quick start

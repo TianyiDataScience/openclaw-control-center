@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from "node:crypto";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, extname, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   APPROVAL_ACTIONS_DRY_RUN,
   APPROVAL_ACTIONS_ENABLED,
@@ -151,6 +151,7 @@ const SEARCH_LIMIT_MAX = 200;
 const TASK_RUNTIME_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const STALLED_RUNNING_SESSION_WINDOW_MS = 2 * 60 * 60 * 1000;
 const OPENCLAW_WORKSPACE_ROOT = resolve(process.cwd(), "..", "..", "..");
+const EDITABLE_WORKSPACE_ROOTS = resolveEditableWorkspaceRoots(process.env.EDITABLE_WORKSPACE_ROOTS);
 const WORKSPACE_EDITABLE_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "coverage"]);
 const WORKSPACE_EDITABLE_EXTENSIONS = new Set([".md", ".markdown"]);
 const MEMORY_EDITABLE_EXTENSIONS = new Set([".md", ".markdown", ".txt"]);
@@ -760,7 +761,10 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
           return redirect(res, 302, target);
         }
 
-        if (hasAnyQueryKey(url.searchParams, ["quick", "status", "owner", "project", "compact", "lang", "usage_view"])) {
+        if (
+          !READONLY_MODE &&
+          hasAnyQueryKey(url.searchParams, ["quick", "status", "owner", "project", "compact", "lang", "usage_view"])
+        ) {
           await saveUiPreferences({
             language,
             compactStatusStrip,
@@ -816,12 +820,14 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
 
       if (method === "GET" && path === "/snapshot") {
         assertAllowedQueryParams(url.searchParams, [], true);
+        assertSensitiveReadAuthorized(req, "/snapshot");
         const body = await readSnapshotRaw();
         return writeText(res, 200, body, "application/json; charset=utf-8");
       }
 
       if (method === "GET" && (path === "/graph" || path === "/api/graph")) {
         assertAllowedQueryParams(url.searchParams, [], true);
+        assertSensitiveReadAuthorized(req, "/api/graph");
         const snapshot = await readReadModelSnapshot();
         return writeJson(res, 200, {
           ok: true,
@@ -831,6 +837,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
 
       if (method === "GET" && path === "/view/pixel-state.json") {
         assertAllowedQueryParams(url.searchParams, [], true);
+        assertSensitiveReadAuthorized(req, "/view/pixel-state.json");
         const snapshot = await readReadModelSnapshot();
         return writeJson(res, 200, {
           ok: true,
@@ -843,7 +850,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
         (path === "/export/state.json" || path === "/api/export/state.json")
       ) {
         assertAllowedQueryParams(url.searchParams, [], true);
-        assertMutationAuthorized(req, "/api/export/state.json");
+        assertLocalStateMutationAuthorized(req, "/api/export/state.json");
         const snapshot = await readReadModelSnapshot();
         const exportPayload = await buildExportBundle(snapshot, "api", requestId);
         let exportSnapshot;
@@ -901,6 +908,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
 
       if (method === "GET" && path === "/api/files") {
         assertAllowedQueryParams(url.searchParams, ["scope"], true);
+        assertSensitiveReadAuthorized(req, "/api/files");
         const scopeParam = normalizeQueryString(url.searchParams.get("scope"), "scope", 24, true);
         const scope = normalizeEditableFileScope(scopeParam);
         if (!scope) {
@@ -917,6 +925,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
 
       if (method === "GET" && path === "/api/files/content") {
         assertAllowedQueryParams(url.searchParams, ["scope", "path"], true);
+        assertSensitiveReadAuthorized(req, "/api/files/content");
         const scopeParam = normalizeQueryString(url.searchParams.get("scope"), "scope", 24, true);
         const filePath = normalizeQueryString(url.searchParams.get("path"), "path", 4096, true);
         const scope = normalizeEditableFileScope(scopeParam);
@@ -939,7 +948,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if ((method === "PUT" || method === "PATCH") && path === "/api/files/content") {
-        assertMutationAuthorized(req, "/api/files/content");
+        assertLocalStateMutationAuthorized(req, "/api/files/content");
         assertJsonContentType(req);
         const payload = expectObject(await readJsonBody(req), "editable file payload");
         const scope = normalizeEditableFileScope(optionalBoundedString(payload.scope, "scope", 24));
@@ -975,7 +984,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if (method === "PATCH" && path === "/api/ui/preferences") {
-        assertMutationAuthorized(req, "/api/ui/preferences");
+        assertLocalStateMutationAuthorized(req, "/api/ui/preferences");
         assertJsonContentType(req);
         const payload = expectObject(await readJsonBody(req), "ui preferences payload");
         const current = await loadUiPreferences();
@@ -1134,7 +1143,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if (method === "POST" && path === "/api/tasks/heartbeat") {
-        assertMutationAuthorized(req, "/api/tasks/heartbeat");
+        assertLocalStateMutationAuthorized(req, "/api/tasks/heartbeat");
         assertAllowedQueryParams(url.searchParams, [], true);
         assertJsonContentType(req);
         const payload = expectObject(await readJsonBody(req), "task heartbeat payload");
@@ -1255,7 +1264,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if (method === "POST" && path === "/api/projects") {
-        assertMutationAuthorized(req, "/api/projects");
+        assertLocalStateMutationAuthorized(req, "/api/projects");
         assertJsonContentType(req);
         const payload = expectObject(await readJsonBody(req), "create project payload");
         const created = await createProject(payload);
@@ -1263,7 +1272,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if (method === "PATCH" && path.startsWith("/api/projects/")) {
-        assertMutationAuthorized(req, "/api/projects/:projectId");
+        assertLocalStateMutationAuthorized(req, "/api/projects/:projectId");
         assertJsonContentType(req);
         const projectId = decodeRouteParam(path, /^\/api\/projects\/([^/]+)$/, "projectId");
         const payload = expectObject(await readJsonBody(req), "update project payload");
@@ -1289,7 +1298,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if (method === "POST" && path === "/api/tasks") {
-        assertMutationAuthorized(req, "/api/tasks");
+        assertLocalStateMutationAuthorized(req, "/api/tasks");
         assertJsonContentType(req);
         const payload = expectObject(await readJsonBody(req), "create task payload");
         const created = await createTask(payload);
@@ -1297,7 +1306,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if (method === "PATCH" && path.startsWith("/api/tasks/") && path.endsWith("/status")) {
-        assertMutationAuthorized(req, "/api/tasks/:taskId/status");
+        assertLocalStateMutationAuthorized(req, "/api/tasks/:taskId/status");
         assertJsonContentType(req);
         const taskId = decodeRouteParam(path, /^\/api\/tasks\/([^/]+)\/status$/, "taskId");
         const payload = expectObject(await readJsonBody(req), "update task status payload");
@@ -1310,6 +1319,9 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if (method === "GET" && (path === "/sessions" || path === "/api/sessions")) {
+        if (path === "/api/sessions") {
+          assertSensitiveReadAuthorized(req, "/api/sessions");
+        }
         const snapshot = await readReadModelSnapshotWithLiveSessions(toolClient);
         const strict = path === "/api/sessions";
         const query = parseSessionQuery(url.searchParams, strict);
@@ -1329,6 +1341,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if (method === "GET" && path.startsWith("/api/sessions/")) {
+        assertSensitiveReadAuthorized(req, "/api/sessions/:sessionKey");
         const snapshot = await readReadModelSnapshotWithLiveSessions(toolClient);
         const sessionKey = decodeRouteParam(path, /^\/api\/sessions\/([^/]+)$/, "sessionKey");
         assertAllowedQueryParams(url.searchParams, ["historyLimit"], true);
@@ -1563,7 +1576,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if (method === "POST" && path.startsWith("/api/action-queue/") && path.endsWith("/ack")) {
-        assertMutationAuthorized(req, "/api/action-queue/:itemId/ack");
+        assertLocalStateMutationAuthorized(req, "/api/action-queue/:itemId/ack");
         assertJsonContentType(req);
         const itemId = decodeRouteParam(path, /^\/api\/action-queue\/([^/]+)\/ack$/, "itemId");
         const payload = expectObject(await readJsonBody(req), "action queue acknowledge payload");
@@ -1588,7 +1601,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
 
       if (method === "POST" && path === "/action-queue/ack") {
         const form = await readFormBody(req);
-        assertMutationAuthorized(req, "/action-queue/ack", form.get("localToken"));
+        assertLocalStateMutationAuthorized(req, "/action-queue/ack", form.get("localToken"));
         const itemId = readRequiredFormValue(form, "itemId");
         const snapshot = await readReadModelSnapshot();
         const queue = await readNotificationCenter(snapshot);
@@ -1597,7 +1610,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if (method === "POST" && path.startsWith("/api/approvals/") && path.endsWith("/approve")) {
-        assertMutationAuthorized(req, "/api/approvals/:approvalId/approve");
+        assertLocalStateMutationAuthorized(req, "/api/approvals/:approvalId/approve");
         assertJsonContentType(req);
         const approvalId = decodeRouteParam(path, /^\/api\/approvals\/([^/]+)\/approve$/, "approvalId");
         const payload = expectObject(await readJsonBody(req), "approval payload");
@@ -1607,7 +1620,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
       }
 
       if (method === "POST" && path.startsWith("/api/approvals/") && path.endsWith("/reject")) {
-        assertMutationAuthorized(req, "/api/approvals/:approvalId/reject");
+        assertLocalStateMutationAuthorized(req, "/api/approvals/:approvalId/reject");
         assertJsonContentType(req);
         const approvalId = decodeRouteParam(path, /^\/api\/approvals\/([^/]+)\/reject$/, "approvalId");
         const payload = expectObject(await readJsonBody(req), "approval payload");
@@ -8104,6 +8117,32 @@ function normalizeEditableFileScope(value: string | undefined): EditableFileScop
   return undefined;
 }
 
+function resolveEditableWorkspaceRoots(input: string | undefined): string[] {
+  const configured = (input ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item !== "");
+  const roots = configured.length > 0 ? configured : [OPENCLAW_WORKSPACE_ROOT];
+  const seen = new Set<string>();
+  return roots
+    .map((item) => resolve(item))
+    .filter((item) => {
+      if (seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+}
+
+function isPathWithinRoot(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function isEditableWorkspaceRootAllowed(candidate: string): boolean {
+  const resolvedCandidate = resolve(candidate);
+  return EDITABLE_WORKSPACE_ROOTS.some((root) => isPathWithinRoot(root, resolvedCandidate));
+}
+
 async function buildEditableFileEntry(input: {
   scope: EditableFileScope;
   category: string;
@@ -8411,6 +8450,7 @@ function resolveEditableAgentScopesFromConfig(input: unknown): EditableAgentScop
       facetKey === "main"
         ? OPENCLAW_WORKSPACE_ROOT
         : resolve(asString(row.workspace)?.trim() || join(OPENCLAW_WORKSPACE_ROOT, "agents", rawId));
+    if (!isEditableWorkspaceRootAllowed(workspaceRoot)) continue;
     output.push({
       agentId: rawId,
       facetKey,
@@ -8698,10 +8738,31 @@ async function renderEditableFileWorkbench(input: {
             .join("")}
         </div>`;
   const tokenHint = !LOCAL_TOKEN_AUTH_REQUIRED
-    ? t("This environment allows direct save.", "当前环境允许直接保存。")
-    : LOCAL_API_TOKEN
-      ? t("Enter the local token when saving.", "保存时输入本地令牌。")
-      : t("LOCAL_API_TOKEN is not configured in this environment. Save will be blocked.", "当前环境未配置 LOCAL_API_TOKEN，保存会被拦截。");
+    ? READONLY_MODE
+      ? t(
+          "Readonly mode is enabled. Protected reads work, but saving is disabled.",
+          "当前已启用只读模式。受保护读取可用，但保存已禁用。",
+        )
+      : t("This environment allows direct save.", "当前环境允许直接保存。")
+    : READONLY_MODE
+      ? LOCAL_API_TOKEN
+        ? t(
+            "Enter the local token to reload protected files. Readonly mode still blocks saving.",
+            "输入本地令牌后可重新读取受保护文件，但只读模式仍会阻止保存。",
+          )
+        : t(
+            "LOCAL_API_TOKEN is not configured in this environment. Protected reads and saves will be blocked.",
+            "当前环境未配置 LOCAL_API_TOKEN，受保护读取和保存都会被拦截。",
+          )
+      : LOCAL_API_TOKEN
+        ? t(
+            "Enter the local token to reload protected files and save changes.",
+            "输入本地令牌后可重新读取受保护文件并保存改动。",
+          )
+        : t(
+            "LOCAL_API_TOKEN is not configured in this environment. Protected reads and saves will be blocked.",
+            "当前环境未配置 LOCAL_API_TOKEN，受保护读取和保存都会被拦截。",
+          );
   const tokenField =
     LOCAL_TOKEN_AUTH_REQUIRED && LOCAL_API_TOKEN
       ? `<input class="file-token-input" type="password" data-file-token placeholder="${escapeHtml(t("Local token", "本地令牌"))}" />`
@@ -8710,7 +8771,7 @@ async function renderEditableFileWorkbench(input: {
   return `<section class="card">
     <h2>${escapeHtml(input.title)}</h2>
     <div class="meta">${escapeHtml(input.description)}</div>
-    <div class="meta">${escapeHtml(t("Files", "文件数"))}${escapeHtml(input.language === "en" ? ": " : "：")}${input.entries.length} · ${escapeHtml(t("Saving writes directly back to the source file.", "保存后直接写回源文件。"))}</div>
+    <div class="meta">${escapeHtml(t("Files", "文件数"))}${escapeHtml(input.language === "en" ? ": " : "：")}${input.entries.length} · ${escapeHtml(READONLY_MODE ? t("Readonly mode blocks saving changes back to the source file.", "只读模式会阻止将改动写回源文件。") : t("Saving writes directly back to the source file.", "保存后直接写回源文件。"))}</div>
     <div class="file-workbench" data-file-editor-root data-scope="${escapeHtml(input.scope)}" data-language="${escapeHtml(input.language)}" data-default-facet="${escapeHtml(defaultFacetKey)}" data-token-required="${LOCAL_TOKEN_AUTH_REQUIRED ? "1" : "0"}" data-local-token-header="${escapeHtml(LOCAL_TOKEN_HEADER)}">
       <aside class="file-sidebar">
         <div class="file-sidebar-tools">
@@ -8739,7 +8800,7 @@ async function renderEditableFileWorkbench(input: {
           <div class="toolbar">
             ${tokenField}
             <button class="btn" type="button" data-file-reload>${escapeHtml(t("Reload", "重新读取"))}</button>
-            <button class="btn" type="button" data-file-save>${escapeHtml(t("Save changes", "保存改动"))}</button>
+            <button class="btn" type="button" data-file-save${READONLY_MODE ? ' disabled="disabled"' : ""}>${escapeHtml(t("Save changes", "保存改动"))}</button>
           </div>
         </div>
         <textarea class="file-editor-textarea" data-file-text spellcheck="false">${escapeHtml(initialContent)}</textarea>
@@ -10577,6 +10638,14 @@ function renderFileWorkbenchScript(): string {
       if (filterStateNode) filterStateNode.textContent = message;
     };
 
+    const buildAuthHeaders = () => {
+      const headers = {};
+      if (tokenInput instanceof HTMLInputElement && tokenInput.value.trim()) {
+        headers[tokenHeader] = tokenInput.value.trim();
+      }
+      return headers;
+    };
+
     const setActiveItem = (path) => {
       navItems.forEach((item) => {
         const matches = (item.dataset.sourcePath || '') === path;
@@ -10650,7 +10719,9 @@ function renderFileWorkbenchScript(): string {
       if (!path) return;
       setStatus(l.reading);
       try {
-        const response = await fetch('/api/files/content?scope=' + encodeURIComponent(scope) + '&path=' + encodeURIComponent(path));
+        const response = await fetch('/api/files/content?scope=' + encodeURIComponent(scope) + '&path=' + encodeURIComponent(path), {
+          headers: buildAuthHeaders(),
+        });
         const payload = await response.json();
         if (!response.ok || !payload.ok) {
           throw new Error(payload?.error?.message || l.readFailed);
@@ -10711,11 +10782,8 @@ function renderFileWorkbenchScript(): string {
         saving = true;
         saveButton.setAttribute('disabled', 'disabled');
         setStatus(l.saving);
-        try {
-          const headers = { 'content-type': 'application/json' };
-          if (tokenInput instanceof HTMLInputElement && tokenInput.value.trim()) {
-            headers[tokenHeader] = tokenInput.value.trim();
-          }
+      try {
+          const headers = { 'content-type': 'application/json', ...buildAuthHeaders() };
           const response = await fetch('/api/files/content', {
             method: 'PUT',
             headers,
@@ -12383,6 +12451,9 @@ function renderSessionDrilldownPage(
   const status = detail.status;
   const executionChain = detail.executionChain;
   const homeHref = buildHomeHref({ quick: "all" }, true, "overview", language);
+  const sessionApiLink = LOCAL_TOKEN_AUTH_REQUIRED
+    ? `<span>${escapeHtml(t("Session JSON API requires x-local-token authentication.", "会话 JSON 接口需要 x-local-token 鉴权。"))}</span>`
+    : `<a href="/api/sessions/${encodeURIComponent(detail.session.sessionKey)}?historyLimit=120">${escapeHtml(t("Session JSON API", "会话 JSON 接口"))}</a>`;
   const executionChainCard = executionChain
     ? `<div class="card" id="session-execution-chain">
     <h2 style="font-size:15px;">${escapeHtml(t("Execution Chain", "执行链"))}</h2>
@@ -12441,7 +12512,7 @@ function renderSessionDrilldownPage(
     </table>
   </div>
 
-  <p class="meta"><a href="${escapeHtml(homeHref)}">${escapeHtml(t("Back to overview", "返回总览"))}</a> | <a href="/api/sessions/${encodeURIComponent(detail.session.sessionKey)}?historyLimit=120">${escapeHtml(t("Session JSON API", "会话 JSON 接口"))}</a></p>
+  <p class="meta"><a href="${escapeHtml(homeHref)}">${escapeHtml(t("Back to overview", "返回总览"))}</a> | ${sessionApiLink}</p>
 </body>
 </html>`;
 }
@@ -13001,6 +13072,24 @@ function assertMutationAuthorized(
   if (!decision.ok) {
     throw new RequestValidationError(decision.message, decision.statusCode);
   }
+}
+
+function assertSensitiveReadAuthorized(req: IncomingMessage, routeLabel: string): void {
+  assertMutationAuthorized(req, routeLabel);
+}
+
+function assertLocalStateMutationAuthorized(
+  req: IncomingMessage,
+  routeLabel: string,
+  explicitToken?: string | null,
+): void {
+  if (READONLY_MODE) {
+    throw new RequestValidationError(
+      `${routeLabel} is blocked by readonly mode. Set READONLY_MODE=false to allow local state changes.`,
+      403,
+    );
+  }
+  assertMutationAuthorized(req, routeLabel, explicitToken);
 }
 
 function readHeaderValue(req: IncomingMessage, name: string): string | undefined {

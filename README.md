@@ -101,9 +101,11 @@ UI_MODE=true npm run dev
 - 默认 `LOCAL_TOKEN_AUTH_REQUIRED=true`
 - 默认 `IMPORT_MUTATION_ENABLED=false`
 - 默认 `IMPORT_MUTATION_DRY_RUN=false`
+- 开启本地 token 鉴权后，敏感本地只读 API 也可以要求携带本地 token
 - 开启鉴权时，导入/导出和所有改状态接口都需要本地 token
 - 审批动作有硬开关，默认关闭：`APPROVAL_ACTIONS_ENABLED=false`
 - 审批动作默认 dry-run：`APPROVAL_ACTIONS_DRY_RUN=true`
+- 默认只允许编辑主 OpenClaw workspace 内的文档；如需放开额外目录，显式设置 `EDITABLE_WORKSPACE_ROOTS`
 - 不会改写 `~/.openclaw/openclaw.json`
 
 ## 安装与上手

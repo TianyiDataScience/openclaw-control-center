@@ -13,11 +13,11 @@ const PUBLIC_FILES = [
   "docs/PROGRESS.md",
   "docs/mission.runbook.md",
   "ecosystem.config.cjs",
-  "mission.config.json",
+  "docs/mission-control-runbook-v2.md",
+  "docs/mission-control-template-v2.md",
   "scripts/run_verifier.sh",
   "scripts/mc_dod_evaluator.py",
   "scripts/mc_rollback_plan.py",
-  "workflows/pandas_v3_autopilot.lobster",
 ];
 
 test("repo includes baseline open-source release metadata", () => {

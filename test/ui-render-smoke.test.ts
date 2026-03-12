@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import type { AuditTimelineSnapshot } from "../src/runtime/audit-timeline";
@@ -72,7 +73,7 @@ test("session drilldown page renders without network and escapes content", async
   assert(html.includes("Session Drilldown"));
   assert(html.includes("Execution Chain"));
   assert(html.includes("Latest Messages / Tool Events"));
-  assert(html.includes("/api/sessions/sess-1?historyLimit=120"));
+  assert(html.includes("x-local-token authentication"));
   assert(html.includes("parent=sess-parent child=sess-1"));
   assert(html.includes("Accepted"));
   assert(html.includes("Spawned"));
@@ -84,6 +85,7 @@ test("session drilldown page renders without network and escapes content", async
   assert(zh.includes("执行链"));
   assert(zh.includes("最近消息 / 工具事件"));
   assert(zh.includes("返回总览"));
+  assert(zh.includes("x-local-token 鉴权"));
 });
 
 test("audit timeline page renders without network and keeps severity selection", async () => {
@@ -487,8 +489,8 @@ test("editable agent scopes follow configured agents before workspace folders", 
   const scopes = resolveEditableAgentScopesFromConfigForSmoke({
     agents: {
       list: [
-        { id: "pandas", workspace: "/tmp/pandas" },
-        { id: "tiger", workspace: "/tmp/tiger" },
+        { id: "pandas", workspace: path.resolve(process.cwd(), "..", "..", "..", "agents", "pandas") },
+        { id: "tiger", workspace: path.resolve(process.cwd(), "..", "..", "..", "agents", "tiger") },
       ],
     },
   });
