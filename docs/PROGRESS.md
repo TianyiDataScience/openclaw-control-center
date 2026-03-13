@@ -1,5 +1,26 @@
 # Progress
 
+## Phase 152 (Session-preview cold-start optimization without UI changes) — Completed
+- Scope:
+  - Reduce the overview cold-start stall caused by session preview history reads without changing page structure, copy, or data semantics.
+- Changed files:
+  - `src/clients/openclaw-live-client.ts`
+  - `test/openclaw-live-client-history.test.ts`
+  - `docs/PROGRESS.md`
+- Implementation:
+  - Replaced the per-session external `tail` subprocess path with an in-process reverse file reader that scans recent JSONL history directly from the end of the file.
+  - Kept the same `sessionsHistory` API shape and the same history normalization logic so execution chains, previews, and UI copy stay unchanged.
+  - Added regression coverage for large cached history files and files without a trailing newline.
+- Verification:
+  - `npm run build`
+  - `npm test`
+  - `npm run smoke:ui`
+  - Local route timing after restart on `UI_PORT=4522`:
+    - `overview` first open: about `5.38s` -> about `0.84s`
+    - `usage-cost` first open: about `1.18s` -> about `0.95s`
+    - `projects-tasks` first open: about `0.38s` -> about `0.57s`
+    - repeated `overview` opens: about `0.82s`, `0.62s`, `1.13s`, `0.25s`, `0.21s`
+
 ## Phase 151 (Route-latency optimization without UI changes) — Completed
 - Scope:
   - Reduce slow first-navigation and post-cache-expiry stalls without changing page structure, copy, or data surfaces.

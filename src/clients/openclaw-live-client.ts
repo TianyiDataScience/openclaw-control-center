@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { open, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -58,6 +58,9 @@ const INACTIVE_SESSION_STATES = new Set([
   "canceled",
 ]);
 const FALLBACK_ACTIVE_RECENCY_WINDOW_MS = 45 * 60 * 1000;
+const SESSION_HISTORY_TAIL_MIN_LINES = 80;
+const SESSION_HISTORY_TAIL_LINE_MULTIPLIER = 8;
+const SESSION_HISTORY_TAIL_CHUNK_BYTES = 64 * 1024;
 
 /**
  * Live read client using official OpenClaw CLI JSON outputs.
@@ -429,12 +432,10 @@ async function readSessionHistoryFile(
   sessionFile: string,
   limit: number,
 ): Promise<SessionsHistoryResponse | undefined> {
+  const targetLineCount = Math.max(limit * SESSION_HISTORY_TAIL_LINE_MULTIPLIER, SESSION_HISTORY_TAIL_MIN_LINES);
   try {
-    const { stdout } = await execFileAsync("tail", ["-n", String(Math.max(limit * 8, 80)), sessionFile], {
-      timeout: 5_000,
-      maxBuffer: 512 * 1024,
-    });
-    return normalizeSessionHistoryChunk(stdout, limit);
+    const raw = await readRecentSessionHistoryChunk(sessionFile, targetLineCount);
+    return normalizeSessionHistoryChunk(raw, limit);
   } catch {
     try {
       const raw = await readFile(sessionFile, "utf8");
@@ -443,6 +444,49 @@ async function readSessionHistoryFile(
       return undefined;
     }
   }
+}
+
+async function readRecentSessionHistoryChunk(sessionFile: string, targetLineCount: number): Promise<string> {
+  const handle = await open(sessionFile, "r");
+  try {
+    const { size } = await handle.stat();
+    if (size <= 0) return "";
+
+    let position = size;
+    let newlineCount = 0;
+    const chunks: Buffer[] = [];
+
+    while (position > 0 && newlineCount < targetLineCount) {
+      const bytesToRead = Math.min(SESSION_HISTORY_TAIL_CHUNK_BYTES, position);
+      position -= bytesToRead;
+
+      const buffer = Buffer.allocUnsafe(bytesToRead);
+      const { bytesRead } = await handle.read(buffer, 0, bytesToRead, position);
+      if (bytesRead <= 0) break;
+
+      const chunk = bytesRead === bytesToRead ? buffer : buffer.subarray(0, bytesRead);
+      chunks.push(chunk);
+      newlineCount += countLineFeeds(chunk);
+    }
+
+    if (chunks.length === 0) return "";
+
+    const raw = Buffer.concat(chunks.reverse()).toString("utf8");
+    if (position <= 0) return raw;
+
+    const firstLineBreak = raw.indexOf("\n");
+    return firstLineBreak >= 0 ? raw.slice(firstLineBreak + 1) : raw;
+  } finally {
+    await handle.close();
+  }
+}
+
+function countLineFeeds(buffer: Uint8Array): number {
+  let count = 0;
+  for (const byte of buffer) {
+    if (byte === 0x0a) count += 1;
+  }
+  return count;
 }
 
 function normalizeSessionHistoryChunk(raw: string, limit: number): SessionsHistoryResponse {
