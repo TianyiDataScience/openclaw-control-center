@@ -247,6 +247,12 @@ async function readSessionHistory(
   sessionKey: string,
   limit: number,
 ): Promise<SessionHistoryReadResult> {
+  if (limit <= 0) {
+    return {
+      messages: [],
+    };
+  }
+
   try {
     const response = await client.sessionsHistory({ sessionKey, limit });
     return {
@@ -955,7 +961,7 @@ function normalizePageSize(input: number): number {
 
 function normalizeHistoryLimit(input: number, fallback = 8): number {
   if (!Number.isFinite(input)) return fallback;
-  return Math.max(1, Math.min(200, Math.trunc(input)));
+  return Math.max(0, Math.min(200, Math.trunc(input)));
 }
 
 function asObject(v: unknown): Record<string, unknown> | undefined {

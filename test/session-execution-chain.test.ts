@@ -9,6 +9,8 @@ import type { SessionsHistoryRequest, SessionsHistoryResponse } from "../src/con
 import type { ReadModelSnapshot } from "../src/types";
 
 class FakeToolClient implements ToolClient {
+  public historyRequests: SessionsHistoryRequest[] = [];
+
   constructor(private readonly historyBySession = new Map<string, SessionsHistoryResponse>()) {}
 
   async sessionsList() {
@@ -20,6 +22,7 @@ class FakeToolClient implements ToolClient {
   }
 
   async sessionsHistory(request: SessionsHistoryRequest): Promise<SessionsHistoryResponse> {
+    this.historyRequests.push(request);
     return this.historyBySession.get(request.sessionKey) ?? { rawText: "" };
   }
 
@@ -94,6 +97,51 @@ test("run child session infers execution chain from session key when history is 
   assert.equal(result.items[0].executionChain?.childSessionKey, "agent:main:cron:job-1:run:child-1");
   assert.equal(result.items[0].executionChain?.accepted, true);
   assert.equal(result.items[0].executionChain?.spawned, true);
+  assert.equal(result.items[0].executionChain?.stage, "running");
+});
+
+test("historyLimit=0 skips history fetches and keeps lightweight session-key inference", async () => {
+  const snapshot = makeSnapshot([
+    {
+      sessionKey: "agent:main:cron:job-light:run:child-light",
+      agentId: "main",
+      state: "running",
+      lastMessageAt: "2026-03-07T10:01:00.000Z",
+    },
+  ]);
+  const client = new FakeToolClient(
+    new Map([
+      [
+        "agent:main:cron:job-light:run:child-light",
+        {
+          json: {
+            history: [
+              {
+                role: "assistant",
+                content: "this should never be fetched in lightweight mode",
+              },
+            ],
+          },
+          rawText: "",
+        },
+      ],
+    ]),
+  );
+
+  const result = await listSessionConversations({
+    snapshot,
+    client,
+    filters: {},
+    page: 1,
+    pageSize: 10,
+    historyLimit: 0,
+  });
+
+  assert.equal(client.historyRequests.length, 0);
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].historyCount, 0);
+  assert.equal(result.items[0].latestSnippet, undefined);
+  assert.equal(result.items[0].executionChain?.source, "session_key");
   assert.equal(result.items[0].executionChain?.stage, "running");
 });
 

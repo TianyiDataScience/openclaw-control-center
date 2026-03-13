@@ -2407,6 +2407,81 @@ async function buildGlobalVisibilityViewModel(
   };
 }
 
+function buildPlaceholderUsageCostSnapshot(language: UiLanguage): UsageCostSnapshot {
+  const emptyPeriod = (key: "today" | "7d" | "30d", label: string): UsageCostSnapshot["periods"][number] => ({
+    key,
+    label,
+    tokens: 0,
+    estimatedCost: 0,
+    requestCount: 0,
+    requestCountStatus: "not_connected",
+    statusSamples: 0,
+    daysCovered: 0,
+    pace: {
+      label: pickUiText(language, "Not connected", "未连接"),
+      state: "unknown",
+    },
+    sourceStatus: "not_connected",
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    periods: [
+      emptyPeriod("today", pickUiText(language, "Today", "今天")),
+      emptyPeriod("7d", pickUiText(language, "Last 7 days", "最近 7 天")),
+      emptyPeriod("30d", pickUiText(language, "Last 30 days", "最近 30 天")),
+    ],
+    contextWindows: [],
+    breakdown: {
+      byAgent: [],
+      byProject: [],
+      byTask: [],
+      byModel: [],
+      byProvider: [],
+      bySessionType: [],
+      byCronJob: [],
+      byCronAgent: [],
+    },
+    breakdownToday: {
+      byAgent: [],
+      byProject: [],
+      byTask: [],
+      byModel: [],
+      byProvider: [],
+      bySessionType: [],
+      byCronJob: [],
+      byCronAgent: [],
+    },
+    budget: {
+      status: "not_connected",
+      usedCost30d: 0,
+      message: pickUiText(language, "Usage data not loaded for this page.", "此页面未加载用量数据。"),
+    },
+    subscription: {
+      status: "not_connected",
+      planLabel: pickUiText(language, "Not connected", "未连接"),
+      unit: pickUiText(language, "units", "单位"),
+      detail: pickUiText(language, "Usage data not loaded for this page.", "此页面未加载用量数据。"),
+      connectHint: pickUiText(language, "Open the usage page when you need quota details.", "需要额度细节时请打开用量页。"),
+    },
+    connectors: {
+      modelContextCatalog: "not_connected",
+      digestHistory: "not_connected",
+      requestCounts: "not_connected",
+      budgetLimit: "not_connected",
+      providerAttribution: "not_connected",
+      subscriptionUsage: "not_connected",
+      todos: [
+        {
+          id: "usage-page",
+          title: pickUiText(language, "Open the usage page", "打开用量页"),
+          detail: pickUiText(language, "This page skips heavy quota aggregation to keep rendering fast.", "当前页面会跳过重型用量聚合，以保持渲染速度。"),
+        },
+      ],
+    },
+  };
+}
+
 function dashboardSectionLinks(language: UiLanguage): DashboardSectionLink[] {
   return DASHBOARD_SECTION_LINKS_EN.map((item) => {
     if (language !== "zh") return item;
@@ -3352,11 +3427,21 @@ async function loadCachedTaskEvidenceSessions(
   return value;
 }
 
-async function loadCachedSessionPreview(snapshot: ReadModelSnapshot, toolClient: ToolClient): Promise<SessionConversationListResult> {
+async function loadCachedSessionPreview(
+  snapshot: ReadModelSnapshot,
+  toolClient: ToolClient,
+  options: {
+    pageSize?: number;
+    historyLimit?: number;
+  } = {},
+): Promise<SessionConversationListResult> {
+  const pageSize = Number.isFinite(options.pageSize) ? Math.max(1, Math.trunc(options.pageSize ?? 12)) : 12;
+  const historyLimit = Number.isFinite(options.historyLimit) ? Math.max(0, Math.trunc(options.historyLimit ?? 10)) : 10;
   const now = Date.now();
+  const cacheKey = `${snapshot.generatedAt}|${pageSize}|${historyLimit}`;
   if (
     renderSessionPreviewCache &&
-    renderSessionPreviewCache.snapshotAt === snapshot.generatedAt &&
+    renderSessionPreviewCache.snapshotAt === cacheKey &&
     renderSessionPreviewCache.expiresAt > now
   ) {
     return renderSessionPreviewCache.value;
@@ -3367,11 +3452,11 @@ async function loadCachedSessionPreview(snapshot: ReadModelSnapshot, toolClient:
     client: toolClient,
     filters: {},
     page: 1,
-    pageSize: 12,
-    historyLimit: 10,
+    pageSize,
+    historyLimit,
   });
   renderSessionPreviewCache = {
-    snapshotAt: snapshot.generatedAt,
+    snapshotAt: cacheKey,
     value,
     expiresAt: now + HTML_HEAVY_CACHE_TTL_MS,
   };
@@ -3577,7 +3662,7 @@ async function renderHtml(
       : options.section === "calendar"
         ? "projects-tasks"
         : options.section;
-  const usageCostMode: UsageCostMode = "full";
+  const usageCostMode: UsageCostMode = activeSection === "usage-cost" ? "full" : "summary";
   const sectionMeta = sectionLinks.find((item) => item.key === activeSection) ?? sectionLinks[0];
   const sectionTitle = resolveDashboardSectionTitle(sectionMeta, options.language);
   const sectionLeadText =
@@ -3597,6 +3682,7 @@ async function renderHtml(
   const needsTeamSnapshot = activeSection === "team";
   const needsMemoryFiles = activeSection === "memory";
   const needsWorkspaceFiles = activeSection === "docs";
+  const needsUsageData = activeSection === "overview" || activeSection === "usage-cost" || activeSection === "settings";
   markRenderPhase("snapshot");
   const exceptions = commanderExceptions(snapshot);
   const exceptionsFeed = commanderExceptionsFeed(snapshot);
@@ -3614,7 +3700,10 @@ async function renderHtml(
   const projectOptions = uniqueSorted(snapshot.projects.projects.map((project) => project.projectId));
   const ownerOptions = uniqueSorted(realTasks.map((task) => task.owner));
   const sessionPreview = needsSessionPreview
-    ? await loadCachedSessionPreview(snapshot, toolClient)
+    ? await loadCachedSessionPreview(snapshot, toolClient, {
+        pageSize: activeSection === "overview" ? 8 : 12,
+        historyLimit: activeSection === "projects-tasks" || activeSection === "overview" ? 0 : 10,
+      })
     : {
         generatedAt: snapshot.generatedAt,
         total: 0,
@@ -3629,7 +3718,9 @@ async function renderHtml(
     buildCronOverview(snapshot, POLLING_INTERVALS_MS.cron),
     loadOpenclawCronCatalog(options.language),
     loadCachedReplayPreview(),
-    loadCachedUsageCost(snapshot, usageCostMode),
+    needsUsageData
+      ? loadCachedUsageCost(snapshot, usageCostMode)
+      : Promise.resolve(buildPlaceholderUsageCostSnapshot(options.language)),
     loadBestEffortAgentRoster(),
     loadCachedOfficeSessionPresence(),
   ]);
@@ -3720,6 +3811,7 @@ async function renderHtml(
     strongTaskEvidenceCount: taskCertaintyStrongCount,
     followupTaskEvidenceCount: taskCertaintyFollowupCount,
     weakTaskEvidenceCount: taskCertaintyWeakCount,
+    toolCallsCount: 0,
   });
   const attentionCount = actionQueue.counts.unacked + runtimeIssueCount + nonOkBudgets.length;
   const replayMoments = replayPreview.timeline.entries.slice(0, 8);

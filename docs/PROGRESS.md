@@ -1,5 +1,32 @@
 # Progress
 
+## Phase 152 (Low-memory dashboard render-path optimization) — Completed
+- Scope:
+  - Fix multi-second to 20s-level page renders on low-memory hosts without changing the visible information architecture.
+  - Keep the dashboard truthful while removing unnecessary request-path work from overview, tasks, and non-usage pages.
+- Changed files:
+  - `src/runtime/session-conversations.ts`
+  - `src/ui/server.ts`
+  - `test/session-execution-chain.test.ts`
+  - `docs/PROGRESS.md`
+- Implementation:
+  - Added lightweight session-preview mode by allowing `historyLimit=0` and skipping `sessionsHistory` reads entirely when a page only needs recent-session shell data.
+  - Moved `overview` and `projects-tasks` onto the lightweight session-preview path so page renders no longer block on bulk session-history fetches.
+  - Stopped non-essential pages from loading the heavy usage/quota aggregation path; non-usage pages now use lightweight placeholders instead of recomputing the full usage snapshot on every render.
+  - Removed synchronous heavy tool-call counting from the global request path and keyed the session-preview cache by preview weight parameters so light and heavy renders do not poison each other.
+  - Added regression coverage to ensure `historyLimit=0` preserves lightweight execution-chain inference without issuing history fetches.
+- Verification:
+  - `npm run build`
+  - `npm test`
+  - Manual route timing on the target low-memory machine:
+    - `overview`: about `19.7s` -> about `0.06s`
+    - `usage-cost`: about `11.8s` -> about `0.02s`
+    - `team`: about `11.0s` -> about `0.04s`
+    - `memory`: about `28.4s` -> about `0.01s`
+    - `docs`: about `12.6s` -> about `0.01s`
+    - `projects-tasks`: about `21.1s` -> about `0.01s`
+    - `settings`: about `11.6s` -> about `0.01s`
+
 ## Phase 151 (Route-latency optimization without UI changes) — Completed
 - Scope:
   - Reduce slow first-navigation and post-cache-expiry stalls without changing page structure, copy, or data surfaces.
