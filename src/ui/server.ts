@@ -151,7 +151,16 @@ const EDITABLE_TEXT_CONTENT_MAX_CHARS = 240_000;
 const SEARCH_LIMIT_MAX = 200;
 const TASK_RUNTIME_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const STALLED_RUNNING_SESSION_WINDOW_MS = 2 * 60 * 60 * 1000;
-const OPENCLAW_WORKSPACE_ROOT = resolve(process.cwd(), "..", "..", "..");
+
+// Workspace root configuration:
+// - Supports OPENCLAW_WORKSPACE_ROOT env var for custom workspace locations
+// - Falls back to relative path: ../../.. from control-center directory
+// - Example: If control-center is at ~/dev/openclaw-control-center, default is ~/dev/workspace
+// - For ~/.openclaw/workspace, set: OPENCLAW_WORKSPACE_ROOT=/Users/username/.openclaw/workspace
+const OPENCLAW_WORKSPACE_ROOT = process.env.OPENCLAW_WORKSPACE_ROOT?.trim()
+  ? resolve(process.env.OPENCLAW_WORKSPACE_ROOT)
+  : resolve(process.cwd(), "..", "..", "..");
+
 const WORKSPACE_EDITABLE_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "coverage"]);
 const WORKSPACE_EDITABLE_EXTENSIONS = new Set([".md", ".markdown"]);
 const MEMORY_EDITABLE_EXTENSIONS = new Set([".md", ".markdown", ".txt"]);
