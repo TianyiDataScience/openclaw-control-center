@@ -20,6 +20,7 @@ import { monitorIntervalMs, runMonitorOnce } from "./runtime/monitor";
 import { pruneStaleAcks } from "./runtime/notification-center";
 import { appendOperationAudit } from "./runtime/operation-audit";
 import { runTaskHeartbeat, runtimeTaskHeartbeatGate } from "./runtime/task-heartbeat";
+import { startSystemMonitor } from "./runtime/system-monitor";
 import { startUiServer } from "./ui/server";
 
 const CONTINUOUS_MODE = process.env.MONITOR_CONTINUOUS === "true";
@@ -69,6 +70,7 @@ async function start(): Promise<void> {
   }
 
   if (UI_MODE) {
+    startSystemMonitor();
     startUiServer(UI_PORT, client);
   }
 }

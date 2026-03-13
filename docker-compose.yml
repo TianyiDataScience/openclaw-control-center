@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  control-center:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: foxai-control-center:latest
+    container_name: foxai-control-center
+    restart: unless-stopped
+
+    # Resource limits - adjust based on your VPS
+    deploy:
+      resources:
+        limits:
+          # Memory limit - prevents OOM
+          memory: 256M
+          # CPU limit - use 0.5 cores max
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+
+    # Environment variables
+    environment:
+      - NODE_ENV=production
+      - UI_MODE=true
+      - UI_PORT=4310
+      - GATEWAY_URL=${GATEWAY_URL:-ws://127.0.0.1:18789}
+      - READONLY_MODE=${READONLY_MODE:-true}
+      - LOCAL_TOKEN_AUTH_REQUIRED=${LOCAL_TOKEN_AUTH_REQUIRED:-true}
+      - LOCAL_API_TOKEN=${LOCAL_API_TOKEN:-}
+      - TASK_HEARTBEAT_ENABLED=${TASK_HEARTBEAT_ENABLED:-true}
+      - TASK_HEARTBEAT_DRY_RUN=${TASK_HEARTBEAT_DRY_RUN:-true}
+      - MONITOR_CONTINUOUS=${MONITOR_CONTINUOUS:-false}
+
+      # Optimized polling intervals (longer = less CPU/network)
+      - POLLING_INTERVALS_MS=${POLLING_INTERVALS_MS:-sessionsList=15000,sessionStatus=5000,cron=30000,approvals=5000,canvas=10000}
+
+    # Network configuration
+    ports:
+      - "4310:4310"
+
+    # Volume for runtime data persistence
+    volumes:
+      - ./runtime:/app/runtime:rw
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # Need write for runtime data
+
+    # Logging - limited size
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4310/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# Networks
+networks:
+  default:
+    driver: bridge
