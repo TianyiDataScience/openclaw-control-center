@@ -3368,7 +3368,7 @@ async function loadCachedSessionPreview(snapshot: ReadModelSnapshot, toolClient:
     filters: {},
     page: 1,
     pageSize: 12,
-    historyLimit: 10,
+    historyLimit: 5,
   });
   renderSessionPreviewCache = {
     snapshotAt: snapshot.generatedAt,
@@ -3379,22 +3379,7 @@ async function loadCachedSessionPreview(snapshot: ReadModelSnapshot, toolClient:
 }
 
 function buildUsageCostCacheKey(snapshot: ReadModelSnapshot, mode: UsageCostMode): string {
-  const sessionStamp = snapshot.sessions
-    .map((item) => [item.sessionKey, item.agentId ?? "", item.state, item.lastMessageAt ?? "", item.label ?? ""].join(":"))
-    .join("|");
-  const statusStamp = snapshot.statuses
-    .map((item) =>
-      [
-        item.sessionKey,
-        item.model ?? "",
-        String(item.tokensIn ?? 0),
-        String(item.tokensOut ?? 0),
-        String(item.cost ?? 0),
-        item.updatedAt ?? "",
-      ].join(":"),
-    )
-    .join("|");
-  return `${mode}|${sessionStamp}|${statusStamp}`;
+  return `${mode}|${snapshot.generatedAt}|${snapshot.sessions.length}|${snapshot.statuses.length}`;
 }
 
 async function loadCachedUsageCost(
@@ -7475,7 +7460,7 @@ function parseSessionQuery(searchParams: URLSearchParams, strict: boolean): Sess
   return {
     filters,
     page: readPositiveIntQuery(searchParams.get("page"), "page", 1, strict),
-    pageSize: readPositiveIntQuery(searchParams.get("pageSize"), "pageSize", 20, strict, 100),
+    pageSize: readPositiveIntQuery(searchParams.get("pageSize"), "pageSize", 12, strict, 100),
     historyLimit: readPositiveIntQuery(searchParams.get("historyLimit"), "historyLimit", 8, strict, 200),
   };
 }

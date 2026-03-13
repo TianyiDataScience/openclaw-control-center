@@ -25,7 +25,15 @@ import { computeTasksSummary } from "../runtime/task-summary";
  * In readonly mode it uses a no-op client.
  * In live mode it uses a client that is currently guarded and not enabled yet.
  */
+/** Active session states that may change between polling cycles. */
+const ACTIVE_SESSION_STATES = new Set(["running", "blocked", "waiting_approval"]);
+
 export class OpenClawReadonlyAdapter {
+  /** Cached status snapshots from the previous polling cycle, keyed by sessionKey. */
+  private cachedStatuses = new Map<string, SessionStatusSnapshot>();
+  /** Session keys seen in the previous snapshot – used to detect new sessions. */
+  private previousSessionKeys = new Set<string>();
+
   constructor(private readonly client: ToolClient) {}
 
   async listSessions(): Promise<SessionSummary[]> {
@@ -56,7 +64,37 @@ export class OpenClawReadonlyAdapter {
 
   async snapshot(): Promise<ReadModelSnapshot> {
     const sessions = await this.listSessions();
-    const statuses = await this.listSessionStatuses(sessions.map((s) => s.sessionKey));
+    const currentKeys = new Set(sessions.map((s) => s.sessionKey));
+
+    // Determine which sessions need a fresh status query:
+    //  1. Sessions not seen in the previous snapshot (new)
+    //  2. Sessions in an active state (running / blocked / waiting_approval)
+    const keysToQuery = sessions
+      .filter(
+        (s) =>
+          !this.previousSessionKeys.has(s.sessionKey) ||
+          ACTIVE_SESSION_STATES.has(s.state),
+      )
+      .map((s) => s.sessionKey);
+
+    // Fetch only the subset that needs refreshing
+    if (keysToQuery.length > 0) {
+      const freshStatuses = await this.listSessionStatuses(keysToQuery);
+      for (const status of freshStatuses) {
+        this.cachedStatuses.set(status.sessionKey, status);
+      }
+    }
+
+    // Prune sessions that no longer exist
+    for (const key of this.cachedStatuses.keys()) {
+      if (!currentKeys.has(key)) {
+        this.cachedStatuses.delete(key);
+      }
+    }
+
+    this.previousSessionKeys = currentKeys;
+
+    const statuses = Array.from(this.cachedStatuses.values());
     const cronJobs = await this.listCronJobs();
     const approvals = await this.listApprovals();
     const [projects, tasks] = await Promise.all([loadProjectStore(), loadTaskStore()]);

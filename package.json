@@ -6,14 +6,14 @@
   "type": "commonjs",
   "scripts": {
     "dev": "node --import tsx src/index.ts",
-    "dev:continuous": "MONITOR_CONTINUOUS=true node --import tsx src/index.ts",
-    "dev:ui": "UI_MODE=true node --import tsx src/index.ts",
+    "dev:continuous": "cross-env MONITOR_CONTINUOUS=true node --import tsx src/index.ts",
+    "dev:ui": "cross-env UI_MODE=true node --import tsx src/index.ts",
     "smoke:ui": "node scripts/ui-smoke.js",
-    "command:backup-export": "APP_COMMAND=backup-export node --import tsx src/index.ts",
+    "command:backup-export": "cross-env APP_COMMAND=backup-export node --import tsx src/index.ts",
     "avatars:export": "node --import tsx scripts/export-staff-avatars.ts",
-    "command:import-validate": "APP_COMMAND=import-validate node --import tsx src/index.ts",
-    "command:acks-prune": "APP_COMMAND=acks-prune node --import tsx src/index.ts",
-    "command:task-heartbeat": "APP_COMMAND=task-heartbeat node --import tsx src/index.ts",
+    "command:import-validate": "cross-env APP_COMMAND=import-validate node --import tsx src/index.ts",
+    "command:acks-prune": "cross-env APP_COMMAND=acks-prune node --import tsx src/index.ts",
+    "command:task-heartbeat": "cross-env APP_COMMAND=task-heartbeat node --import tsx src/index.ts",
     "test": "node --import tsx --test test/**/*.test.ts",
     "build": "tsc -p tsconfig.json",
     "release:audit": "bash scripts/release-audit.sh",
@@ -38,6 +38,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "cross-env": "^7.0.3",
     "tsx": "^4.20.0",
     "typescript": "^5.8.2"
   }
