@@ -33,6 +33,8 @@ export class OpenClawReadonlyAdapter {
   private cachedStatuses = new Map<string, SessionStatusSnapshot>();
   /** Session keys seen in the previous snapshot – used to detect new sessions. */
   private previousSessionKeys = new Set<string>();
+  /** Session keys that were in an active state during the previous snapshot. */
+  private previousActiveKeys = new Set<string>();
 
   constructor(private readonly client: ToolClient) {}
 
@@ -69,11 +71,13 @@ export class OpenClawReadonlyAdapter {
     // Determine which sessions need a fresh status query:
     //  1. Sessions not seen in the previous snapshot (new)
     //  2. Sessions in an active state (running / blocked / waiting_approval)
+    //  3. Sessions that were active last cycle but no longer are (final refresh)
     const keysToQuery = sessions
       .filter(
         (s) =>
           !this.previousSessionKeys.has(s.sessionKey) ||
-          ACTIVE_SESSION_STATES.has(s.state),
+          ACTIVE_SESSION_STATES.has(s.state) ||
+          this.previousActiveKeys.has(s.sessionKey),
       )
       .map((s) => s.sessionKey);
 
@@ -93,6 +97,9 @@ export class OpenClawReadonlyAdapter {
     }
 
     this.previousSessionKeys = currentKeys;
+    this.previousActiveKeys = new Set(
+      sessions.filter((s) => ACTIVE_SESSION_STATES.has(s.state)).map((s) => s.sessionKey),
+    );
 
     const statuses = Array.from(this.cachedStatuses.values());
     const cronJobs = await this.listCronJobs();
