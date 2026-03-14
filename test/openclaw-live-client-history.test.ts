@@ -12,6 +12,16 @@ function attachSessionFile(client: OpenClawLiveClient, sessionKey: string, sessi
   internalClient.sessionCache.set(sessionKey, { sessionFile });
 }
 
+function asInternalClient(client: OpenClawLiveClient): OpenClawLiveClient & {
+  sessionHistoryCache: Map<string, { expiresAt: number; value: { rawText: string } }>;
+  storeSessionHistory(cacheKey: string, value: { rawText: string }): { rawText: string };
+} {
+  return client as OpenClawLiveClient & {
+    sessionHistoryCache: Map<string, { expiresAt: number; value: { rawText: string } }>;
+    storeSessionHistory(cacheKey: string, value: { rawText: string }): { rawText: string };
+  };
+}
+
 async function withFakeOpenClaw(
   tempDir: string,
   markerPath: string,
@@ -85,6 +95,24 @@ test("sessionsHistory skips CLI fallback when a cached history file path is miss
     await restorePath();
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("storeSessionHistory evicts expired cache entries when writing a new value", () => {
+  const client = asInternalClient(new OpenClawLiveClient());
+  client.sessionHistoryCache.set("expired-session:1", {
+    expiresAt: Date.now() - 1_000,
+    value: { rawText: "expired" },
+  });
+  client.sessionHistoryCache.set("fresh-session:1", {
+    expiresAt: Date.now() + 10_000,
+    value: { rawText: "fresh" },
+  });
+
+  client.storeSessionHistory("new-session:1", { rawText: "new" });
+
+  assert.equal(client.sessionHistoryCache.has("expired-session:1"), false);
+  assert.equal(client.sessionHistoryCache.get("fresh-session:1")?.value.rawText, "fresh");
+  assert.equal(client.sessionHistoryCache.get("new-session:1")?.value.rawText, "new");
 });
 
 test("sessionsHistory keeps the last line when the history file has no trailing newline", async () => {

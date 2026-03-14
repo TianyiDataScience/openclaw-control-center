@@ -410,9 +410,12 @@ export class OpenClawLiveClient implements ToolClient {
   }
 
   private storeSessionHistory(cacheKey: string, value: SessionsHistoryResponse): SessionsHistoryResponse {
+    const now = Date.now();
+    // 写入新缓存时顺手清掉所有已过期项，避免长时间 UI 进程把再也不会访问的旧 key 一直留在内存里。
+    this.evictExpiredSessionHistoryCache(now);
     this.sessionHistoryCache.set(cacheKey, {
       value,
-      expiresAt: Date.now() + SESSION_HISTORY_CACHE_TTL_MS,
+      expiresAt: now + SESSION_HISTORY_CACHE_TTL_MS,
     });
     return value;
   }
@@ -428,7 +431,9 @@ export class OpenClawLiveClient implements ToolClient {
   }
 
   private markSessionFileMissing(sessionKey: string, sessionFile: string): void {
-    this.missingSessionFileCache.set(sessionFile, Date.now() + SESSION_HISTORY_MISSING_FILE_TTL_MS);
+    const now = Date.now();
+    this.evictExpiredMissingSessionFileCache(now);
+    this.missingSessionFileCache.set(sessionFile, now + SESSION_HISTORY_MISSING_FILE_TTL_MS);
     this.sessionFileCache.delete(sessionKey);
     const cached = this.sessionCache.get(sessionKey);
     if (!cached?.sessionFile) return;
@@ -437,6 +442,22 @@ export class OpenClawLiveClient implements ToolClient {
       ...cached,
       sessionFile: undefined,
     });
+  }
+
+  private evictExpiredSessionHistoryCache(now: number): void {
+    for (const [key, entry] of this.sessionHistoryCache) {
+      if (entry.expiresAt <= now) {
+        this.sessionHistoryCache.delete(key);
+      }
+    }
+  }
+
+  private evictExpiredMissingSessionFileCache(now: number): void {
+    for (const [key, expiresAt] of this.missingSessionFileCache) {
+      if (expiresAt <= now) {
+        this.missingSessionFileCache.delete(key);
+      }
+    }
   }
 }
 
