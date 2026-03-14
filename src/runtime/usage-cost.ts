@@ -11,9 +11,12 @@ const OPENCLAW_HOME = process.env.OPENCLAW_HOME?.trim() || join(homedir(), ".ope
 const OPENCLAW_AGENTS_DIR = join(OPENCLAW_HOME, "agents");
 const OPENCLAW_CRON_JOBS_PATH = join(OPENCLAW_HOME, "cron", "jobs.json");
 const CODEX_HOME = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
+const CODEX_AUTH_PATH = join(CODEX_HOME, "auth.json");
 const CODEX_SESSIONS_DIR = join(CODEX_HOME, "sessions");
 const CODEX_RATE_LIMIT_CONNECTOR_PATH = join(CODEX_SESSIONS_DIR, "**", "*.jsonl");
 const CODEX_RATE_LIMIT_SESSION_SCAN_LIMIT = 48;
+const CODEX_WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_WHAM_USAGE_TIMEOUT_MS = 3_000;
 const SUBSCRIPTION_SNAPSHOT_PATHS = [
   process.env.OPENCLAW_SUBSCRIPTION_SNAPSHOT_PATH?.trim(),
   DEFAULT_SUBSCRIPTION_SNAPSHOT_PATH,
@@ -246,6 +249,17 @@ interface CodexRateLimitSnapshot {
   secondaryWindowMinutes?: number;
   secondaryResetAtMs?: number;
   planType?: string;
+}
+
+interface CodexWhamUsageSnapshot {
+  sourcePath: string;
+  planType?: string;
+  primaryUsedPercent: number;
+  primaryWindowMinutes?: number;
+  primaryResetAtMs?: number;
+  secondaryUsedPercent?: number;
+  secondaryWindowMinutes?: number;
+  secondaryResetAtMs?: number;
 }
 
 async function loadSourceWithCache<T>(
@@ -1906,10 +1920,14 @@ async function loadSubscriptionUsage(options: { includeCodexTelemetry?: boolean 
     }
   }
 
+  const codexWhamUsage = includeCodexTelemetry ? await loadCodexWhamUsage(connectHint) : undefined;
+  if (codexWhamUsage?.status === "connected") return codexWhamUsage;
+
   const codexRateLimitUsage = includeCodexTelemetry ? await loadCodexRateLimitUsage(connectHint) : undefined;
   if (codexRateLimitUsage?.status === "connected") return codexRateLimitUsage;
 
   if (partial) return partial;
+  if (codexWhamUsage) return codexWhamUsage;
   if (codexRateLimitUsage) return codexRateLimitUsage;
   if (unreadablePaths.length > 0) {
     const missingSegment =
@@ -2139,6 +2157,49 @@ async function loadCodexRateLimitUsage(connectHint: string): Promise<UsageSubscr
   };
 }
 
+async function loadCodexWhamUsage(connectHint: string): Promise<UsageSubscriptionStatus | undefined> {
+  let authRaw: string;
+  try {
+    authRaw = await readFile(CODEX_AUTH_PATH, "utf8");
+  } catch {
+    return undefined;
+  }
+
+  let auth: Record<string, unknown> | undefined;
+  try {
+    auth = asObject(JSON.parse(authRaw));
+  } catch {
+    return undefined;
+  }
+  const accessToken = asString(asObject(auth?.tokens)?.access_token)?.trim();
+  if (!accessToken) return undefined;
+
+  let response: Response;
+  try {
+    response = await fetch(CODEX_WHAM_USAGE_URL, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(CODEX_WHAM_USAGE_TIMEOUT_MS),
+    });
+  } catch {
+    return undefined;
+  }
+  if (!response.ok) return undefined;
+
+  let raw: unknown;
+  try {
+    raw = (await response.json()) as unknown;
+  } catch {
+    return undefined;
+  }
+
+  const snapshot = parseCodexWhamUsageResponse(raw, `${CODEX_WHAM_USAGE_URL} (via ${CODEX_AUTH_PATH})`);
+  if (!snapshot) return undefined;
+  return usageSubscriptionFromCodexWhamSnapshot(snapshot, connectHint);
+}
+
 function parseCodexRateLimitFromSessionLog(
   raw: string,
   sourcePath: string,
@@ -2186,6 +2247,80 @@ function parseCodexRateLimitFromSessionLog(
   }
 
   return latest;
+}
+
+function parseCodexWhamUsageResponse(
+  input: unknown,
+  sourcePath: string,
+): CodexWhamUsageSnapshot | undefined {
+  const root = asObject(input);
+  const rateLimit = asObject(root?.rate_limit);
+  const primary = asObject(rateLimit?.primary_window);
+  const primaryUsedPercent = asFiniteNumber(primary?.used_percent);
+  if (primaryUsedPercent === undefined) return undefined;
+  const secondary = asObject(rateLimit?.secondary_window);
+
+  return {
+    sourcePath,
+    planType: asString(root?.plan_type),
+    primaryUsedPercent,
+    primaryWindowMinutes: secondsToMinutes(asFiniteNumber(primary?.limit_window_seconds)),
+    primaryResetAtMs: parseEpochMaybeSeconds(primary?.reset_at),
+    secondaryUsedPercent: asFiniteNumber(secondary?.used_percent),
+    secondaryWindowMinutes: secondsToMinutes(asFiniteNumber(secondary?.limit_window_seconds)),
+    secondaryResetAtMs: parseEpochMaybeSeconds(secondary?.reset_at),
+  };
+}
+
+function usageSubscriptionFromCodexWhamSnapshot(
+  snapshot: CodexWhamUsageSnapshot,
+  connectHint: string,
+): UsageSubscriptionStatus {
+  const consumed = clampPercent(snapshot.primaryUsedPercent);
+  const remaining = Math.max(0, 100 - consumed);
+  const primaryWindowLabel = formatWindowMinutesLabel(snapshot.primaryWindowMinutes);
+  const cycleEnd = toIsoFromEpoch(snapshot.primaryResetAtMs);
+  const cycleStart =
+    cycleEnd && snapshot.primaryWindowMinutes
+      ? new Date(Date.parse(cycleEnd) - snapshot.primaryWindowMinutes * 60 * 1000).toISOString()
+      : undefined;
+  const secondaryResetAt = toIsoFromEpoch(snapshot.secondaryResetAtMs);
+  const secondaryUsageLabel =
+    snapshot.secondaryUsedPercent !== undefined
+      ? `周窗口已用 ${snapshot.secondaryUsedPercent.toFixed(1)}%${formatWindowMinutesLabel(snapshot.secondaryWindowMinutes) ? `（${formatWindowMinutesLabel(snapshot.secondaryWindowMinutes)}）` : ""}${secondaryResetAt ? `，重置 ${secondaryResetAt}` : ""}。`
+      : "";
+  const planType = snapshot.planType?.trim() ? snapshot.planType.trim() : "unknown";
+
+  return {
+    status: "connected",
+    planLabel: `Codex 实时额度（${primaryWindowLabel || "主窗口"}）`,
+    consumed,
+    remaining,
+    limit: 100,
+    usagePercent: consumed,
+    unit: "%",
+    cycleStart,
+    cycleEnd,
+    sourcePath: snapshot.sourcePath,
+    detail:
+      `来自 Codex App 实时额度接口（plan=${planType}，主窗口 ${primaryWindowLabel || "unknown"}）。` +
+      ` 当前已用 ${consumed.toFixed(1)}%，剩余 ${remaining.toFixed(1)}%。` +
+      `${cycleEnd ? ` 主窗口重置时间 ${cycleEnd}。` : ""}` +
+      `${secondaryUsageLabel}`,
+    primaryWindowLabel: primaryWindowLabel || "主窗口",
+    primaryUsedPercent: consumed,
+    primaryRemainingPercent: remaining,
+    primaryResetAt: cycleEnd,
+    secondaryWindowLabel:
+      formatWindowMinutesLabel(snapshot.secondaryWindowMinutes) ||
+      (snapshot.secondaryUsedPercent !== undefined ? "Week" : undefined),
+    secondaryUsedPercent: snapshot.secondaryUsedPercent,
+    secondaryRemainingPercent:
+      snapshot.secondaryUsedPercent !== undefined ? Math.max(0, 100 - snapshot.secondaryUsedPercent) : undefined,
+    secondaryResetAt,
+    connectHint,
+    reasonCode: "provider_connected",
+  };
 }
 
 function compareCodexRateLimitSnapshots(a: CodexRateLimitSnapshot, b: CodexRateLimitSnapshot): number {
@@ -2240,6 +2375,15 @@ export function parseCodexRateLimitFromSessionLogForSmoke(
       snapshot.secondaryUsedPercent !== undefined ? Math.max(0, 100 - snapshot.secondaryUsedPercent) : undefined,
     secondaryResetAt: toIsoFromEpoch(snapshot.secondaryResetAtMs),
   };
+}
+
+export function parseCodexWhamUsageResponseForSmoke(
+  input: unknown,
+  sourcePath = "/tmp/wham-usage.json",
+): UsageSubscriptionStatus | undefined {
+  const snapshot = parseCodexWhamUsageResponse(input, sourcePath);
+  if (!snapshot) return undefined;
+  return usageSubscriptionFromCodexWhamSnapshot(snapshot, "");
 }
 
 async function collectRecentJsonlFiles(
@@ -2306,6 +2450,11 @@ function parseEpochMaybeSeconds(input: unknown): number | undefined {
   if (numeric === undefined) return undefined;
   if (numeric > 1_000_000_000_000) return Math.round(numeric);
   return Math.round(numeric * 1000);
+}
+
+function secondsToMinutes(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return undefined;
+  return value / 60;
 }
 
 function toIsoFromEpoch(input: number | undefined): string | undefined {

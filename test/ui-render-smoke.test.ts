@@ -162,6 +162,19 @@ test("legacy mission-control routes resolve to dashboard sections", async () => 
   assert.equal(resolveDashboardSection(new URLSearchParams("section=replay-audit")), "overview");
 });
 
+test("session activity timestamp prefers the fresher runtime signal over older history", async () => {
+  const { pickLatestSessionActivityTimestampForSmoke } = await import("../src/ui/server");
+
+  assert.equal(
+    pickLatestSessionActivityTimestampForSmoke("2026-03-14T05:36:59.486Z", "2026-03-14T15:22:18.823Z"),
+    "2026-03-14T15:22:18.823Z",
+  );
+  assert.equal(
+    pickLatestSessionActivityTimestampForSmoke(undefined, "2026-03-14T15:00:00.019Z"),
+    "2026-03-14T15:00:00.019Z",
+  );
+});
+
 test("tasks section prioritizes schedule and cron before tracked task detail", async () => {
   const source = await readFile("src/ui/server.ts", "utf8");
   assert(source.includes('<section class="card" id="calendar-board">'));

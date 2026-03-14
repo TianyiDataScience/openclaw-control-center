@@ -1445,7 +1445,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
           sessionKey: detail.sessionKey,
           agentId: detail.agentId,
           state: detail.state,
-          latestAt: detail.latestHistoryAt ?? detail.lastMessageAt,
+          latestAt: pickLatestSessionActivityTimestamp(detail.latestHistoryAt, detail.lastMessageAt),
           latestSnippet: detail.latestSnippet,
           sessionHref: buildSessionDetailHref(detail.sessionKey, language),
         }));
@@ -3581,6 +3581,18 @@ function isStaleRuntimeTimestamp(value: string | undefined, nowMs: number, windo
   return parsed > 0 && nowMs - parsed > windowMs;
 }
 
+function pickLatestSessionActivityTimestamp(...values: Array<string | undefined>): string | undefined {
+  let latest: string | undefined;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    const parsed = toSortableMs(value);
+    if (parsed <= 0 || parsed <= latestMs) continue;
+    latest = value;
+    latestMs = parsed;
+  }
+  return latest;
+}
+
 function countStalledRunningSessions(
   sessions: ReadModelSnapshot["sessions"],
   sessionItems: SessionConversationListItem[],
@@ -3588,11 +3600,17 @@ function countStalledRunningSessions(
   windowMs = STALLED_RUNNING_SESSION_WINDOW_MS,
 ): number {
   const latestBySessionKey = new Map(
-    sessionItems.map((item) => [item.sessionKey, item.latestHistoryAt ?? item.lastMessageAt]),
+    sessionItems.map((item) => [
+      item.sessionKey,
+      pickLatestSessionActivityTimestamp(item.latestHistoryAt, item.lastMessageAt),
+    ]),
   );
   return sessions.filter((session) => {
     if (session.state !== "running") return false;
-    const latestAt = latestBySessionKey.get(session.sessionKey) ?? session.lastMessageAt;
+    const latestAt = pickLatestSessionActivityTimestamp(
+      latestBySessionKey.get(session.sessionKey),
+      session.lastMessageAt,
+    );
     return isStaleRuntimeTimestamp(latestAt, nowMs, windowMs);
   }).length;
 }
@@ -3636,7 +3654,11 @@ function buildTaskCertaintyCards(input: {
         if (state === "blocked") blockedSessionCount += 1;
         if (state === "error") errorSessionCount += 1;
         if (state === "waiting_approval") waitingApprovalSessionCount += 1;
-        const latestAt = preview?.latestHistoryAt ?? preview?.lastMessageAt ?? snapshotSession?.lastMessageAt;
+        const latestAt = pickLatestSessionActivityTimestamp(
+          preview?.latestHistoryAt,
+          preview?.lastMessageAt,
+          snapshotSession?.lastMessageAt,
+        );
         signalTimes.push(latestAt);
         if (hasFreshRuntimeTimestamp(latestAt, nowMs, TASK_RUNTIME_ACTIVITY_WINDOW_MS)) {
           recentActivityCount += 1;
@@ -10483,7 +10505,7 @@ function buildTaskExecutionChainCards(input: {
       sessionKey: sessionLike.sessionKey,
       agentId: sessionLike.agentId,
       state: sessionLike.state,
-      latestAt: preview?.latestHistoryAt ?? sessionLike.lastMessageAt,
+      latestAt: pickLatestSessionActivityTimestamp(preview?.latestHistoryAt, sessionLike.lastMessageAt),
       latestSnippet: preview?.latestSnippet,
       executionChain,
       sessionHref: buildSessionDetailHref(sessionLike.sessionKey, input.language),
@@ -12350,8 +12372,8 @@ function renderQuotaWindowRow(
   const resetAt = input.resetAt?.trim();
   const resetText =
     !resetAt
-      ? pickUiText(language, "Not provided", "未提供")
-      : `<span data-quota-reset-at="${escapeHtml(resetAt)}" data-quota-window="${escapeHtml(input.label)}">${escapeHtml(pickUiText(language, "Loading...", "加载中..."))}</span>`;
+      ? pickUiText(language, "Reset not provided", "重置时间未提供")
+      : `${escapeHtml(pickUiText(language, "Reset", "重置"))} <span data-quota-reset-at="${escapeHtml(resetAt)}" data-quota-window="${escapeHtml(input.label)}">${escapeHtml(pickUiText(language, "Loading...", "加载中..."))}</span>`;
   return `<div class="quota-row">
     <div class="quota-head">
       <span class="quota-label">${escapeHtml(input.label)}</span>
@@ -12460,8 +12482,14 @@ function renderSubscriptionStatusCard(
       subscription.secondaryRemainingPercent ??
         (typeof secondaryUsed === "number" ? 100 - secondaryUsed : undefined),
     );
+    const primarySummary = `${pickUiText(language, "Primary window", "主窗口")} ${normalizeQuotaWindowLabel(subscription.primaryWindowLabel, "5h")} · ${pickUiText(language, "Used", "已用")} ${typeof primaryUsed === "number" ? `${primaryUsed.toFixed(1)}%` : "—"} · ${pickUiText(language, "Remaining", "剩余")} ${typeof primaryRemaining === "number" ? `${primaryRemaining.toFixed(1)}%` : "—"}`;
+    const primaryReset =
+      subscription.primaryResetAt?.trim()
+        ? `<span>${escapeHtml(pickUiText(language, "Reset", "重置"))} <span data-quota-reset-at="${escapeHtml(subscription.primaryResetAt)}" data-quota-window="${escapeHtml(normalizeQuotaWindowLabel(subscription.primaryWindowLabel, "5h"))}">${escapeHtml(pickUiText(language, "Loading...", "加载中..."))}</span></span>`
+        : "";
     return `<div class="subscription-pill">
       <div><strong>${escapeHtml(pickUiText(language, "Quota windows", "额度窗口"))}</strong> ${badge(subscription.status, statusLabel)}</div>
+      <div class="meta">${escapeHtml(primarySummary)}${primaryReset ? ` · ${primaryReset}` : ""}</div>
       <div class="meta">${escapeHtml(pickUiText(language, "Only the key windows are shown: 5h and Week.", "仅显示关键额度：5h 与 Week。"))}</div>
       <div class="quota-compact">
         ${renderQuotaWindowRow({
@@ -12501,6 +12529,10 @@ function renderSubscriptionStatusCard(
 
 export function renderSubscriptionStatusCardForSmoke(subscription: UsageCostSnapshot["subscription"]): string {
   return renderSubscriptionStatusCard(subscription, "en");
+}
+
+export function pickLatestSessionActivityTimestampForSmoke(...values: Array<string | undefined>): string | undefined {
+  return pickLatestSessionActivityTimestamp(...values);
 }
 
 export function renderDashboardSectionNavForSmoke(

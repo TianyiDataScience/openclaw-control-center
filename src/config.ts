@@ -1,3 +1,5 @@
+process.loadEnvFile?.();
+
 export const GATEWAY_URL = readStringEnv(process.env.GATEWAY_URL, "ws://127.0.0.1:18789");
 
 export const READONLY_MODE = process.env.READONLY_MODE !== "false";

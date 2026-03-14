@@ -152,3 +152,17 @@ test("recoverOpenClawCommandJson keeps valid stdout JSON from failed commands", 
   assert.deepEqual(recovered, { runtimeVersion: "2026.3.11" });
   assert.equal(recoverOpenClawCommandJson({ code: 1, stdout: "not-json" }), undefined);
 });
+
+test("recoverOpenClawCommandJson extracts JSON after plugin log prelude", () => {
+  const recovered = recoverOpenClawCommandJson({
+    code: 1,
+    stdout: `[plugins] [lcm] Plugin loaded (enabled=true)
+[plugins] [lcm] Plugin loaded (enabled=true)
+{ "rpc": { "ok": true }, "config": { "cli": { "exists": true, "valid": true } } }`,
+  });
+
+  assert.deepEqual(recovered, {
+    rpc: { ok: true },
+    config: { cli: { exists: true, valid: true } },
+  });
+});

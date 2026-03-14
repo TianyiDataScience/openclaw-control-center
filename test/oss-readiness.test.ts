@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import test from "node:test";
 
 const ROOT = process.cwd();
+const TSX_BIN = path.join(ROOT, "node_modules", ".bin", "tsx");
 const MACOS_HOME_PATH_PATTERN = /\/Users\/[^/\s]+\//;
 const EMBEDDED_LOCAL_TOKEN_PATTERN = /LOCAL_API_TOKEN\s*[:=]\s*["'][^"']{8,}["']/;
 const PUBLIC_FILES = [
@@ -63,6 +65,28 @@ test("gateway URL can be overridden from env for non-local installations", () =>
   ).trim();
 
   assert.equal(output, "ws://example.invalid:9999");
+});
+
+test("config loads LOCAL_API_TOKEN from cwd .env when env is not preloaded", () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-config-env-"));
+  try {
+    writeFileSync(path.join(tempDir, ".env"), "LOCAL_API_TOKEN=from-dotenv\n", "utf8");
+    const output = execFileSync(
+      TSX_BIN,
+      [
+        "--eval",
+        `delete process.env.LOCAL_API_TOKEN; const mod = require(${JSON.stringify(path.join(ROOT, "src", "config.ts"))}); process.stdout.write(mod.LOCAL_API_TOKEN);`,
+      ],
+      {
+        cwd: tempDir,
+        encoding: "utf8",
+      },
+    ).trim();
+
+    assert.equal(output, "from-dotenv");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("core source directories are present and tracked in git", () => {

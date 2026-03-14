@@ -4,6 +4,8 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const INSIGHT_CACHE_TTL_MS = 15_000;
 const INSIGHT_COMMAND_TIMEOUT_MS = 4_000;
+const STATUS_COMMAND_TIMEOUT_MS = 8_000;
+const UPDATE_STATUS_COMMAND_TIMEOUT_MS = 8_000;
 const INSIGHT_COMMAND_MAX_BUFFER = 4 * 1024 * 1024;
 
 interface TimedSourceCache<T> {
@@ -319,7 +321,7 @@ async function loadCachedOpenClawStatusJson(): Promise<unknown> {
   return loadSourceWithCache(
     statusCache,
     statusInFlight,
-    () => runOpenClawJson(["status", "--json"], {}),
+    () => runOpenClawJson(["status", "--json"], {}, { timeoutMs: STATUS_COMMAND_TIMEOUT_MS }),
     (value) => {
       statusCache = value;
     },
@@ -361,7 +363,7 @@ async function loadCachedOpenClawUpdateStatusJson(): Promise<unknown> {
   return loadSourceWithCache(
     updateCache,
     updateInFlight,
-    () => runOpenClawJson(["update", "status", "--json"], {}),
+    () => runOpenClawJson(["update", "status", "--json"], {}, { timeoutMs: UPDATE_STATUS_COMMAND_TIMEOUT_MS }),
     (value) => {
       updateCache = value;
     },
@@ -427,13 +429,17 @@ async function loadSourceWithCache<T>(
   }
 }
 
-async function runOpenClawJson(args: string[], fallback: unknown): Promise<unknown> {
+async function runOpenClawJson(
+  args: string[],
+  fallback: unknown,
+  options?: { timeoutMs?: number },
+): Promise<unknown> {
   try {
     const { stdout } = await execFileAsync("openclaw", args, {
-      timeout: INSIGHT_COMMAND_TIMEOUT_MS,
+      timeout: options?.timeoutMs ?? INSIGHT_COMMAND_TIMEOUT_MS,
       maxBuffer: INSIGHT_COMMAND_MAX_BUFFER,
     });
-    return JSON.parse(stdout) as unknown;
+    return parseEmbeddedJson(stdout) ?? fallback;
   } catch (error) {
     const recovered = recoverOpenClawCommandJson(error);
     return recovered ?? fallback;
@@ -442,13 +448,9 @@ async function runOpenClawJson(args: string[], fallback: unknown): Promise<unkno
 
 export function recoverOpenClawCommandJson(error: unknown): unknown {
   const root = asObject(error);
-  const stdout = typeof root?.stdout === "string" ? root.stdout.trim() : "";
-  if (!stdout) return undefined;
-  try {
-    return JSON.parse(stdout) as unknown;
-  } catch {
-    return undefined;
-  }
+  const stdout = typeof root?.stdout === "string" ? root.stdout : "";
+  if (!stdout.trim()) return undefined;
+  return parseEmbeddedJson(stdout);
 }
 
 function asObject(input: unknown): Record<string, unknown> | undefined {
@@ -469,6 +471,34 @@ function asBoolean(input: unknown): boolean | undefined {
 
 function asNumber(input: unknown): number | undefined {
   return typeof input === "number" && Number.isFinite(input) ? input : undefined;
+}
+
+function parseEmbeddedJson(input: string): unknown {
+  const trimmed = input.trim();
+  if (!trimmed) return undefined;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    // Some OpenClaw commands print plugin logs before the JSON payload.
+  }
+
+  const candidateStarts: number[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const ch = input[index];
+    if (ch === "{" || ch === "[") candidateStarts.push(index);
+  }
+
+  for (const start of candidateStarts) {
+    const candidate = input.slice(start).trim();
+    if (!candidate) continue;
+    try {
+      return JSON.parse(candidate) as unknown;
+    } catch {
+      // Keep scanning until we find the first valid JSON payload.
+    }
+  }
+
+  return undefined;
 }
 
 function normalizeSeverity(input: string | undefined): "critical" | "warn" | "info" {

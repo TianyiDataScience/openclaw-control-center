@@ -153,6 +153,34 @@ test("usage-cost snapshot surfaces unavailable subscription with explicit connec
   assert(usage.connectors.todos.some((item) => item.detail.includes("/tmp/subscription.json")));
 });
 
+test("usage-cost wham parser surfaces real Codex App quota windows", async () => {
+  const { parseCodexWhamUsageResponseForSmoke } = await import("../src/runtime/usage-cost");
+  const usage = parseCodexWhamUsageResponseForSmoke({
+    plan_type: "team",
+    rate_limit: {
+      primary_window: {
+        used_percent: 41,
+        limit_window_seconds: 18_000,
+        reset_at: 1_778_675_162,
+      },
+      secondary_window: {
+        used_percent: 25,
+        limit_window_seconds: 604_800,
+        reset_at: 1_779_228_684,
+      },
+    },
+  });
+
+  assert(usage);
+  assert.equal(usage.status, "connected");
+  assert.equal(usage.primaryWindowLabel, "5h");
+  assert.equal(usage.primaryUsedPercent, 41);
+  assert.equal(usage.primaryRemainingPercent, 59);
+  assert.equal(usage.secondaryWindowLabel, "7d");
+  assert.equal(usage.secondaryUsedPercent, 25);
+  assert.equal(usage.secondaryRemainingPercent, 75);
+});
+
 test("usage-cost snapshot backfills subscription consumed from runtime usage when provider snapshot is missing", async () => {
   const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
   const now = Date.now();
