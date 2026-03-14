@@ -61,6 +61,15 @@ const FALLBACK_ACTIVE_RECENCY_WINDOW_MS = 45 * 60 * 1000;
 const SESSION_HISTORY_TAIL_MIN_LINES = 80;
 const SESSION_HISTORY_TAIL_LINE_MULTIPLIER = 8;
 const SESSION_HISTORY_TAIL_CHUNK_BYTES = 64 * 1024;
+// 同一轮页面渲染会重复读取同一批 session history，这里做一个很短的缓存来压掉重复 IO / CLI 调用。
+const SESSION_HISTORY_CACHE_TTL_MS = 5_000;
+// 当 sessions.json 里记录了 history 路径但文件其实已经不存在时，短时间内直接跳过 fallback CLI，避免单条卡十几秒。
+const SESSION_HISTORY_MISSING_FILE_TTL_MS = 30_000;
+
+interface SessionHistoryFileReadResult {
+  status: "ok" | "missing" | "error";
+  response?: SessionsHistoryResponse;
+}
 
 /**
  * Live read client using official OpenClaw CLI JSON outputs.
@@ -69,6 +78,9 @@ const SESSION_HISTORY_TAIL_CHUNK_BYTES = 64 * 1024;
 export class OpenClawLiveClient implements ToolClient {
   private sessionCache = new Map<string, SessionCacheItem>();
   private sessionFileCache = new Map<string, string>();
+  private sessionHistoryCache = new Map<string, { expiresAt: number; value: SessionsHistoryResponse }>();
+  private sessionHistoryInFlight = new Map<string, Promise<SessionsHistoryResponse>>();
+  private missingSessionFileCache = new Map<string, number>();
 
   async sessionsList(): Promise<SessionsListResponse> {
     const openclawHome = resolveOpenClawHomePath();
@@ -138,38 +150,20 @@ export class OpenClawLiveClient implements ToolClient {
     }
 
     const limit = normalizeLimit(request.limit);
-    let sessionFile = this.sessionCache.get(sessionKey)?.sessionFile;
-    if (!sessionFile) {
-      sessionFile = await this.lookupSessionFile(sessionKey);
-    }
-    if (sessionFile) {
-      const fromFile = await readSessionHistoryFile(sessionFile, limit);
-      if (fromFile) return fromFile;
-    }
-    const attempts: string[][] = [
-      ["sessions", "history", sessionKey, "--json", "--limit", String(limit)],
-      ["sessions", "history", sessionKey, "--limit", String(limit), "--json"],
-      ["sessions", "history", sessionKey, "--json"],
-    ];
+    const cacheKey = `${sessionKey}:${limit}`;
+    const cached = this.readCachedSessionHistory(cacheKey);
+    if (cached) return cached;
 
-    for (const args of attempts) {
-      try {
-        const json = await runJson<Record<string, unknown>>(args);
-        return {
-          json,
-          rawText: JSON.stringify(json),
-        };
-      } catch {
-        continue;
-      }
-    }
+    const inFlight = this.sessionHistoryInFlight.get(cacheKey);
+    if (inFlight) return inFlight;
 
-    try {
-      const rawText = await runHistoryText(sessionKey, limit);
-      return normalizeRawHistoryText(rawText, limit);
-    } catch {
-      return { rawText: "" };
-    }
+    const pending = this.loadSessionHistory(sessionKey, limit)
+      .then((response) => this.storeSessionHistory(cacheKey, response))
+      .finally(() => {
+        this.sessionHistoryInFlight.delete(cacheKey);
+      });
+    this.sessionHistoryInFlight.set(cacheKey, pending);
+    return pending;
   }
 
   async cronList(): Promise<CronListResponse> {
@@ -245,6 +239,52 @@ export class OpenClawLiveClient implements ToolClient {
     };
   }
 
+  private async loadSessionHistory(sessionKey: string, limit: number): Promise<SessionsHistoryResponse> {
+    let sessionFile = this.sessionCache.get(sessionKey)?.sessionFile;
+    if (!sessionFile) {
+      sessionFile = await this.lookupSessionFile(sessionKey);
+    }
+    if (sessionFile) {
+      // 已知这个 history 文件最近确认不存在时，直接返回空结果；否则页面渲染会反复打到慢 CLI fallback。
+      if (this.isMarkedMissingSessionFile(sessionFile)) {
+        return { rawText: "" };
+      }
+      const fromFile = await readSessionHistoryFile(sessionFile, limit);
+      if (fromFile.status === "ok") {
+        return fromFile.response ?? { rawText: "" };
+      }
+      if (fromFile.status === "missing") {
+        // sessions 元数据可能比磁盘状态更旧：一旦发现文件不存在，先标记并短路后续请求。
+        this.markSessionFileMissing(sessionKey, sessionFile);
+        return { rawText: "" };
+      }
+    }
+    const attempts: string[][] = [
+      ["sessions", "history", sessionKey, "--json", "--limit", String(limit)],
+      ["sessions", "history", sessionKey, "--limit", String(limit), "--json"],
+      ["sessions", "history", sessionKey, "--json"],
+    ];
+
+    for (const args of attempts) {
+      try {
+        const json = await runJson<Record<string, unknown>>(args);
+        return {
+          json,
+          rawText: JSON.stringify(json),
+        };
+      } catch {
+        continue;
+      }
+    }
+
+    try {
+      const rawText = await runHistoryText(sessionKey, limit);
+      return normalizeRawHistoryText(rawText, limit);
+    } catch {
+      return { rawText: "" };
+    }
+  }
+
   private async loadSessionsFromStores(): Promise<SessionsListResponse> {
     const openclawHome = resolveOpenClawHomePath();
     const agentsPath = join(openclawHome, "agents");
@@ -313,7 +353,8 @@ export class OpenClawLiveClient implements ToolClient {
 
   private async lookupSessionFile(sessionKey: string): Promise<string | undefined> {
     const cached = this.sessionFileCache.get(sessionKey);
-    if (cached) return cached;
+    if (cached && !this.isMarkedMissingSessionFile(cached)) return cached;
+    if (cached) this.sessionFileCache.delete(sessionKey);
 
     const openclawHome = resolveOpenClawHomePath();
     const agentsPath = join(openclawHome, "agents");
@@ -356,6 +397,46 @@ export class OpenClawLiveClient implements ToolClient {
   private async loadConfiguredAgentKeys(): Promise<Set<string>> {
     const catalog = await loadCurrentAgentCatalog();
     return new Set(catalog.entries.map((entry) => normalizeAgentKey(entry.agentId)));
+  }
+
+  private readCachedSessionHistory(cacheKey: string): SessionsHistoryResponse | undefined {
+    const cached = this.sessionHistoryCache.get(cacheKey);
+    if (!cached) return undefined;
+    if (cached.expiresAt <= Date.now()) {
+      this.sessionHistoryCache.delete(cacheKey);
+      return undefined;
+    }
+    return cached.value;
+  }
+
+  private storeSessionHistory(cacheKey: string, value: SessionsHistoryResponse): SessionsHistoryResponse {
+    this.sessionHistoryCache.set(cacheKey, {
+      value,
+      expiresAt: Date.now() + SESSION_HISTORY_CACHE_TTL_MS,
+    });
+    return value;
+  }
+
+  private isMarkedMissingSessionFile(sessionFile: string): boolean {
+    const expiresAt = this.missingSessionFileCache.get(sessionFile);
+    if (!expiresAt) return false;
+    if (expiresAt <= Date.now()) {
+      this.missingSessionFileCache.delete(sessionFile);
+      return false;
+    }
+    return true;
+  }
+
+  private markSessionFileMissing(sessionKey: string, sessionFile: string): void {
+    this.missingSessionFileCache.set(sessionFile, Date.now() + SESSION_HISTORY_MISSING_FILE_TTL_MS);
+    this.sessionFileCache.delete(sessionKey);
+    const cached = this.sessionCache.get(sessionKey);
+    if (!cached?.sessionFile) return;
+    // 顺手把已缓存的 sessionFile 清掉，避免同一个 session 在本进程里继续命中失效路径。
+    this.sessionCache.set(sessionKey, {
+      ...cached,
+      sessionFile: undefined,
+    });
   }
 }
 
@@ -431,19 +512,35 @@ function normalizeLimit(input: number | undefined): number {
 async function readSessionHistoryFile(
   sessionFile: string,
   limit: number,
-): Promise<SessionsHistoryResponse | undefined> {
+): Promise<SessionHistoryFileReadResult> {
   const targetLineCount = Math.max(limit * SESSION_HISTORY_TAIL_LINE_MULTIPLIER, SESSION_HISTORY_TAIL_MIN_LINES);
   try {
     const raw = await readRecentSessionHistoryChunk(sessionFile, targetLineCount);
-    return normalizeSessionHistoryChunk(raw, limit);
-  } catch {
+    return { status: "ok", response: normalizeSessionHistoryChunk(raw, limit) };
+  } catch (error) {
+    // 对这次问题来说，ENOENT 不是“读失败后继续兜底”的普通错误，而是应该阻止 CLI fallback 的明确信号。
+    if (isMissingFileError(error)) {
+      return { status: "missing" };
+    }
     try {
       const raw = await readFile(sessionFile, "utf8");
-      return normalizeSessionHistoryChunk(raw, limit);
-    } catch {
-      return undefined;
+      return { status: "ok", response: normalizeSessionHistoryChunk(raw, limit) };
+    } catch (fallbackError) {
+      if (isMissingFileError(fallbackError)) {
+        return { status: "missing" };
+      }
+      return { status: "error" };
     }
   }
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    error.code === "ENOENT"
+  );
 }
 
 async function readRecentSessionHistoryChunk(sessionFile: string, targetLineCount: number): Promise<string> {

@@ -163,7 +163,7 @@ test("legacy mission-control routes resolve to dashboard sections", async () => 
 });
 
 test("tasks section prioritizes schedule and cron before tracked task detail", async () => {
-  const source = await readFile("src/ui/server.ts", "utf8");
+  const source = (await readFile("src/ui/server.ts", "utf8")).replace(/\r\n/g, "\n");
   assert(source.includes('<section class="card" id="calendar-board">'));
   assert(source.includes('id="task-timeline"'));
   assert(source.includes('t("Today and next schedule", "今日与下一批排程")'));
@@ -388,7 +388,7 @@ test("usage dashboard includes token type share and cron token share sections", 
 });
 
 test("dashboard wires CLI insight cards into overview, usage, memory, and settings", async () => {
-  const source = await readFile("src/ui/server.ts", "utf8");
+  const source = (await readFile("src/ui/server.ts", "utf8")).replace(/\r\n/g, "\n");
   assert(source.includes('id="overview-connection-health"'));
   assert(source.includes('pickUiText(language, "Connection health", "接线状态")'));
   assert(source.includes('pickUiText(language, "Gateway", "网关")'));
