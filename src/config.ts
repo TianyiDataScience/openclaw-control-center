@@ -1,4 +1,11 @@
-process.loadEnvFile?.();
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
+const DOTENV_PATH = join(process.cwd(), ".env");
+
+if (existsSync(DOTENV_PATH)) {
+  process.loadEnvFile?.(DOTENV_PATH);
+}
 
 export const GATEWAY_URL = readStringEnv(process.env.GATEWAY_URL, "ws://127.0.0.1:18789");
 

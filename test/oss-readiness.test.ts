@@ -89,6 +89,30 @@ test("config loads LOCAL_API_TOKEN from cwd .env when env is not preloaded", () 
   }
 });
 
+test("config keeps defaults when cwd .env is absent", () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-config-no-env-"));
+  try {
+    const output = execFileSync(
+      TSX_BIN,
+      [
+        "--eval",
+        `delete process.env.LOCAL_API_TOKEN; delete process.env.GATEWAY_URL; const mod = require(${JSON.stringify(path.join(ROOT, "src", "config.ts"))}); process.stdout.write(JSON.stringify({ token: mod.LOCAL_API_TOKEN, gateway: mod.GATEWAY_URL }));`,
+      ],
+      {
+        cwd: tempDir,
+        encoding: "utf8",
+      },
+    ).trim();
+
+    assert.deepEqual(JSON.parse(output), {
+      token: "",
+      gateway: "ws://127.0.0.1:18789",
+    });
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("core source directories are present and tracked in git", () => {
   assert(existsSync(path.join(ROOT, "src", "ui", "server.ts")), "Expected src/ui/server.ts to exist.");
   assert(existsSync(path.join(ROOT, "src", "runtime", "usage-cost.ts")), "Expected src/runtime/usage-cost.ts to exist.");
