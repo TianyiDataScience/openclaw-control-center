@@ -3379,7 +3379,19 @@ async function loadCachedSessionPreview(snapshot: ReadModelSnapshot, toolClient:
 }
 
 function buildUsageCostCacheKey(snapshot: ReadModelSnapshot, mode: UsageCostMode): string {
-  return `${mode}|${snapshot.generatedAt}|${snapshot.sessions.length}|${snapshot.statuses.length}`;
+  // Content-based fingerprint – changes only when session/status data
+  // actually changes, unlike generatedAt which changes every poll cycle.
+  // Session state (running→idle etc.) affects the output (contextWindows
+  // rows use session.state), so we include it alongside status timestamps.
+  const sessionFingerprint = snapshot.sessions
+    .map((s) => `${s.sessionKey}:${s.state}`)
+    .sort()
+    .join(";");
+  const statusFingerprint = snapshot.statuses
+    .map((s) => `${s.sessionKey}:${s.updatedAt}`)
+    .sort()
+    .join(";");
+  return `${mode}|${sessionFingerprint}|${statusFingerprint}`;
 }
 
 async function loadCachedUsageCost(
