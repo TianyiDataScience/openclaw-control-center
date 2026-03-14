@@ -108,7 +108,7 @@ test("audit timeline page renders without network and keeps severity selection",
   };
 
   const html = renderAuditPageForSmoke(timeline, "warn");
-  assert(html.includes("<title>OpenClaw Control Center Audit Timeline</title>"));
+  assert(html.includes("<title>Foxai's claw Control Center Audit Timeline</title>"));
   assert(html.includes("<h1>Audit Timeline</h1>"));
   assert(html.includes('value="warn" selected'));
   assert(html.includes("timeline &lt;unsafe&gt; marker"));

@@ -111,6 +111,7 @@ import {
   loadBestEffortOfficeSessionPresence,
   type OfficeSessionPresenceSnapshot,
 } from "../runtime/office-session-presence";
+import { formatBytes, formatUptime, getSystemMonitorSnapshot, startSystemMonitor } from "../runtime/system-monitor";
 import type {
   AgentRunState,
   BudgetEvaluation,
@@ -202,6 +203,7 @@ const STAFF_ROLE_EVIDENCE_FILE_CANDIDATES = [
 const DASHBOARD_SEARCH_SCOPES = ["tasks", "projects", "sessions", "exceptions"] as const;
 const DASHBOARD_SECTIONS = [
   "overview",
+  "system-monitor",
   "calendar",
   "team",
   "memory",
@@ -235,6 +237,7 @@ const DOC_LINKS = [
 ] as const;
 const DASHBOARD_SECTION_LINKS_EN: DashboardSectionLink[] = [
   { key: "overview", label: "Overview", blurb: "Today at a glance" },
+  { key: "system-monitor", label: "System", blurb: "VPS processes and resources" },
   { key: "usage-cost", label: "Usage", blurb: "Budget and quota" },
   { key: "team", label: "Staff", blurb: "Mission, staff and assignments" },
   { key: "memory", label: "Memory", blurb: "Daily and long-term memories" },
@@ -814,7 +817,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
         ).join("");
         const docsHref = buildHomeHref({ quick: "all" }, true, "docs", language);
         const homeHref = buildHomeHref({ quick: "all" }, true, "overview", language);
-        const html = `<!doctype html><html><head><meta charset="utf-8" /><title>${escapeHtml(t("OpenClaw Control Center Docs", "OpenClaw Control Center 文档"))}</title></head><body><h1>${escapeHtml(t("OpenClaw Control Center Docs", "OpenClaw Control Center 文档"))}</h1><ul>${links}</ul><p><a href="${escapeHtml(docsHref)}">${escapeHtml(t("Open document workbench", "打开文档工作台"))}</a> · <a href="${escapeHtml(homeHref)}">${escapeHtml(t("Back to control center", "返回控制中心"))}</a></p></body></html>`;
+        const html = `<!doctype html><html><head><meta charset="utf-8" /><title>${escapeHtml(t("Foxai's claw Control Center Docs", "Foxai's claw 控制中心文档"))}</title></head><body><h1>${escapeHtml(t("Foxai's claw Control Center Docs", "Foxai's claw 控制中心文档"))}</h1><ul>${links}</ul><p><a href="${escapeHtml(docsHref)}">${escapeHtml(t("Open document workbench", "打开文档工作台"))}</a> · <a href="${escapeHtml(homeHref)}">${escapeHtml(t("Back to control center", "返回控制中心"))}</a></p></body></html>`;
         return writeText(res, 200, html, "text/html; charset=utf-8");
       }
 
@@ -2426,6 +2429,9 @@ function dashboardSectionLinks(language: UiLanguage): DashboardSectionLink[] {
 
     if (item.key === "overview") {
       return { ...item, label: "总览", blurb: "今天重点" };
+    }
+    if (item.key === "system-monitor") {
+      return { ...item, label: "系统", blurb: "VPS进程与资源" };
     }
     if (item.key === "team") {
       return { ...item, label: "员工", blurb: "员工、分工与职责" };
@@ -5886,6 +5892,90 @@ async function renderHtml(
       </div>
     </section>
   `;
+
+  // System Monitor Section
+  const systemMonitorSnapshot = await getSystemMonitorSnapshot();
+  const systemData = systemMonitorSnapshot.data;
+  const systemError = systemMonitorSnapshot.error;
+  const systemNextRefresh = Math.ceil(systemMonitorSnapshot.nextRefreshIn / 60000);
+
+  const systemSection = `
+    <section class="overview-kpi-grid">
+      <article class="overview-kpi-card tone-ok">
+        <div class="overview-kpi-label">${escapeHtml(t("Hostname", "主机名"))}</div>
+        <div class="overview-kpi-value">${escapeHtml(systemData?.hostname || "-")}</div>
+      </article>
+      <article class="overview-kpi-card tone-ok">
+        <div class="overview-kpi-label">${escapeHtml(t("Uptime", "运行时间"))}</div>
+        <div class="overview-kpi-value">${systemData ? formatUptime(systemData.uptime) : "-"}</div>
+      </article>
+      <article class="overview-kpi-card tone-${systemData && systemData.cpu.usage > 80 ? "warn" : "ok"}">
+        <div class="overview-kpi-label">${escapeHtml(t("CPU Usage", "CPU使用率"))}</div>
+        <div class="overview-kpi-value">${systemData ? systemData.cpu.usage.toFixed(1) + "%" : "-"}</div>
+        <div class="overview-kpi-detail">${escapeHtml(systemData?.cpu.model?.substring(0, 40) || "-")}</div>
+      </article>
+      <article class="overview-kpi-card tone-${systemData && systemData.memory.usagePercent > 80 ? "warn" : "ok"}">
+        <div class="overview-kpi-label">${escapeHtml(t("Memory", "内存"))}</div>
+        <div class="overview-kpi-value">${systemData ? systemData.memory.usagePercent.toFixed(1) + "%" : "-"}</div>
+        <div class="overview-kpi-detail">${systemData ? formatBytes(systemData.memory.used) + " / " + formatBytes(systemData.memory.total) : "-"}</div>
+      </article>
+      <article class="overview-kpi-card tone-${systemData && systemData.disk.usagePercent > 80 ? "warn" : "ok"}">
+        <div class="overview-kpi-label">${escapeHtml(t("Disk", "磁盘"))}</div>
+        <div class="overview-kpi-value">${systemData ? systemData.disk.usagePercent + "%" : "-"}</div>
+        <div class="overview-kpi-detail">${systemData ? formatBytes(systemData.disk.used) + " / " + formatBytes(systemData.disk.total) : "-"}</div>
+      </article>
+    </section>
+    <section class="card">
+      <h2>${escapeHtml(t("Top Processes by CPU", "CPU占用最高的进程"))}</h2>
+      ${systemError ? `<p class="meta" style="color:var(--warn)">${escapeHtml(t("Error fetching data", "获取数据出错"))}: ${escapeHtml(systemError)}</p>` : ""}
+      ${(!systemData || systemData.processes.length === 0) ? `<p class="meta">${escapeHtml(t("No process data available", "暂无进程数据"))}</p>` : `
+      <table>
+        <thead>
+          <tr>
+            <th>PID</th>
+            <th>${escapeHtml(t("Name", "名称"))}</th>
+            <th>CPU %</th>
+            <th>${escapeHtml(t("Memory", "内存"))} %</th>
+            <th>${escapeHtml(t("Command", "命令"))}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${systemData.processes.slice(0, 10).map(p => `
+            <tr>
+              <td>${p.pid}</td>
+              <td>${escapeHtml(p.name)}</td>
+              <td>${p.cpu.toFixed(1)}</td>
+              <td>${p.memory.toFixed(1)}</td>
+              <td class="meta" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(p.command)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      `}
+      <div class="meta" style="margin-top:12px">
+        ${escapeHtml(t("Next refresh in", "下次刷新"))}: ${systemNextRefresh} ${escapeHtml(t("minutes", "分钟"))}
+        · <a href="${escapeHtml(buildHomeHref({}, true, "system-monitor", options.language))}">${escapeHtml(t("Refresh now", "立即刷新"))}</a>
+      </div>
+    </section>
+    <section class="card">
+      <h2>${escapeHtml(t("Load Average", "负载均值"))}</h2>
+      <div class="overview-kpi-grid">
+        <article class="overview-kpi-card tone-ok">
+          <div class="overview-kpi-label">1 ${escapeHtml(t("min", "分钟"))}</div>
+          <div class="overview-kpi-value">${systemData ? systemData.loadAverage[0].toFixed(2) : "-"}</div>
+        </article>
+        <article class="overview-kpi-card tone-ok">
+          <div class="overview-kpi-label">5 ${escapeHtml(t("min", "分钟"))}</div>
+          <div class="overview-kpi-value">${systemData ? systemData.loadAverage[1].toFixed(2) : "-"}</div>
+        </article>
+        <article class="overview-kpi-card tone-ok">
+          <div class="overview-kpi-label">15 ${escapeHtml(t("min", "分钟"))}</div>
+          <div class="overview-kpi-value">${systemData ? systemData.loadAverage[2].toFixed(2) : "-"}</div>
+        </article>
+      </div>
+    </section>
+  `;
+
   let sectionBody = overviewSection;
   if (options.section === "calendar") sectionBody = projectsSection;
   if (options.section === "team") sectionBody = teamUnifiedSection;
@@ -5896,6 +5986,7 @@ async function renderHtml(
   if (options.section === "projects-tasks") sectionBody = projectsSection;
   if (options.section === "alerts") sectionBody = alertsSection;
   if (options.section === "replay-audit") sectionBody = replaySection;
+  if (options.section === "system-monitor") sectionBody = systemSection;
   if (options.section === "settings") sectionBody = settingsSection;
   const globalVisibilityCard = renderGlobalVisibilityCard(globalVisibilityModel, options.language);
   const globalVisibilityBlock = options.section === "overview" ? globalVisibilityCard : "";
@@ -5944,7 +6035,7 @@ async function renderHtml(
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>OpenClaw Control Center</title>
+  <title>Foxai's claw Control Center</title>
   <style>
     :root {
       --bg: #eef2f6;
@@ -6084,6 +6175,18 @@ async function renderHtml(
         linear-gradient(135deg, rgba(232, 239, 255, 0.66), rgba(255, 255, 255, 0.92)),
         radial-gradient(circle at 82% 14%, rgba(255, 255, 255, 0.8), transparent 56%);
       box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+    }
+    .brand-logo {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 12px;
+    }
+    .brand-logo img {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      object-fit: cover;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     }
     .brand-kicker {
       display: inline-flex;
@@ -7926,6 +8029,109 @@ async function renderHtml(
       .file-editor-panel { grid-template-rows: auto minmax(280px, 1fr) auto; }
       .file-editor-textarea { min-height: 360px; }
     }
+    /* Mobile phone breakpoint - 640px and below */
+    @media (max-width: 640px) {
+      .app-shell {
+        grid-template-columns: 1fr;
+        gap: 12px;
+        padding: 12px;
+      }
+      .sidebar {
+        padding: 12px;
+      }
+      .brand {
+        padding: 12px;
+        text-align: center;
+      }
+      .brand-logo img {
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+      }
+      .brand h1 {
+        font-size: 18px;
+        margin-top: 6px;
+      }
+      .brand-kicker {
+        font-size: 9px;
+        padding: 2px 7px;
+      }
+      .brand .meta {
+        margin-top: 8px;
+        font-size: 11px;
+      }
+      .nav-links {
+        gap: 6px;
+      }
+      .nav-link {
+        padding: 10px 12px;
+      }
+      .nav-link span {
+        font-size: 14px;
+      }
+      .nav-link small {
+        font-size: 11px;
+      }
+      .panel {
+        padding: 16px;
+      }
+      .section-title {
+        font-size: 20px;
+      }
+      .section-hero-head {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .section-head-actions {
+        margin-top: 8px;
+      }
+      .overview-kpi-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+      .overview-decision-grid {
+        grid-template-columns: 1fr;
+      }
+      .overview-busy-grid {
+        grid-template-columns: 1fr;
+      }
+      .task-hub-stat-grid {
+        grid-template-columns: 1fr;
+      }
+      .overview-primary-value {
+        font-size: 36px;
+      }
+      .overview-focus-ring {
+        width: 80px;
+        height: 80px;
+      }
+      .overview-focus-core {
+        width: 56px;
+        height: 56px;
+      }
+      .overview-focus-score {
+        font-size: 20px;
+      }
+      table {
+        font-size: 12px;
+      }
+      .card {
+        padding: 12px;
+      }
+      .card h2 {
+        font-size: 16px;
+      }
+      .meta {
+        font-size: 12px;
+      }
+      /* Touch-friendly buttons */
+      .panel-toggle {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 8px 12px;
+        font-size: 13px;
+      }
+    }
     @media (prefers-reduced-motion: reduce) {
       * {
         animation-duration: 0.01ms !important;
@@ -7939,8 +8145,9 @@ async function renderHtml(
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-kicker">OpenClaw</div>
-        <h1>OpenClaw Control Center</h1>
+        <div class="brand-logo"><img src="icon.jpg" alt="Foxai's claw" /></div>
+        <div class="brand-kicker">Foxai's claw</div>
+        <h1>Control Center</h1>
         <div class="meta">${escapeHtml(t("Updated", "更新时间"))}${escapeHtml(options.language === "en" ? ": " : "：")}${escapeHtml(snapshot.generatedAt ?? t("Not available", "暂无"))}</div>
         ${languageToggle}
       </div>
@@ -13121,7 +13328,7 @@ function renderSessionDrilldownPage(
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>${escapeHtml(t("OpenClaw Control Center Session Drilldown", "OpenClaw 控制中心会话详情"))}</title>
+  <title>${escapeHtml(t("Foxai's claw Control Center Session Drilldown", "Foxai's claw 控制中心会话详情"))}</title>
   <style>
     body { font-family: "SF Mono", Menlo, monospace; background: #0b1016; color: #d6e7f9; padding: 16px; margin: 0; }
     a { color: #7dd3fc; }
@@ -13212,7 +13419,7 @@ function renderAuditPage(timeline: AuditTimelineSnapshot, severity: AuditSeverit
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>OpenClaw Control Center Audit Timeline</title>
+  <title>Foxai's claw Control Center Audit Timeline</title>
   <style>
     body { font-family: "SF Mono", Menlo, monospace; background: #0b1016; color: #d6e7f9; padding: 16px; margin: 0; }
     a { color: #7dd3fc; }

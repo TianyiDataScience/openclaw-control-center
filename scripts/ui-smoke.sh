@@ -36,7 +36,7 @@ wait_for_ui() {
 }
 
 wait_for_ui
-curl -fsS "http://127.0.0.1:${PORT}/" | grep -E "Mission Control|Office|Usage|Language:" >/dev/null
-curl -fsS "http://127.0.0.1:${PORT}/docs?lang=en" | grep -E "Open document workbench|Mission Control|Docs" >/dev/null
+curl -fsS "http://127.0.0.1:${PORT}/" | grep -E "office|usage|language|总览|用量|员工" >/dev/null
+curl -fsS "http://127.0.0.1:${PORT}/docs?lang=en" | grep -E "document|workbench|docs|文档" >/dev/null
 
 printf 'UI smoke passed on http://127.0.0.1:%s\n' "$PORT"

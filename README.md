@@ -121,8 +121,13 @@ UI_MODE=true npm run dev
 你最好已经有：
 - 一个可用的 OpenClaw 安装
 - 一个可连接的 OpenClaw Gateway
-- 当前机器上的 `node` 和 `npm`
+- 当前机器上的 `node` (>=25.3) 和 `npm`
 - 对 OpenClaw 主目录的读取权限
+
+**依赖版本 (devDependencies):**
+- `@types/node`: ^25.3.0
+- `tsx`: ^4.21.0
+- `typescript`: ^5.8.2
 
 如果你希望 `用量 / 订阅` 信息更完整，当前机器最好还能读到：
 - `~/.openclaw`

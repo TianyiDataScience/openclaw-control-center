@@ -1,0 +1,64 @@
+# Production deployment with stricter resource limits
+# For low-end VPS (256MB RAM or less)
+
+version: '3.8'
+
+services:
+  control-center:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: foxai-control-center:latest
+    container_name: foxai-control-center
+    restart: unless-stopped
+
+    # Stricter resource limits for low-end VPS
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'
+        reservations:
+          memory: 64M
+          cpus: '0.1'
+
+    environment:
+      - NODE_ENV=production
+      - UI_MODE=true
+      - UI_PORT=4310
+      - GATEWAY_URL=${GATEWAY_URL:-ws://127.0.0.1:18789}
+      - READONLY_MODE=${READONLY_MODE:-true}
+      - LOCAL_TOKEN_AUTH_REQUIRED=${LOCAL_TOKEN_AUTH_REQUIRED:-true}
+      - LOCAL_API_TOKEN=${LOCAL_API_TOKEN:-}
+      - TASK_HEARTBEAT_ENABLED=false
+      - TASK_HEARTBEAT_DRY_RUN=true
+      - MONITOR_CONTINUOUS=false
+
+      # Ultra-low resource polling
+      - POLLING_INTERVALS_MS=sessionsList=30000,sessionStatus=10000,cron=60000,approvals=10000,canvas=30000
+
+    ports:
+      - "4310:4310"
+
+    volumes:
+      - ./runtime:/app/runtime:rw
+
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "1"
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4310/"]
+      interval: 60s
+      timeout: 10s
+      retries: 2
+      start_period: 15s
+
+networks:
+  default:
+    driver: bridge

@@ -16,11 +16,11 @@ export const TASK_HEARTBEAT_MAX_TASKS_PER_RUN = parsePositiveInt(
 );
 
 export const POLLING_INTERVALS_MS = {
-  sessionsList: 5000,
-  sessionStatus: 2000,
-  cron: 10000,
-  approvals: 2000,
-  canvas: 5000,
+  sessionsList: 10000,    // 10s - reduced from 5s
+  sessionStatus: 5000,    // 5s - reduced from 2s
+  cron: 30000,            // 30s - reduced from 10s
+  approvals: 5000,        // 5s - reduced from 2s
+  canvas: 10000,         // 10s - reduced from 5s
 } as const;
 
 export type PollingTarget = keyof typeof POLLING_INTERVALS_MS;
