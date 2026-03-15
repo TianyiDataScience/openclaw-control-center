@@ -2,6 +2,59 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ReadModelSnapshot } from "../src/types";
 
+// Task 1: Test that subscriptionSources field exists in snapshot
+test("usage-cost snapshot exposes multiple quota sources", async () => {
+  const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
+
+  const usage = computeUsageCostSnapshot(
+    buildSnapshotFixture(),
+    [],
+    [],
+    undefined,
+    {
+      status: "connected",
+      planLabel: "Codex primary summary",
+      unit: "USD",
+      detail: "summary",
+      connectHint: "hint",
+      reasonCode: "provider_connected",
+      consumed: 120,
+      remaining: 80,
+      limit: 200,
+      usagePercent: 60,
+    },
+  );
+
+  assert(Array.isArray(usage.subscriptionSources), "subscriptionSources should be an array");
+});
+
+// Task 1: Test that legacy subscription still exists
+test("usage-cost snapshot keeps legacy subscription as roll-up summary", async () => {
+  const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
+
+  const usage = computeUsageCostSnapshot(
+    buildSnapshotFixture(),
+    [],
+    [],
+    undefined,
+    {
+      status: "connected",
+      planLabel: "Pro plan",
+      unit: "USD",
+      detail: "summary",
+      connectHint: "hint",
+      reasonCode: "provider_connected",
+      consumed: 100,
+      remaining: 400,
+      limit: 500,
+      usagePercent: 20,
+    },
+  );
+
+  assert(usage.subscription, "subscription should exist");
+  assert.equal(typeof usage.subscription.planLabel, "string", "subscription should have planLabel");
+});
+
 test("usage-cost snapshot marks disconnected sources with explicit placeholders", async () => {
   const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
   const snapshot = buildSnapshotFixture();

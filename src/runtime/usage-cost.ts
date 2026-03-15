@@ -50,6 +50,41 @@ type SubscriptionReasonCode =
   | "runtime_backfill_with_budget_limit"
   | "runtime_backfill_with_provider_partial";
 
+type QuotaSourceAttribution =
+  | "provider_snapshot"
+  | "live_rate_limit"
+  | "runtime_backfill"
+  | "budget_fallback";
+
+export interface UsageQuotaSource {
+  key: string;
+  scope: "provider" | "model" | "window";
+  planLabel: string;
+  status: ConnectionStatus;
+  unit: string;
+  detail: string;
+  connectHint: string;
+  provider?: string;
+  model?: string;
+  consumed?: number;
+  remaining?: number;
+  limit?: number;
+  usagePercent?: number;
+  cycleStart?: string;
+  cycleEnd?: string;
+  primaryWindowLabel?: string;
+  primaryUsedPercent?: number;
+  primaryRemainingPercent?: number;
+  primaryResetAt?: string;
+  secondaryWindowLabel?: string;
+  secondaryUsedPercent?: number;
+  secondaryRemainingPercent?: number;
+  secondaryResetAt?: string;
+  sourcePath?: string;
+  reasonCode?: SubscriptionReasonCode;
+  attribution: QuotaSourceAttribution;
+}
+
 interface TimedSourceCache<T> {
   value: T;
   expiresAt: number;
@@ -167,6 +202,7 @@ export interface UsageCostSnapshot {
   breakdownToday: UsageBreakdownGroups;
   budget: UsageBudgetStatus;
   subscription: UsageSubscriptionStatus;
+  subscriptionSources: UsageQuotaSource[];
   connectors: UsageConnectorStatus;
 }
 
@@ -590,6 +626,11 @@ export function computeUsageCostSnapshot(
     },
     budget,
     subscription,
+    subscriptionSources: buildSubscriptionSources({
+      subscriptionUsage,
+      period30,
+      budget,
+    }),
     connectors: connectorStatus,
   };
 }
@@ -1943,6 +1984,16 @@ async function loadSubscriptionUsage(options: { includeCodexTelemetry?: boolean 
     };
   }
   return defaultSubscriptionUsage(missingPaths);
+}
+
+function buildSubscriptionSources(input: {
+  subscriptionUsage?: UsageSubscriptionStatus;
+  period30?: UsagePeriodSummary;
+  budget?: UsageBudgetStatus;
+}): UsageQuotaSource[] {
+  // Minimal implementation: return empty array for now
+  // Will be enhanced in Task 2 to build actual quota sources
+  return [];
 }
 
 function finalizeSubscriptionUsage(
