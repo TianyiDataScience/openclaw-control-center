@@ -1,6 +1,10 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
 import type { AgentRunState, ReadModelSnapshot } from "../types";
 
 const RUNTIME_DIR = join(process.cwd(), "runtime");
@@ -17,6 +21,11 @@ const CODEX_RATE_LIMIT_CONNECTOR_PATH = join(CODEX_SESSIONS_DIR, "**", "*.jsonl"
 const CODEX_RATE_LIMIT_SESSION_SCAN_LIMIT = 48;
 const CODEX_WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_WHAM_USAGE_TIMEOUT_MS = 3_000;
+const MINIMAX_COOKIE_CONNECTOR_ENABLED = process.env.OPENCLAW_MINIMAX_COOKIE_CONNECTOR?.trim() === "1";
+const MINIMAX_USAGE_URL = "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains";
+const MINIMAX_USAGE_TIMEOUT_MS = 5_000;
+const MINIMAX_CHROME_COOKIE_DB_PATH_MACOS = join(homedir(), "Library", "Application Support", "Google", "Chrome", "Default", "Cookies");
+const MINIMAX_CHROME_PROFILE = "Default";
 const SUBSCRIPTION_SNAPSHOT_PATHS = [
   process.env.OPENCLAW_SUBSCRIPTION_SNAPSHOT_PATH?.trim(),
   DEFAULT_SUBSCRIPTION_SNAPSHOT_PATH,
@@ -1961,6 +1970,10 @@ async function loadSubscriptionUsage(options: { includeCodexTelemetry?: boolean 
     }
   }
 
+  // Try local MiniMax browser session (env-gated)
+  const minimaxUsage = await loadMiniMaxUsage(connectHint);
+  if (minimaxUsage?.status === "connected") return minimaxUsage;
+
   const codexWhamUsage = includeCodexTelemetry ? await loadCodexWhamUsage(connectHint) : undefined;
   if (codexWhamUsage?.status === "connected") return codexWhamUsage;
 
@@ -1996,6 +2009,11 @@ function buildSubscriptionSources(input: {
 
   // Add connected provider source when subscriptionUsage is connected
   if (subscriptionUsage && subscriptionUsage.status === "connected") {
+    const providerFromPlan = subscriptionUsage.planLabel.toLowerCase().includes("minimax")
+      ? "MiniMax"
+      : subscriptionUsage.planLabel.toLowerCase().includes("codex")
+        ? "OpenAI"
+        : "OpenAI";
     rows.push({
       key: "provider",
       scope: "provider",
@@ -2004,7 +2022,7 @@ function buildSubscriptionSources(input: {
       unit: subscriptionUsage.unit,
       detail: subscriptionUsage.detail,
       connectHint: subscriptionUsage.connectHint,
-      provider: "OpenAI", // Default provider for now
+      provider: providerFromPlan,
       consumed: subscriptionUsage.consumed,
       remaining: subscriptionUsage.remaining,
       limit: subscriptionUsage.limit,
@@ -2266,6 +2284,198 @@ async function loadCodexRateLimitUsage(connectHint: string): Promise<UsageSubscr
     secondaryRemainingPercent:
       latest.secondaryUsedPercent !== undefined ? Math.max(0, 100 - latest.secondaryUsedPercent) : undefined,
     secondaryResetAt: toIsoFromEpoch(latest.secondaryResetAtMs),
+    connectHint,
+    reasonCode: "provider_connected",
+  };
+}
+
+async function getMiniMaxChromeCookieMacOS(): Promise<string | undefined> {
+  if (!MINIMAX_COOKIE_CONNECTOR_ENABLED) return undefined;
+  if (process.platform !== "darwin") return undefined;
+
+  const cookieDbPath = MINIMAX_CHROME_COOKIE_DB_PATH_MACOS;
+  let dbExists: boolean;
+  try {
+    await stat(cookieDbPath);
+    dbExists = true;
+  } catch {
+    return undefined;
+  }
+  if (!dbExists) return undefined;
+
+  // Use Python to read and decrypt Chrome cookies (macOS uses keychain for encryption key)
+  const pythonScript = `
+import sqlite3
+import os
+import sys
+import subprocess
+import json
+
+def get_cookie():
+    db_path = os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/Cookies")
+    if not os.path.exists(db_path):
+        return None
+
+    # Use system keychain to get Chrome's cookie encryption key
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-wa", "Chrome"],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            return None
+        key = result.stdout.strip()
+        if not key:
+            return None
+    except Exception:
+        return None
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT name, value, encrypted_value FROM cookies WHERE host_key LIKE '%minimaxi%' AND name = 'session_id'"
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return None
+
+        name, plain_value, encrypted_value = row
+
+        # If value is not encrypted (plain text)
+        if plain_value:
+            return plain_value
+
+        # Decrypt encrypted value (v10+ uses AES-GCM)
+        try:
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+            from cryptography.hazmat.backends import default_backend
+            import binascii
+
+            # Skip 'v10=' prefix if present
+            data = encrypted_value
+            if isinstance(data, str):
+                if data.startswith('v10='):
+                    data = data[4:]
+                data = binascii.a2b_base64(data)
+
+            # First 12 bytes = nonce, last 16 bytes = tag
+            nonce = data[:12]
+            ciphertext = data[12:-16]
+            tag = data[-16:]
+
+            cipher = Cipher(algorithms.AES(key.encode()), mode=GCM(nonce), backend=default_backend())
+            decryptor = cipher.decryptor()
+            decrypted = decryptor.update(ciphertext + tag) + decryptor.finalize()
+            return decrypted.decode('utf-8')
+        except Exception:
+            # Try older v10 format or fallback
+            return None
+    except Exception:
+        return None
+
+result = get_cookie()
+print(json.dumps({"cookie": result}))
+`;
+
+  try {
+    const { stdout } = await execAsync(`python3 -c ${JSON.stringify(pythonScript)}`, { timeout: 10000 });
+    const parsed = JSON.parse(stdout.trim());
+    return parsed.cookie || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface MiniMaxUsageSnapshot {
+  sourcePath: string;
+  planType: string;
+  totalQuota: number;
+  usedQuota: number;
+  remainingQuota: number;
+  usedPercent: number;
+}
+
+async function loadMiniMaxUsage(connectHint: string): Promise<UsageSubscriptionStatus | undefined> {
+  if (!MINIMAX_COOKIE_CONNECTOR_ENABLED) return undefined;
+
+  const sessionCookie = await getMiniMaxChromeCookieMacOS();
+  if (!sessionCookie) return undefined;
+
+  let response: Response;
+  try {
+    response = await fetch(MINIMAX_USAGE_URL, {
+      headers: {
+        Cookie: `session_id=${sessionCookie}`,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(MINIMAX_USAGE_TIMEOUT_MS),
+    });
+  } catch {
+    return undefined;
+  }
+  if (!response.ok) return undefined;
+
+  let raw: unknown;
+  try {
+    raw = await response.json();
+  } catch {
+    return undefined;
+  }
+
+  const snapshot = parseMiniMaxUsageResponse(raw);
+  if (!snapshot) return undefined;
+  return usageSubscriptionFromMiniMaxSnapshot(snapshot, connectHint);
+}
+
+function parseMiniMaxUsageResponse(input: unknown): MiniMaxUsageSnapshot | undefined {
+  const root = asObject(input);
+  if (!root) return undefined;
+
+  // MiniMax API response structure (based on typical API patterns)
+  const data = asObject(root.data);
+  if (!data) return undefined;
+
+  const totalQuota = asFiniteNumber(data.total_quota) ?? asFiniteNumber(data.total);
+  const usedQuota = asFiniteNumber(data.used_quota) ?? asFiniteNumber(data.used);
+  if (totalQuota === undefined || usedQuota === undefined) return undefined;
+
+  const remainingQuota = Math.max(0, totalQuota - usedQuota);
+  const usedPercent = totalQuota > 0 ? (usedQuota / totalQuota) * 100 : 0;
+
+  return {
+    sourcePath: MINIMAX_USAGE_URL,
+    planType: asString(data.plan_type) ?? asString(data.plan) ?? "unknown",
+    totalQuota,
+    usedQuota,
+    remainingQuota,
+    usedPercent,
+  };
+}
+
+function usageSubscriptionFromMiniMaxSnapshot(snapshot: MiniMaxUsageSnapshot, connectHint: string): UsageSubscriptionStatus {
+  const consumed = clampPercent(snapshot.usedPercent);
+  const remaining = Math.max(0, 100 - consumed);
+  const cycleEnd = new Date(Date.now() + 30 * DAY_MS).toISOString().slice(0, 10);
+
+  return {
+    status: "connected",
+    planLabel: `MiniMax (${snapshot.planType})`,
+    consumed: snapshot.usedQuota,
+    remaining: snapshot.remainingQuota,
+    limit: snapshot.totalQuota,
+    usagePercent: snapshot.usedPercent,
+    unit: "credits",
+    cycleStart: new Date(Date.now() - 15 * DAY_MS).toISOString().slice(0, 10),
+    cycleEnd,
+    detail: `来自 MiniMax 浏览器登录会话（plan=${snapshot.planType}）。` +
+      ` 已用 ${consumed.toFixed(1)}%，剩余 ${remaining.toFixed(1)}%。`,
+    primaryWindowLabel: "Month",
+    primaryUsedPercent: consumed,
+    primaryRemainingPercent: remaining,
+    primaryResetAt: cycleEnd,
     connectHint,
     reasonCode: "provider_connected",
   };
@@ -2534,7 +2744,10 @@ async function collectRecentJsonlFiles(
 }
 
 function subscriptionConnectHint(): string {
-  return `Provide one of: ${SUBSCRIPTION_SNAPSHOT_PATHS.join(", ")}. Or connect Codex session telemetry at ${CODEX_RATE_LIMIT_CONNECTOR_PATH}.`;
+  const minimaxHint = MINIMAX_COOKIE_CONNECTOR_ENABLED
+    ? " Or use local browser session for MiniMax (set OPENCLAW_MINIMAX_COOKIE_CONNECTOR=1)."
+    : "";
+  return `Provide one of: ${SUBSCRIPTION_SNAPSHOT_PATHS.join(", ")}. Or connect Codex session telemetry at ${CODEX_RATE_LIMIT_CONNECTOR_PATH}.${minimaxHint}`;
 }
 
 function snapCommonWindowMinutes(value: number): number | undefined {
@@ -2808,6 +3021,7 @@ function inferProvider(model: string | undefined): string {
   if (normalized.includes("gpt") || normalized.includes("o1") || normalized.includes("o3")) return "OpenAI";
   if (normalized.includes("claude")) return "Anthropic";
   if (normalized.includes("gemini")) return "Google";
+  if (normalized.includes("minimax") || normalized.includes("abab")) return "MiniMax";
   if (normalized.includes("llama") || normalized.includes("mistral") || normalized.includes("qwen"))
     return "OSS/Other";
   return "Unknown provider";
