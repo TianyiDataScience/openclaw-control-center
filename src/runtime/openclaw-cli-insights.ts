@@ -438,6 +438,7 @@ async function runOpenClawJson(
     const { stdout } = await execFileAsync("openclaw", args, {
       timeout: options?.timeoutMs ?? INSIGHT_COMMAND_TIMEOUT_MS,
       maxBuffer: INSIGHT_COMMAND_MAX_BUFFER,
+      shell: process.platform === "win32",
     });
     return parseEmbeddedJson(stdout) ?? fallback;
   } catch (error) {

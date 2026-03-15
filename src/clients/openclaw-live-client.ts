@@ -371,6 +371,7 @@ async function runText(
   const { stdout } = await execFileAsync("openclaw", args, {
     timeout: options?.timeoutMs ?? 20_000,
     maxBuffer: options?.maxBuffer ?? 2 * 1024 * 1024,
+    shell: process.platform === "win32",
   });
   return stdout;
 }
