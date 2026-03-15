@@ -848,3 +848,106 @@ test("subscription card normalizes near-week minute labels before rendering", as
   assert(!html.includes(">300m<"));
   assert(!html.includes(">10081m<"));
 });
+
+// Task 4: Test that quota sources panel renders in usage dashboard
+test("usage dashboard renders multi-source quota panel with provider/model/window scopes", async () => {
+  const { renderQuotaSourcesCardForSmoke } = await import("../src/ui/server");
+
+  const sources: Array<{
+    key: string;
+    scope: "provider" | "model" | "window";
+    planLabel: string;
+    status: "connected" | "partial" | "not_connected";
+    unit: string;
+    detail: string;
+    connectHint: string;
+    provider?: string;
+    model?: string;
+    consumed?: number;
+    remaining?: number;
+    limit?: number;
+    usagePercent?: number;
+    attribution: "provider_snapshot" | "live_rate_limit" | "runtime_backfill" | "budget_fallback";
+  }> = [
+    {
+      key: "openai-provider",
+      scope: "provider",
+      planLabel: "OpenAI Pro",
+      status: "connected",
+      unit: "USD",
+      detail: "OpenAI subscription",
+      connectHint: "Connected",
+      provider: "OpenAI",
+      consumed: 120,
+      remaining: 80,
+      limit: 200,
+      usagePercent: 60,
+      attribution: "provider_snapshot",
+    },
+    {
+      key: "codex-window",
+      scope: "window",
+      planLabel: "Codex Live",
+      status: "connected",
+      unit: "%",
+      detail: "Codex rate limits",
+      connectHint: "Connected",
+      provider: "OpenAI",
+      model: "claude-sonnet-4-20250514",
+      consumed: 2,
+      remaining: 98,
+      limit: 100,
+      usagePercent: 2,
+      attribution: "live_rate_limit",
+    },
+    {
+      key: "runtime-fallback",
+      scope: "model",
+      planLabel: "Runtime-only",
+      status: "not_connected",
+      unit: "USD",
+      detail: "Runtime usage only",
+      connectHint: "No provider limit",
+      provider: "Anthropic",
+      model: "claude-opus-4-6",
+      consumed: 50,
+      attribution: "runtime_backfill",
+    },
+  ];
+
+  // Test English
+  const enHtml = renderQuotaSourcesCardForSmoke({ subscriptionSources: sources });
+  assert(enHtml.includes("Quota sources"), "Should include 'Quota sources' heading in English");
+  assert(enHtml.includes("Provider"), "Should include Provider scope in English");
+  assert(enHtml.includes("OpenAI"), "Should include provider name");
+  assert(enHtml.includes("Window"), "Should include Window scope in English");
+  assert(enHtml.includes("Runtime-only"), "Should show runtime-only label");
+  assert(enHtml.includes("Provider snapshot"), "Should show provider snapshot source");
+  assert(enHtml.includes("Live rate limit"), "Should show live rate limit source");
+
+  // Test Chinese - need to check source contains Chinese strings
+  const source = await readFile("src/ui/server.ts", "utf8");
+  assert(source.includes('pickUiText(language, "Quota sources", "额度来源")'), "Should have Chinese translation for quota sources");
+  assert(source.includes('pickUiText(language, "Provider", "供应商")'), "Should have Chinese translation for Provider");
+  assert(source.includes('pickUiText(language, "Model", "模型")'), "Should have Chinese translation for Model");
+  // The Window scope is translated in the scopeLabel
+  assert(source.includes('row.scope === "model" ? "模型" : "窗口"'), "Should have Chinese translation for Window scope");
+});
+
+test("quota sources panel shows empty state when no sources available", async () => {
+  const { renderQuotaSourcesCardForSmoke } = await import("../src/ui/server");
+
+  const html = renderQuotaSourcesCardForSmoke({ subscriptionSources: [] });
+
+  // Empty state should still have heading in English
+  assert(html.includes("Quota sources"), "Should include 'Quota sources' heading even when empty");
+});
+
+test("usage section still renders subscription summary card alongside quota sources", async () => {
+  const source = await readFile("src/ui/server.ts", "utf8");
+
+  // The existing subscription card should still be rendered
+  assert(source.includes("renderSubscriptionStatusCard(usageCost.subscription"));
+  // And the new quota sources card should also be added
+  assert(source.includes("renderQuotaSourcesCard"));
+});

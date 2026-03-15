@@ -5491,6 +5491,7 @@ async function renderHtml(
     : [];
   const staffOverviewCardsHtml = renderStaffOverviewCards(staffOverviewCards, avatarPreferences.preferences, options.language);
   const subscriptionStatusHtml = renderSubscriptionStatusCard(usageCost.subscription, options.language);
+  const quotaSourcesHtml = renderQuotaSourcesCard(usageCost.subscriptionSources, options.language);
   const sectionNav = sectionLinks.map((item) => {
     const href = buildHomeHref(filters, options.compactStatusStrip, item.key, options.language, options.usageView);
     const activeClass = item.key === activeSection ? " active" : "";
@@ -6352,6 +6353,10 @@ async function renderHtml(
     <section class="card">
       <h2>${escapeHtml(t("Subscription windows", "订阅窗口"))}</h2>
       ${subscriptionStatusHtml}
+    </section>
+    <section class="card">
+      <h2>${escapeHtml(t("Quota sources", "额度来源"))}</h2>
+      ${quotaSourcesHtml}
     </section>
     <section class="card">
       <h2>${escapeHtml(t("AI usage mix (all sessions)", "AI 用量构成（全部会话）"))}</h2>
@@ -16470,6 +16475,92 @@ function renderSubscriptionStatusCard(
 
 export function renderSubscriptionStatusCardForSmoke(subscription: UsageCostSnapshot["subscription"]): string {
   return renderSubscriptionStatusCard(subscription, "en");
+}
+
+function renderQuotaSourcesCard(
+  rows: UsageCostSnapshot["subscriptionSources"],
+  language: UiLanguage = "zh",
+): string {
+  const headingLabel = pickUiText(language, "Quota sources", "额度来源");
+  if (rows.length === 0) {
+    return `<div class="quota-sources-empty">
+      <div><strong>${escapeHtml(headingLabel)}</strong></div>
+      <div class="meta">${escapeHtml(pickUiText(language, "No quota sources configured.", "暂无可用额度来源。"))}</div>
+    </div>`;
+  }
+
+  const header = `<thead><tr>
+    <th>${escapeHtml(pickUiText(language, "Scope", "范围"))}</th>
+    <th>${escapeHtml(pickUiText(language, "Provider", "供应商"))}</th>
+    <th>${escapeHtml(pickUiText(language, "Model", "模型"))}</th>
+    <th>${escapeHtml(pickUiText(language, "Plan/Window", "计划/窗口"))}</th>
+    <th>${escapeHtml(pickUiText(language, "Used", "已用"))}</th>
+    <th>${escapeHtml(pickUiText(language, "Remaining", "剩余"))}</th>
+    <th>${escapeHtml(pickUiText(language, "Limit", "总额"))}</th>
+    <th>${escapeHtml(pickUiText(language, "Usage", "使用率"))}</th>
+    <th>${escapeHtml(pickUiText(language, "Status", "状态"))}</th>
+    <th>${escapeHtml(pickUiText(language, "Source", "数据源"))}</th>
+  </tr></thead>`;
+
+  const bodyRows = rows.map((row) => {
+    const scopeLabel = pickUiText(
+      language,
+      row.scope === "provider" ? "Provider" : row.scope === "model" ? "Model" : "Window",
+      row.scope === "provider" ? "供应商" : row.scope === "model" ? "模型" : "窗口",
+    );
+    const statusLabel =
+      row.status === "connected"
+        ? pickUiText(language, "Connected", "已连接")
+        : row.status === "partial"
+          ? pickUiText(language, "Partial", "部分")
+          : pickUiText(language, "Not connected", "未连接");
+    const statusClass = row.status === "connected" ? "status-ok" : row.status === "partial" ? "status-warn" : "status-muted";
+
+    const sourceLabel = pickUiText(
+      language,
+      row.attribution === "provider_snapshot"
+        ? "Provider snapshot"
+        : row.attribution === "live_rate_limit"
+          ? "Live rate limit"
+          : row.attribution === "runtime_backfill"
+            ? "Runtime-only"
+            : "Budget fallback",
+      row.attribution === "provider_snapshot"
+        ? "供应商快照"
+        : row.attribution === "live_rate_limit"
+          ? "实时限额"
+          : row.attribution === "runtime_backfill"
+            ? "仅运行时"
+            : "预算兜底",
+    );
+
+    const used = typeof row.consumed === "number" ? row.consumed.toFixed(1) : "—";
+    const remaining = typeof row.remaining === "number" ? row.remaining.toFixed(1) : "—";
+    const limit = typeof row.limit === "number" ? row.limit.toFixed(1) : "—";
+    const usagePercent = typeof row.usagePercent === "number" ? `${row.usagePercent.toFixed(1)}%` : "—";
+
+    return `<tr>
+      <td>${escapeHtml(scopeLabel)}</td>
+      <td>${escapeHtml(row.provider ?? "—")}</td>
+      <td>${escapeHtml(row.model ?? "—")}</td>
+      <td>${escapeHtml(row.planLabel)}</td>
+      <td>${escapeHtml(used)}</td>
+      <td>${escapeHtml(remaining)}</td>
+      <td>${escapeHtml(limit)}</td>
+      <td>${escapeHtml(usagePercent)}</td>
+      <td><span class="badge ${escapeHtml(statusClass)}">${escapeHtml(statusLabel)}</span></td>
+      <td>${escapeHtml(sourceLabel)}</td>
+    </tr>`;
+  }).join("");
+
+  return `<div class="quota-sources-table">
+    <div><strong>${escapeHtml(headingLabel)}</strong></div>
+    <table>${header}<tbody>${bodyRows}</tbody></table>
+  </div>`;
+}
+
+export function renderQuotaSourcesCardForSmoke(snapshot: Pick<UsageCostSnapshot, "subscriptionSources">): string {
+  return renderQuotaSourcesCard(snapshot.subscriptionSources, "en");
 }
 
 export function pickLatestSessionActivityTimestampForSmoke(...values: Array<string | undefined>): string | undefined {
