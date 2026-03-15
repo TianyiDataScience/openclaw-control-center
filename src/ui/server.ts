@@ -9556,7 +9556,7 @@ async function listEditableMemoryFiles(): Promise<EditableFileEntry[]> {
 
   const append = async (entry: EditableFileEntry | undefined): Promise<void> => {
     if (!entry) return;
-    const key = resolve(entry.sourcePath);
+    const key = `${entry.facetKey ?? ""}::${resolve(entry.sourcePath)}`;
     if (seen.has(key)) return;
     seen.add(key);
     output.push(entry);
@@ -9653,7 +9653,7 @@ async function listEditableWorkspaceFiles(): Promise<EditableFileEntry[]> {
 
   const append = async (entry: EditableFileEntry | undefined): Promise<void> => {
     if (!entry) return;
-    const key = resolve(entry.sourcePath);
+    const key = `${entry.facetKey ?? ""}::${resolve(entry.sourcePath)}`;
     if (seen.has(key)) return;
     seen.add(key);
     output.push(entry);
