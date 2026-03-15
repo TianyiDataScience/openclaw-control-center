@@ -951,3 +951,18 @@ test("usage section still renders subscription summary card alongside quota sour
   // And the new quota sources card should also be added
   assert(source.includes("renderQuotaSourcesCard"));
 });
+
+// Task 5: Test that model usage rows show quota-state badges
+test("model usage rows display quota-state badges based on subscription sources", async () => {
+  const source = await readFile("src/ui/server.ts", "utf8");
+
+  // Should have function to derive quota state from subscription sources
+  assert(source.includes("function deriveQuotaStateForModel"), "Should have deriveQuotaStateForModel function");
+  // Should use subscriptionSources for quota state
+  assert(source.includes("subscriptionSources"), "Should use subscriptionSources for quota state");
+
+  // Check for quota state labels in the code
+  assert(source.includes("Quota connected") || source.includes("Quota connected"), "Should show 'Quota connected' label");
+  assert(source.includes("Runtime-only") || source.includes("仅运行时"), "Should show 'Runtime-only' label");
+  assert(source.includes("No provider limit") || source.includes("无供应商限额"), "Should show 'No provider limit' label");
+});

@@ -5525,7 +5525,7 @@ async function renderHtml(
     (item) => !isControlCenterMappingUsageTaskLabel(item.label) && !isControlCenterMappingUsageTaskLabel(item.key),
   );
   const usageTaskRows = renderUsageBreakdownRows(usageTaskBreakdownRows, "task", options.language);
-  const usageModelRows = renderUsageBreakdownRows(selectedUsageBreakdown.byModel, "model", options.language);
+  const usageModelRows = renderUsageBreakdownRows(selectedUsageBreakdown.byModel, "model", options.language, usageCost.subscriptionSources);
   const usageProviderRows = renderUsageBreakdownRows(selectedUsageBreakdown.byProvider, "provider", options.language);
   const usageSessionTypeRows = selectedUsageBreakdown.bySessionType;
   const usageCronJobRows = selectedUsageBreakdown.byCronJob;
@@ -16872,13 +16872,29 @@ function renderUsageBreakdownRows(
   rows: UsageCostSnapshot["breakdown"]["byAgent"],
   label: string,
   language: UiLanguage = "zh",
+  subscriptionSources?: UsageCostSnapshot["subscriptionSources"],
 ): string {
   if (rows.length === 0) return "";
 
   return rows
     .map(
-      (item) =>
-        `<tr><td>${escapeHtml(simplifyUsageLabel(item.label))}</td><td>${formatInt(item.tokens)}</td><td>${formatCurrency(item.estimatedCost)}</td><td>${item.requests}</td><td>${item.sessions}</td><td>${badge(item.sourceStatus, dataConnectionLabel(item.sourceStatus, language))}</td></tr>`,
+      (item) => {
+        const sourceStatusBadge = badge(item.sourceStatus, dataConnectionLabel(item.sourceStatus, language));
+
+        // For model breakdown, also show quota state if subscriptionSources is available
+        let quotaStateBadge = "";
+        if (label === "model" && subscriptionSources && subscriptionSources.length > 0) {
+          const quotaState = deriveQuotaStateForModel(item.label, undefined, subscriptionSources, language);
+          if (quotaState) {
+            const isConnected = quotaState.includes("已连接") || quotaState.includes("Quota connected");
+            const isNoLimit = quotaState.includes("无供应商限额") || quotaState.includes("No provider limit");
+            const badgeClass = isConnected ? "status-ok" : isNoLimit ? "status-warn" : "status-muted";
+            quotaStateBadge = `<span class="badge ${badgeClass}" style="margin-left:4px">${escapeHtml(quotaState)}</span>`;
+          }
+        }
+
+        return `<tr><td>${escapeHtml(simplifyUsageLabel(item.label))}</td><td>${formatInt(item.tokens)}</td><td>${formatCurrency(item.estimatedCost)}</td><td>${item.requests}</td><td>${item.sessions}</td><td>${sourceStatusBadge}${quotaStateBadge}</td></tr>`;
+      },
     )
     .join("");
 }
@@ -16998,6 +17014,45 @@ function dataConnectionLabel(status: string, language: UiLanguage = "zh"): strin
   if (normalized === "partial") return pickUiText(language, "Partially connected", "部分连接");
   if (normalized === "not_connected") return pickUiText(language, "Not connected", "未连接");
   return status;
+}
+
+/**
+ * Derives quota state for a model based on subscription sources.
+ * - If a matching connected quota row exists → "Quota connected"
+ * - If only runtime usage exists (no quota data) → "Runtime-only"
+ * - If provider is known but no limit data is present → "No provider limit"
+ */
+function deriveQuotaStateForModel(
+  model: string | undefined,
+  provider: string | undefined,
+  subscriptionSources: UsageCostSnapshot["subscriptionSources"],
+  language: UiLanguage = "zh",
+): string | undefined {
+  if (!model && !provider) return undefined;
+
+  // First, try exact model match
+  const modelMatch = subscriptionSources.find((source) => source.model === model && source.status === "connected");
+  if (modelMatch) {
+    return pickUiText(language, "Quota connected", "额度已连接");
+  }
+
+  // Second, try provider match
+  const providerMatch = subscriptionSources.find((source) => source.provider === provider && source.status === "connected");
+  if (providerMatch && !modelMatch) {
+    // Provider is connected but no model-specific quota
+    return pickUiText(language, "No provider limit", "无供应商限额");
+  }
+
+  // If we have runtime usage (model or provider is known) but no quota source
+  if ((model || provider) && subscriptionSources.length > 0) {
+    // Check if there's any source that's not connected
+    const hasUnconnectedSource = subscriptionSources.some((source) => source.status !== "connected");
+    if (hasUnconnectedSource) {
+      return pickUiText(language, "Runtime-only", "仅运行时");
+    }
+  }
+
+  return undefined;
 }
 
 function simplifyUsageLabel(label: string): string {
