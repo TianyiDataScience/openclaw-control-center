@@ -111,6 +111,7 @@ let subscriptionUsageWithCodexCache: TimedSourceCache<UsageSubscriptionStatus> |
 let subscriptionUsageWithCodexInFlight: Promise<UsageSubscriptionStatus> | undefined;
 let subscriptionUsageWithoutCodexCache: TimedSourceCache<UsageSubscriptionStatus> | undefined;
 let subscriptionUsageWithoutCodexInFlight: Promise<UsageSubscriptionStatus> | undefined;
+let latestMiniMaxQuotaSources: UsageQuotaSource[] = [];
 
 export interface UsagePeriodSummary {
   key: "today" | "7d" | "30d";
@@ -2007,13 +2008,13 @@ function buildSubscriptionSources(input: {
   const rows: UsageQuotaSource[] = [];
   const { subscriptionUsage, period30, budget } = input;
 
-  // Add connected provider source when subscriptionUsage is connected
   if (subscriptionUsage && subscriptionUsage.status === "connected") {
-    const providerFromPlan = subscriptionUsage.planLabel.toLowerCase().includes("minimax")
+    const normalizedPlan = subscriptionUsage.planLabel.toLowerCase();
+    const providerFromPlan = normalizedPlan.includes("minimax")
       ? "MiniMax"
-      : subscriptionUsage.planLabel.toLowerCase().includes("codex")
+      : normalizedPlan.includes("codex") || normalizedPlan.includes("openai")
         ? "OpenAI"
-        : "OpenAI";
+        : "Unknown provider";
     rows.push({
       key: "provider",
       scope: "provider",
@@ -2043,7 +2044,10 @@ function buildSubscriptionSources(input: {
     });
   }
 
-  // Add runtime backfill source when no provider snapshot but runtime usage exists
+  for (const row of latestMiniMaxQuotaSources) {
+    rows.push(row);
+  }
+
   const hasRuntimeUsage =
     period30 !== undefined &&
     period30.sourceStatus !== "not_connected" &&
@@ -2066,9 +2070,10 @@ function buildSubscriptionSources(input: {
       consumed: period30.estimatedCost,
       remaining: budgetLimit !== undefined ? Math.max(0, budgetLimit - (period30.estimatedCost ?? 0)) : undefined,
       limit: budgetLimit,
-      usagePercent: budgetLimit !== undefined && period30.estimatedCost !== undefined
-        ? (period30.estimatedCost / budgetLimit) * 100
-        : undefined,
+      usagePercent:
+        budgetLimit !== undefined && period30.estimatedCost !== undefined
+          ? (period30.estimatedCost / budgetLimit) * 100
+          : undefined,
       reasonCode,
       attribution: "runtime_backfill",
     });
@@ -2303,87 +2308,58 @@ async function getMiniMaxChromeCookieMacOS(): Promise<string | undefined> {
   }
   if (!dbExists) return undefined;
 
-  // Use Python to read and decrypt Chrome cookies (macOS uses keychain for encryption key)
+  // Use Python to read and decrypt Chrome cookies using working approach
   const pythonScript = `
-import sqlite3
-import os
-import sys
-import subprocess
-import json
+import sqlite3, os, subprocess, json, hashlib, tempfile
 
-def get_cookie():
+def decrypt_value(key, enc):
+    if len(enc) < 32:
+        return None
+    # Skip v10= prefix, decrypt with AES-128-CBC
+    enc = enc[3:]
+    fd, tmp = tempfile.mkstemp(); os.close(fd)
+    open(tmp, 'wb').write(enc)
+    res = subprocess.run(['openssl', 'enc', '-d', '-aes-128-cbc', '-K', key, '-iv', '20202020202020202020202020202020', '-in', tmp], capture_output=True)
+    os.remove(tmp)
+    if res.returncode != 0:
+        return None
+    pt = res.stdout
+    # Strip metadata (first 32 bytes of decrypted value contain host hash)
+    if len(pt) > 32:
+        return pt[32:].decode('utf-8', 'ignore')
+    return None
+
+try:
+    # Get Chrome key from keychain
+    pw = subprocess.run(['security', 'find-generic-password', '-wa', 'Chrome'], capture_output=True, text=True).stdout.strip()
+    if not pw:
+        print(json.dumps({"cookies": []})); exit(0)
+    key = hashlib.pbkdf2_hmac('sha1', pw.encode(), b'saltysalt', 1003, 16).hex()
+
     db_path = os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/Cookies")
-    if not os.path.exists(db_path):
-        return None
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT host_key, name, encrypted_value FROM cookies WHERE host_key LIKE '%minimaxi%' AND name IN ('HERTZ-SESSION', 'mintlify-auth-key', '_gc_usr_id_cs0_d0_sec0_part0', '_gc_s_cs0_d0_sec0_part0')")
+    rows = cur.fetchall()
+    conn.close()
 
-    # Use system keychain to get Chrome's cookie encryption key
-    try:
-        result = subprocess.run(
-            ["security", "find-generic-password", "-wa", "Chrome"],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            return None
-        key = result.stdout.strip()
-        if not key:
-            return None
-    except Exception:
-        return None
+    parts = []
+    for host, name, blob in rows:
+        if not blob or len(blob) < 3:
+            continue
+        val = decrypt_value(key, blob)
+        if val:
+            parts.append(name + '=' + val)
 
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT name, value, encrypted_value FROM cookies WHERE host_key LIKE '%minimaxi%' AND name = 'session_id'"
-        )
-        row = cursor.fetchone()
-        conn.close()
-
-        if not row:
-            return None
-
-        name, plain_value, encrypted_value = row
-
-        # If value is not encrypted (plain text)
-        if plain_value:
-            return plain_value
-
-        # Decrypt encrypted value (v10+ uses AES-GCM)
-        try:
-            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-            from cryptography.hazmat.backends import default_backend
-            import binascii
-
-            # Skip 'v10=' prefix if present
-            data = encrypted_value
-            if isinstance(data, str):
-                if data.startswith('v10='):
-                    data = data[4:]
-                data = binascii.a2b_base64(data)
-
-            # First 12 bytes = nonce, last 16 bytes = tag
-            nonce = data[:12]
-            ciphertext = data[12:-16]
-            tag = data[-16:]
-
-            cipher = Cipher(algorithms.AES(key.encode()), mode=GCM(nonce), backend=default_backend())
-            decryptor = cipher.decryptor()
-            decrypted = decryptor.update(ciphertext + tag) + decryptor.finalize()
-            return decrypted.decode('utf-8')
-        except Exception:
-            # Try older v10 format or fallback
-            return None
-    except Exception:
-        return None
-
-result = get_cookie()
-print(json.dumps({"cookie": result}))
+    print(json.dumps({"cookies": parts}))
+except Exception as e:
+    print(json.dumps({"cookies": [], "error": str(e)}))
 `;
 
   try {
     const { stdout } = await execAsync(`python3 -c ${JSON.stringify(pythonScript)}`, { timeout: 10000 });
     const parsed = JSON.parse(stdout.trim());
-    return parsed.cookie || undefined;
+    return parsed.cookies?.join('; ') || undefined;
   } catch {
     return undefined;
   }
@@ -2401,14 +2377,14 @@ interface MiniMaxUsageSnapshot {
 async function loadMiniMaxUsage(connectHint: string): Promise<UsageSubscriptionStatus | undefined> {
   if (!MINIMAX_COOKIE_CONNECTOR_ENABLED) return undefined;
 
-  const sessionCookie = await getMiniMaxChromeCookieMacOS();
-  if (!sessionCookie) return undefined;
+  const cookies = await getMiniMaxChromeCookieMacOS();
+  if (!cookies) return undefined;
 
   let response: Response;
   try {
     response = await fetch(MINIMAX_USAGE_URL, {
       headers: {
-        Cookie: `session_id=${sessionCookie}`,
+        Cookie: cookies,
         Accept: "application/json",
       },
       signal: AbortSignal.timeout(MINIMAX_USAGE_TIMEOUT_MS),
@@ -2427,7 +2403,44 @@ async function loadMiniMaxUsage(connectHint: string): Promise<UsageSubscriptionS
 
   const snapshot = parseMiniMaxUsageResponse(raw);
   if (!snapshot) return undefined;
-  return usageSubscriptionFromMiniMaxSnapshot(snapshot, connectHint);
+  const usage = usageSubscriptionFromMiniMaxSnapshot(snapshot, connectHint);
+
+  // Populate latestMiniMaxQuotaSources for the UI
+  const models = (raw as Record<string, unknown>)?.model_remains as Array<Record<string, unknown>> | undefined;
+  if (models && Array.isArray(models)) {
+    latestMiniMaxQuotaSources = models
+      .filter((m) => {
+        const total = asFiniteNumber(m.current_interval_total_count);
+        const used = asFiniteNumber(m.current_interval_usage_count);
+        return total !== undefined && used !== undefined;
+      })
+      .map((m) => {
+        const total = asFiniteNumber(m.current_interval_total_count) ?? 0;
+        const used = asFiniteNumber(m.current_interval_usage_count) ?? 0;
+        const remaining = Math.max(0, total - used);
+        const usedPercent = total > 0 ? (used / total) * 100 : 0;
+        return {
+          key: `minimax-${String(m.model_name)}`,
+          scope: "model" as const,
+          planLabel: `MiniMax ${String(m.model_name)}`,
+          status: "connected" as const,
+          unit: "requests",
+          detail: `已用 ${usedPercent.toFixed(1)}%（${used}/${total} 次），剩余 ${remaining} 次`,
+          connectHint: "",
+          model: String(m.model_name),
+          provider: "MiniMax",
+          consumed: used,
+          remaining: remaining,
+          limit: total,
+          usagePercent: usedPercent,
+          sourcePath: MINIMAX_USAGE_URL,
+          reasonCode: "provider_connected" as const,
+          attribution: "provider_snapshot" as const,
+        };
+      });
+  }
+
+  return usage;
 }
 
 function parseMiniMaxUsageResponse(input: unknown): MiniMaxUsageSnapshot | undefined {
