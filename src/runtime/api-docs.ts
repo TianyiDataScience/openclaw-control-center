@@ -203,7 +203,7 @@ export function buildApiDocs(): ApiDocsPayload {
         response: {
           ok: "boolean",
           usage:
-            "{ periods(today/7d/30d), contextWindows[], breakdown(byAgent/byProject/byModel/byProvider), budget, connectors }",
+            "{ periods(today/7d/30d), contextWindows[], breakdown(byAgent/byProject/byModel/byProvider), subscription, subscriptionSources[], budget, connectors }",
         },
       },
       {

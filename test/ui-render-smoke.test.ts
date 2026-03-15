@@ -737,6 +737,13 @@ test("search APIs advertise total match counts and bounded returned rows", async
   assert(apiDocsSource.includes('count: "number (total matches before limit, including live-merged sessions)"'));
 });
 
+// Task 3: Test that API docs mention subscriptionSources
+test("usage-cost API docs advertise subscriptionSources field", async () => {
+  const apiDocsSource = await readFile("src/runtime/api-docs.ts", "utf8");
+
+  assert(apiDocsSource.includes("subscriptionSources"), "API docs should mention subscriptionSources");
+});
+
 test("import live input turns invalid file paths into validation errors", async () => {
   const { resolveImportInputForSmoke } = await import("../src/runtime/import-live");
 
