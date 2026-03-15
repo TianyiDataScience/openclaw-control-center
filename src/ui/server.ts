@@ -31,6 +31,7 @@ import {
 import { loadLatestDigest, renderLatestDigestPage } from "../runtime/digest-renderer";
 import { buildExportBundle, writeExportBundle } from "../runtime/export-bundle";
 import { buildHealthzPayload } from "../runtime/healthz";
+import { runConnectionDiagnostics, type ConnectionDiagnosticsReport } from "../runtime/connection-diagnostics";
 import { applyImportMutation, readImportMutationGuardState } from "../runtime/import-live";
 import { validateExportBundleDryRun, validateExportFileDryRun } from "../runtime/import-dry-run";
 import {
@@ -1550,6 +1551,15 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
         return writeJson(res, statusCode, {
           ok: health.status !== "stale",
           health,
+        });
+      }
+
+      if (method === "GET" && path === "/api/diagnostics") {
+        assertAllowedQueryParams(url.searchParams, [], true);
+        const diagnostics = await runConnectionDiagnostics();
+        return writeJson(res, 200, {
+          ok: true,
+          diagnostics,
         });
       }
 
@@ -3631,13 +3641,15 @@ async function renderHtml(
       };
   const sessionRows = renderSessionPreviewRows(sessionPreview.items, options.language);
   markRenderPhase("session-preview");
-  const [cronOverview, openclawCronJobs, replayPreview, usageCost, officeRoster, officePresence] = await Promise.all([
+  const needsDiagnostics = options.section === "settings";
+  const [cronOverview, openclawCronJobs, replayPreview, usageCost, officeRoster, officePresence, diagnostics] = await Promise.all([
     buildCronOverview(snapshot, POLLING_INTERVALS_MS.cron),
     loadOpenclawCronCatalog(options.language),
     loadCachedReplayPreview(),
     loadCachedUsageCost(snapshot, usageCostMode),
     loadBestEffortAgentRoster(),
     loadCachedOfficeSessionPresence(),
+    needsDiagnostics ? runConnectionDiagnostics() : Promise.resolve(null),
   ]);
   markRenderPhase("shared-data");
   const [teamSnapshot, memoryFiles, memoryFacetOptions, workspaceFiles, workspaceFacetOptions, taskEvidenceItems] = await Promise.all([
@@ -5264,6 +5276,41 @@ async function renderHtml(
     </details>
   `;
   const settingsSection = `
+    <section class="card">
+      <h2>${escapeHtml(t("Connection Diagnostics", "连接诊断"))}</h2>
+      ${diagnostics ? `
+        <div class="meta">
+          ${escapeHtml(t("Overall status", "整体状态"))}：${badge(diagnostics.overall === "healthy" ? "ok" : diagnostics.overall === "degraded" ? "warn" : "over", diagnostics.overall)}
+          · ${escapeHtml(t("Connected", "已连接"))} ${diagnostics.connectedCount}/${diagnostics.totalCount}
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>${escapeHtml(t("Component", "组件"))}</th>
+              <th>${escapeHtml(t("Status", "状态"))}</th>
+              <th>${escapeHtml(t("Message", "信息"))}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${diagnostics.checks.map(check => `
+              <tr>
+                <td>${escapeHtml(check.name)}</td>
+                <td>${badge(check.status)}</td>
+                <td>
+                  <div>${escapeHtml(check.message)}</div>
+                  ${check.suggestion ? `<div class="meta" style="color:var(--muted);margin-top:4px">${escapeHtml(check.suggestion)}</div>` : ""}
+                  ${check.path ? `<div class="meta" style="font-family:monospace;font-size:11px;margin-top:2px">${escapeHtml(check.path)}</div>` : ""}
+                </td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+        <div class="meta" style="margin-top:12px">
+          <a href="/api/diagnostics">${escapeHtml(t("View JSON", "查看 JSON"))}</a>
+          · ${escapeHtml(t("Generated at", "生成时间"))} ${escapeHtml(diagnostics.generatedAt)}
+        </div>
+      ` : `<div class="empty-state">${escapeHtml(t("Diagnostics not loaded", "诊断未加载"))}</div>`}
+    </section>
     <section class="card">
       <h2>安全开关</h2>
       <table>

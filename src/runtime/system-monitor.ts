@@ -180,14 +180,19 @@ async function getCpuInfo(): Promise<CpuInfo> {
       usage = parseFloat(stdout.trim()) || 0;
     } catch {
       try {
-        // macOS
-        const { stdout } = await execAsync("top -l 1 -n 0 | grep 'CPU usage' | awk '{print $3}' | tr -d '%'");
-        usage = parseFloat(stdout.trim()) || 0;
+        // macOS: parse "CPU usage: X% user, Y% sys, Z% idle"
+        const { stdout } = await execAsync("top -l 1 -n 0 | grep 'CPU usage'");
+        const match = stdout.match(/(\d+\.\d+)%\s+idle/);
+        if (match) {
+          const idle = parseFloat(match[1]);
+          usage = 100 - idle;
+        }
       } catch {
         // keep default
       }
     }
 
+    usage = Math.max(0, Math.min(100, usage));
     return { model, cores, usage };
   } catch {
     return { model: "Unknown", cores: 1, usage: 0 };

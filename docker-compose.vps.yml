@@ -1,0 +1,74 @@
+# VPS 部署专用配置
+# 使用方法: docker-compose -f docker-compose.yml -f docker-compose.vps.yml up -d
+
+version: '3.8'
+
+services:
+  control-center:
+    # 使用 host 网络模式，直接访问 VPS 上的 OpenClaw Gateway
+    network_mode: host
+    
+    # 环境变量 - 根据你的 VPS 实际情况修改
+    environment:
+      # Gateway 连接（必须修改为你的实际地址）
+      - GATEWAY_URL=ws://127.0.0.1:18789
+      
+      # OpenClaw 路径（如果不在默认位置则取消注释并修改）
+      # - OPENCLAW_HOME=/root/.openclaw
+      # - CODEX_HOME=/root/.codex
+      # - OPENCLAW_SUBSCRIPTION_SNAPSHOT_PATH=/root/.openclaw/subscription.json
+      
+      # 安全设置
+      - READONLY_MODE=true
+      - LOCAL_TOKEN_AUTH_REQUIRED=true
+      - LOCAL_API_TOKEN=${LOCAL_API_TOKEN}  # 在 .env 中设置
+      
+      # 监控设置 - 启用持续监控
+      - MONITOR_CONTINUOUS=true
+      - TASK_HEARTBEAT_ENABLED=true
+      - TASK_HEARTBEAT_DRY_RUN=true
+      
+      # 优化轮询间隔（VPS 资源有限时使用）
+      - POLLING_INTERVALS_MS=sessionsList=30000,sessionStatus=15000,cron=60000,approvals=15000,canvas=30000
+    
+    # 挂载 VPS 上的 OpenClaw 数据目录（只读）
+    volumes:
+      # Runtime 数据（读写）
+      - ./runtime:/app/runtime:rw
+      
+      # OpenClaw 配置和数据（只读）
+      - /root/.openclaw:/root/.openclaw:ro
+      
+      # Codex 数据（只读，如果存在）
+      # - /root/.codex:/root/.codex:ro
+      
+      # 如果订阅快照在其他位置，单独挂载
+      # - /path/to/subscription.json:/app/subscription.json:ro
+    
+    # 资源限制 - 根据 VPS 配置调整
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    # 重启策略
+    restart: unless-stopped
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4310/healthz"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
