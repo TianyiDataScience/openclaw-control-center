@@ -55,6 +55,69 @@ test("usage-cost snapshot keeps legacy subscription as roll-up summary", async (
   assert.equal(typeof usage.subscription.planLabel, "string", "subscription should have planLabel");
 });
 
+// Task 2: Test provider snapshot normalization
+test("usage-cost snapshot normalizes connected provider into a provider-scoped quota source", async () => {
+  const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
+
+  const usage = computeUsageCostSnapshot(
+    buildSnapshotFixture(),
+    [],
+    [],
+    undefined,
+    {
+      status: "connected",
+      planLabel: "OpenAI Pro",
+      unit: "USD",
+      detail: "OpenAI subscription",
+      connectHint: "Connected to OpenAI",
+      reasonCode: "provider_connected",
+      consumed: 120,
+      remaining: 380,
+      limit: 500,
+      usagePercent: 24,
+    },
+  );
+
+  const providerRow = usage.subscriptionSources.find((item) => item.scope === "provider");
+  assert(providerRow, "Expected a provider-scoped quota source");
+  assert.equal(providerRow?.planLabel, "OpenAI Pro");
+  assert.equal(providerRow?.attribution, "provider_snapshot");
+});
+
+// Task 2: Test runtime backfill becomes a runtime_backfill source
+test("usage-cost snapshot backfills runtime-only usage as runtime_backfill source", async () => {
+  const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
+  const snapshot = buildSnapshotFixture({
+    model: "gpt-4o",
+    tokensIn: 64000,
+    tokensOut: 6000,
+    cost: 30,
+    costLimit: 100,
+  });
+  const todayIso = new Date().toISOString().slice(0, 10);
+
+  const usage = computeUsageCostSnapshot(
+    snapshot,
+    [
+      {
+        date: todayIso,
+        usage: {
+          statuses: 1,
+          totalTokensIn: 64000,
+          totalTokensOut: 6000,
+          totalCost: 90,
+        },
+      },
+    ],
+    [{ match: "gpt-4o", contextWindowTokens: 128000, provider: "OpenAI" }],
+  );
+
+  // When there's no explicit subscription, runtime should backfill
+  const runtimeSource = usage.subscriptionSources.find((item) => item.attribution === "runtime_backfill");
+  assert(runtimeSource, "Expected a runtime_backfill source when no provider snapshot");
+  assert.equal(runtimeSource?.status, "not_connected", "Runtime backfill should have not_connected status");
+});
+
 test("usage-cost snapshot marks disconnected sources with explicit placeholders", async () => {
   const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
   const snapshot = buildSnapshotFixture();

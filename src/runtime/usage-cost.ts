@@ -1991,9 +1991,72 @@ function buildSubscriptionSources(input: {
   period30?: UsagePeriodSummary;
   budget?: UsageBudgetStatus;
 }): UsageQuotaSource[] {
-  // Minimal implementation: return empty array for now
-  // Will be enhanced in Task 2 to build actual quota sources
-  return [];
+  const rows: UsageQuotaSource[] = [];
+  const { subscriptionUsage, period30, budget } = input;
+
+  // Add connected provider source when subscriptionUsage is connected
+  if (subscriptionUsage && subscriptionUsage.status === "connected") {
+    rows.push({
+      key: "provider",
+      scope: "provider",
+      planLabel: subscriptionUsage.planLabel,
+      status: subscriptionUsage.status,
+      unit: subscriptionUsage.unit,
+      detail: subscriptionUsage.detail,
+      connectHint: subscriptionUsage.connectHint,
+      provider: "OpenAI", // Default provider for now
+      consumed: subscriptionUsage.consumed,
+      remaining: subscriptionUsage.remaining,
+      limit: subscriptionUsage.limit,
+      usagePercent: subscriptionUsage.usagePercent,
+      cycleStart: subscriptionUsage.cycleStart,
+      cycleEnd: subscriptionUsage.cycleEnd,
+      primaryWindowLabel: subscriptionUsage.primaryWindowLabel,
+      primaryUsedPercent: subscriptionUsage.primaryUsedPercent,
+      primaryRemainingPercent: subscriptionUsage.primaryRemainingPercent,
+      primaryResetAt: subscriptionUsage.primaryResetAt,
+      secondaryWindowLabel: subscriptionUsage.secondaryWindowLabel,
+      secondaryUsedPercent: subscriptionUsage.secondaryUsedPercent,
+      secondaryRemainingPercent: subscriptionUsage.secondaryRemainingPercent,
+      secondaryResetAt: subscriptionUsage.secondaryResetAt,
+      sourcePath: subscriptionUsage.sourcePath,
+      reasonCode: subscriptionUsage.reasonCode,
+      attribution: "provider_snapshot",
+    });
+  }
+
+  // Add runtime backfill source when no provider snapshot but runtime usage exists
+  const hasRuntimeUsage =
+    period30 !== undefined &&
+    period30.sourceStatus !== "not_connected" &&
+    Number.isFinite(period30.estimatedCost);
+
+  const hasNoProvider = !subscriptionUsage || subscriptionUsage.status === "not_connected";
+
+  if (hasNoProvider && hasRuntimeUsage) {
+    const budgetLimit = budget?.limitCost30d;
+    const reasonCode = budgetLimit !== undefined ? "runtime_backfill_with_budget_limit" : "runtime_backfill_only";
+
+    rows.push({
+      key: "runtime",
+      scope: "provider",
+      planLabel: "Runtime usage",
+      status: "not_connected",
+      unit: "USD",
+      detail: "Usage tracked from runtime events",
+      connectHint: "Connect a provider to track quota limits",
+      consumed: period30.estimatedCost,
+      remaining: budgetLimit !== undefined ? Math.max(0, budgetLimit - (period30.estimatedCost ?? 0)) : undefined,
+      limit: budgetLimit,
+      usagePercent: budgetLimit !== undefined && period30.estimatedCost !== undefined
+        ? (period30.estimatedCost / budgetLimit) * 100
+        : undefined,
+      reasonCode,
+      attribution: "runtime_backfill",
+    });
+  }
+
+  return rows;
 }
 
 function finalizeSubscriptionUsage(
