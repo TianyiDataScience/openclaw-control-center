@@ -164,7 +164,7 @@ const DOC_HUB_DIR_CANDIDATES = [
   { dir: join(process.cwd(), "runtime", "evidence"), category: "证据报告" },
 ];
 const DOC_HUB_CHAT_INDEX_PATH = join(process.cwd(), "runtime", "doc-hub-chat.json");
-const HTML_HEAVY_CACHE_TTL_MS = 3_000;
+const HTML_HEAVY_CACHE_TTL_MS = 8_000;
 const HTML_USAGE_CACHE_TTL_MS = 10_000;
 const HTML_SNAPSHOT_CACHE_TTL_MS = 10_000;
 const HTML_LIVE_SESSIONS_CACHE_TTL_MS = POLLING_INTERVALS_MS.sessionsList;

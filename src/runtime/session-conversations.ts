@@ -176,6 +176,9 @@ const MAX_TOOL_SEGMENT_CHARS = 280;
 const KNOWN_ROLE_TYPES = new Set(["user", "assistant", "system", "tool"]);
 const SESSION_HISTORY_CACHE_TTL_MS = 15_000;
 
+/** Maximum concurrent session history fetches to avoid overwhelming the gateway. */
+const SESSION_HISTORY_CONCURRENCY = 4;
+
 interface SessionHistoryCacheEntry {
   limit: number;
   expiresAt: number;
@@ -199,8 +202,7 @@ export async function listSessionConversations(
   const start = (page - 1) * pageSize;
   const paged = sessions.slice(start, start + pageSize);
 
-  const items = await Promise.all(
-    paged.map(async (session) => {
+  const items = await mapWithConcurrency(paged, SESSION_HISTORY_CONCURRENCY, async (session) => {
       const history = await readSessionHistory(input.client, session.sessionKey, historyLimit);
       const latest = pickLatestMessage(history.messages);
       return {
@@ -216,8 +218,7 @@ export async function listSessionConversations(
         executionChain: inferSessionExecutionChain(session, history.messages),
         interSessionSignals: extractInterSessionSignals(history.messages),
       };
-    }),
-  );
+    });
 
   return {
     generatedAt: new Date().toISOString(),
@@ -1065,4 +1066,28 @@ function asObject(v: unknown): Record<string, unknown> | undefined {
 
 function asString(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
+}
+
+/**
+ * Map an array with limited concurrency to avoid overwhelming the gateway
+ * with too many parallel requests (prevents CPU spikes and timeouts).
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let index = 0;
+
+  async function worker(): Promise<void> {
+    while (index < items.length) {
+      const i = index++;
+      results[i] = await fn(items[i]);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
 }
