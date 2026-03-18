@@ -21,6 +21,25 @@ const CODEX_RATE_LIMIT_CONNECTOR_PATH = join(CODEX_SESSIONS_DIR, "**", "*.jsonl"
 const CODEX_RATE_LIMIT_SESSION_SCAN_LIMIT = 48;
 const CODEX_WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_WHAM_USAGE_TIMEOUT_MS = 3_000;
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ALPHA / EXPERIMENTAL: MiniMax Browser-Cookie Connector
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This feature reads local Chrome cookies and the macOS Keychain to obtain
+ * MiniMax quota information without requiring an API key.
+ *
+ * ⚠️  SECURITY & PRIVACY NOTES:
+ *   - Reads SQLite Chrome cookie database (~/.config/google-chrome/Default/Cookies)
+ *   - Uses `security find-generic-password` to access the Chrome OS X keychain entry
+ *   - Calls the MiniMax API endpoint with session cookies extracted from your browser
+ *
+ * This is intentionally kept ALPHA and off by default. Enable ONLY with:
+ *   OPENCLAW_MINIMAX_COOKIE_CONNECTOR=1
+ *
+ * Do NOT enable this on shared machines. The reviewer has flagged this approach
+ * as too heavy for the mainline; it exists here for local experimentation only.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
 const MINIMAX_COOKIE_CONNECTOR_ENABLED = process.env.OPENCLAW_MINIMAX_COOKIE_CONNECTOR?.trim() === "1";
 const MINIMAX_USAGE_URL = "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains";
 const MINIMAX_USAGE_TIMEOUT_MS = 5_000;
@@ -2294,6 +2313,9 @@ async function loadCodexRateLimitUsage(connectHint: string): Promise<UsageSubscr
   };
 }
 
+/**
+ * @experimental ALPHA — reads local Chrome cookies and Keychain (see block comment above)
+ */
 async function getMiniMaxChromeCookieMacOS(): Promise<string | undefined> {
   if (!MINIMAX_COOKIE_CONNECTOR_ENABLED) return undefined;
   if (process.platform !== "darwin") return undefined;
@@ -2374,6 +2396,9 @@ interface MiniMaxUsageSnapshot {
   usedPercent: number;
 }
 
+/**
+ * @experimental ALPHA — reads local Chrome cookies and Keychain (see block comment above)
+ */
 async function loadMiniMaxUsage(connectHint: string): Promise<UsageSubscriptionStatus | undefined> {
   if (!MINIMAX_COOKIE_CONNECTOR_ENABLED) return undefined;
 
@@ -2758,7 +2783,7 @@ async function collectRecentJsonlFiles(
 
 function subscriptionConnectHint(): string {
   const minimaxHint = MINIMAX_COOKIE_CONNECTOR_ENABLED
-    ? " Or use local browser session for MiniMax (set OPENCLAW_MINIMAX_COOKIE_CONNECTOR=1)."
+    ? " Or use local browser session for MiniMax [ALPHA: reads Chrome cookies + Keychain, set OPENCLAW_MINIMAX_COOKIE_CONNECTOR=1]."
     : "";
   return `Provide one of: ${SUBSCRIPTION_SNAPSHOT_PATHS.join(", ")}. Or connect Codex session telemetry at ${CODEX_RATE_LIMIT_CONNECTOR_PATH}.${minimaxHint}`;
 }
