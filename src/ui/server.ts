@@ -16220,7 +16220,39 @@ function renderAgentVisualEnhancerScript(): string {
     });
   });
 
-  if (motionActors.length === 0) return;
+  const initAvatars = (avatarEls) => {
+    avatarEls.forEach((avatar, index) => {
+      const canvas = avatar.querySelector('.agent-pixel-canvas');
+      if (!canvas) return;
+      if (motionActors.some((a) => a.canvas === canvas)) return;
+      const accent = getComputedStyle(avatar).getPropertyValue('--agent-accent').trim() || '#4e79a7';
+      const animal = (avatar.dataset.animal || 'default').trim().toLowerCase();
+      motionActors.push({
+        canvas,
+        accent,
+        animal,
+        seed: hashSeed(animal + ':' + accent + ':' + String(motionActors.length + 1)),
+        disabled: false,
+      });
+      // 立即渲染一帧
+      render(canvas, animal, accent, { bob: 0, sway: 0, blink: 0 });
+    });
+  };
+
+  if (motionActors.length === 0) {
+    // 即使没有头像也要监听局部导航事件，因为新页面可能有头像
+    document.addEventListener('partial-navigation-complete', () => {
+      const newAvatars = Array.from(document.querySelectorAll('.agent-avatar, .staff-avatar'));
+      initAvatars(newAvatars);
+    });
+    return;
+  }
+
+  // 监听局部导航完成事件，重新初始化新的头像
+  document.addEventListener('partial-navigation-complete', () => {
+    const newAvatars = Array.from(document.querySelectorAll('.agent-avatar, .staff-avatar'));
+    initAvatars(newAvatars);
+  });
 
   if (prefersReducedMotion) {
     motionActors.forEach((actor) => {
