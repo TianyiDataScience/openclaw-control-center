@@ -144,10 +144,15 @@ export function summarizeOpenClawConnection(statusJson: unknown, gatewayJson: un
   }).length;
   const hasRuntimeSnapshot = sessions !== undefined || statusAgents !== undefined || asString(statusRoot.runtimeVersion) !== undefined;
 
-  const gatewayRunning = asBoolean(gatewayRpc?.ok) === true || asString(gatewayRuntime?.status) === "running";
+  const gatewayRunning =
+    asBoolean(gatewayRpc?.ok) === true ||
+    asString(gatewayRuntime?.status) === "running" ||
+    asString(gatewayRuntime?.state) === "active" ||
+    (asBoolean(gatewayService?.loaded) === true && gatewayRuntime !== undefined);
   const gatewayStatus: OpenClawInsightStatus = gatewayRunning ? "ok" : "blocked";
+  const gatewayProbeUrl = asString(gatewayMeta?.probeUrl);
   const gatewayDetail = gatewayRunning
-    ? `${asString(gatewayMeta?.probeUrl) ?? "Gateway"}`
+    ? `${gatewayProbeUrl ?? "Gateway"}`
     : "Gateway is not reachable";
   const gatewayValue = gatewayRunning ? "Connected" : "Unavailable";
 

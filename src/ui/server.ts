@@ -3293,6 +3293,9 @@ function renderOpenClawConnectionCard(
       <a class="btn" href="${escapeHtml(buildHomeHref({ quick: "all" }, true, "settings", language))}">${escapeHtml(
         pickUiText(language, "Open settings", "查看设置"),
       )}</a>
+      <a class="btn" href="https://app.openclaw.ai" target="_blank" rel="noopener noreferrer">${escapeHtml(
+        pickUiText(language, "OpenClaw Dashboard ↗", "OpenClaw 官方面板 ↗"),
+      )}</a>
     </div>
     <div class="status-strip">
       <div class="status-chip"><span>${escapeHtml(pickUiText(language, "Healthy links", "已接通"))}</span><strong>${connectedCount}/${rows.length}</strong></div>
