@@ -32,6 +32,7 @@ import {
 import { loadLatestDigest, renderLatestDigestPage } from "../runtime/digest-renderer";
 import { buildExportBundle, writeExportBundle } from "../runtime/export-bundle";
 import { buildHealthzPayload } from "../runtime/healthz";
+import { collectDiagnosticsBundle, formatDiagnosticsText } from "../runtime/diagnostics-bundle";
 import { applyImportMutation, readImportMutationGuardState } from "../runtime/import-live";
 import { validateExportBundleDryRun, validateExportFileDryRun } from "../runtime/import-dry-run";
 import {
@@ -1813,6 +1814,16 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
           ok: health.status !== "stale",
           health,
         });
+      }
+
+      if (method === "GET" && path === "/api/diagnostics") {
+        assertAllowedQueryParams(url.searchParams, ["format"], true);
+        const bundle = await collectDiagnosticsBundle();
+        const format = url.searchParams.get("format");
+        if (format === "text") {
+          return writeText(res, 200, formatDiagnosticsText(bundle), "text/plain; charset=utf-8");
+        }
+        return writeJson(res, 200, bundle);
       }
 
       if (method === "GET" && path === "/digest/latest") {
@@ -6675,6 +6686,14 @@ async function renderHtml(
       <div class="toolbar">
         <a class="btn" href="${escapeHtml(buildHomeHref(filters, !options.compactStatusStrip, options.section, options.language, options.usageView))}">${escapeHtml(t("Density", "信息密度"))}：${escapeHtml(options.compactStatusStrip ? t("Compact", "紧凑") : t("Expanded", "展开"))}</a>
         <a class="btn" href="${escapeHtml(clearHref)}">${escapeHtml(t("Reset filters", "重置筛选"))}</a>
+      </div>
+    </section>
+    <section class="card" id="diagnostics">
+      <h2>${escapeHtml(t("Diagnostics", "诊断工具"))}</h2>
+      <div class="meta">${escapeHtml(t("Generate a diagnostics bundle for troubleshooting startup and connection issues.", "生成诊断包，用于排查启动和连接问题。"))}</div>
+      <div class="toolbar" style="margin-top:8px">
+        <a class="btn" href="/api/diagnostics" target="_blank">${escapeHtml(t("Download JSON", "下载 JSON"))}</a>
+        <a class="btn" href="/api/diagnostics?format=text" target="_blank">${escapeHtml(t("View as text", "查看文本"))}</a>
       </div>
     </section>
   `;
