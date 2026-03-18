@@ -23,6 +23,36 @@
 - Remaining gap:
   - GitHub repository topics / social preview still need to be adjusted through repo settings rather than source control.
 
+## Phase 157 (Multi-model / Multi-provider quota visibility) — Completed
+- Scope:
+  - Add upstream-friendly multi-model / multi-provider quota visibility to the Control Center.
+  - Keep existing `subscription` summary card as the top-level headline for backward compatibility.
+  - Add a new `subscriptionSources[]` array to represent multiple quota sources (provider, model, window scopes).
+- Changed files:
+  - `src/runtime/usage-cost.ts` - Added `UsageQuotaSource` interface and `subscriptionSources` field.
+  - `src/runtime/api-docs.ts` - Updated `/api/usage-cost` to expose `subscriptionSources[]`.
+  - `src/ui/server.ts` - Added quota sources panel and model quota-state badges.
+  - `test/usage-cost.test.ts` - Added tests for multi-source normalization.
+  - `test/ui-render-smoke.test.ts` - Added tests for UI rendering.
+  - `docs/PROGRESS.md` - This entry.
+- Implementation:
+  - Added `UsageQuotaSource` interface with fields: key, scope, provider, model, planLabel, status, consumed, remaining, limit, usagePercent, unit, attribution, etc.
+  - Extended `UsageCostSnapshot` to include `subscriptionSources: UsageQuotaSource[]`.
+  - Implemented `buildSubscriptionSources()` to normalize data from provider snapshots, Codex live quota, and runtime backfill.
+  - Added a new quota sources panel in the usage dashboard showing provider/model/window scopes.
+  - Added quota-state badges to model usage rows (Quota connected, Runtime only, No provider limit).
+  - Kept legacy `subscription` card unchanged for backward compatibility.
+- Note:
+  - The MiniMax browser-cookie connector (`loadMiniMaxUsage`) is gated behind `OPENCLAW_MINIMAX_COOKIE_CONNECTOR=1` and is marked as experimental/alpha — it reads local Chrome cookies and is intentionally kept out of the main path.
+- Verification:
+  - `npm run build` ✅
+  - `npm test -- test/usage-cost.test.ts test/ui-render-smoke.test.ts` ✅ (111 tests)
+  - `npm run validate` ✅
+  - `npm run smoke:ui` ✅
+- Remaining gap:
+  - Gary-private dashboard customizations are intentionally out of scope for upstream PR.
+  - Further UI polish can be done locally after PR merge.
+
 ## Phase 155 (Standalone collaboration page for agent handoffs) — Completed
 - Scope:
   - Add a dedicated `Collaboration / 协作` page so users can inspect agent-to-agent handoffs without overloading `Staff` or `Tasks`.
