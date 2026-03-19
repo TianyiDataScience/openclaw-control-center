@@ -95,6 +95,7 @@ import {
   type SessionHistoryMessage,
 } from "../runtime/session-conversations";
 import { loadBestEffortAgentRoster, type AgentRosterEntry, type AgentRosterSnapshot } from "../runtime/agent-roster";
+import { buildSubagentTree, type SubagentNode, type SubagentTreeSnapshot } from "../runtime/subagent-tree";
 import {
   loadBestEffortOfficeSessionPresence,
   type OfficeSessionPresenceSnapshot,
@@ -192,6 +193,7 @@ const DASHBOARD_SECTIONS = [
   "overview",
   "calendar",
   "team",
+  "subagents",
   "memory",
   "docs",
   "usage-cost",
@@ -225,6 +227,7 @@ const DASHBOARD_SECTION_LINKS_EN: DashboardSectionLink[] = [
   { key: "overview", label: "Overview", blurb: "Today at a glance" },
   { key: "usage-cost", label: "Usage", blurb: "Budget and quota" },
   { key: "team", label: "Staff", blurb: "Mission, staff and assignments" },
+  { key: "subagents", label: "Subagents", blurb: "Subagent tree and status" },
   { key: "memory", label: "Memory", blurb: "Daily and long-term memories" },
   { key: "docs", label: "Documents", blurb: "Main and active agent core docs" },
   { key: "projects-tasks", label: "Tasks", blurb: "Board, schedule and activity" },
@@ -2417,6 +2420,9 @@ function dashboardSectionLinks(language: UiLanguage): DashboardSectionLink[] {
     if (item.key === "team") {
       return { ...item, label: "员工", blurb: "员工、分工与职责" };
     }
+    if (item.key === "subagents") {
+      return { ...item, label: "子代理", blurb: "子代理树与运行状态" };
+    }
     if (item.key === "memory") {
       return { ...item, label: "记忆", blurb: "每日与长期记忆" };
     }
@@ -3698,6 +3704,15 @@ async function renderHtml(
   const runningExecutionChainCount = taskExecutionChainCards.filter((item) => item.executionChain.stage === "running").length;
   const mappedExecutionChainCount = taskExecutionChainCards.filter((item) => !item.unmapped).length;
   const taskExecutionChainHtml = renderTaskExecutionChainCards(taskExecutionChainCards, options.language);
+  const subagentTree = buildSubagentTree(
+    taskSignalItems.map((item) => ({
+      session: { sessionKey: item.sessionKey, label: item.label, agentId: item.agentId, state: item.state, lastMessageAt: item.lastMessageAt },
+      status: snapshot.statuses.find((s) => s.sessionKey === item.sessionKey),
+      executionChain: item.executionChain,
+    })),
+    snapshot,
+  );
+  const subagentSectionHtml = renderSubagentSection(subagentTree, options.language);
   const taskRoleSummaries = buildTaskRoleSummaries(controlCenterMappingTasks);
   const pendingApprovalsCount = allApprovals.filter((item) => item.status === "pending").length;
   const inProgressTasksCount = realTasks.filter((task) => task.status === "in_progress").length;
@@ -5280,6 +5295,7 @@ async function renderHtml(
   let sectionBody = overviewSection;
   if (options.section === "calendar") sectionBody = projectsSection;
   if (options.section === "team") sectionBody = teamUnifiedSection;
+  if (options.section === "subagents") sectionBody = subagentSectionHtml;
   if (options.section === "memory") sectionBody = memorySection;
   if (options.section === "docs") sectionBody = docsSection;
   if (options.section === "usage-cost") sectionBody = usageSection;
@@ -6442,6 +6458,79 @@ async function renderHtml(
       overflow-wrap: anywhere;
       word-break: break-word;
     }
+    /* ── Subagent tree ── */
+    .subagent-summary-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 10px 0;
+    }
+    .subagent-tree-container {
+      margin-top: 8px;
+      font-family: var(--mono, ui-monospace, monospace);
+      font-size: 13px;
+    }
+    .subagent-node {
+      border-left: 2px solid var(--card-border);
+      margin-left: 0;
+      padding: 2px 0;
+    }
+    .subagent-node[data-depth="0"] {
+      border-left: none;
+    }
+    .subagent-node-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      padding: 4px 0;
+    }
+    .subagent-connector {
+      color: #6b6f76;
+      white-space: pre;
+      user-select: none;
+    }
+    .subagent-node-link {
+      color: var(--link, #60a5fa);
+      text-decoration: none;
+    }
+    .subagent-node-link:hover {
+      text-decoration: underline;
+    }
+    .subagent-node-meta {
+      font-size: 12px;
+      color: #6b6f76;
+      padding: 0 0 2px;
+    }
+    .subagent-children {
+      margin-left: 24px;
+    }
+    .subagent-node-error {
+      border-left-color: #ff6b6b;
+    }
+    .subagent-node-warn {
+      border-left-color: #f59e0b;
+    }
+    .subagent-node-active {
+      border-left-color: #34d399;
+    }
+    .subagent-alert {
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin: 6px 0;
+      font-size: 13px;
+    }
+    .subagent-alert-error {
+      background: rgba(255, 107, 107, 0.12);
+      border: 1px solid rgba(255, 107, 107, 0.3);
+    }
+    .subagent-alert-warn {
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+    .text-ok { color: #34d399; }
+    .text-error { color: #ff6b6b; }
+    .text-warn { color: #f59e0b; }
     .timeline-summary-strip {
       margin-top: 10px;
       display: grid;
@@ -10383,6 +10472,125 @@ function renderOfficeFloor(cards: OfficeSpaceCard[], language: UiLanguage = "zh"
       )}：${items.length}</div><ul class="desk-list">${rows}</ul></section>`;
     })
     .join("")}</div>`;
+}
+
+function renderSubagentSection(tree: SubagentTreeSnapshot, language: UiLanguage = "zh"): string {
+  const t = (en: string, zh: string) => pickUiText(language, en, zh);
+  const hasNodes = tree.totalNodes > 0;
+  const hasMultiLevel = tree.roots.some((r) => r.children.length > 0);
+
+  const summaryBadges = [
+    `<span class="status-chip"><span>${escapeHtml(t("Total", "总数"))}</span><strong>${tree.totalNodes}</strong></span>`,
+    tree.activeNodes > 0
+      ? `<span class="status-chip"><span>${escapeHtml(t("Running", "运行中"))}</span><strong class="text-ok">${tree.activeNodes}</strong></span>`
+      : "",
+    tree.idleNodes > 0
+      ? `<span class="status-chip"><span>${escapeHtml(t("Idle", "空闲"))}</span><strong>${tree.idleNodes}</strong></span>`
+      : "",
+    tree.errorNodes > 0
+      ? `<span class="status-chip"><span>${escapeHtml(t("Error", "异常"))}</span><strong class="text-error">${tree.errorNodes}</strong></span>`
+      : "",
+    tree.blockedNodes > 0
+      ? `<span class="status-chip"><span>${escapeHtml(t("Blocked", "阻塞"))}</span><strong class="text-warn">${tree.blockedNodes}</strong></span>`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const costDisplay = tree.totalCost > 0 ? `$${tree.totalCost.toFixed(4)}` : "$0";
+  const tokenDisplay = tree.totalTokens > 0 ? tree.totalTokens.toLocaleString() : "0";
+
+  const summaryPanel = `
+    <section class="card" id="subagent-summary">
+      <h2>${escapeHtml(t("Subagent status overview", "子智能体状态总览"))}</h2>
+      <div class="meta">${escapeHtml(t("Real-time view of all active sessions and their subagent spawn relationships.", "实时查看所有活跃会话及其子智能体派生关系。"))}</div>
+      <div class="subagent-summary-strip">${summaryBadges}</div>
+      <div class="meta">${escapeHtml(t("Total cost", "总费用"))}：${escapeHtml(costDisplay)} · ${escapeHtml(t("Total tokens", "总 Token"))}：${escapeHtml(tokenDisplay)} · ${escapeHtml(t("Max depth", "最大深度"))}：${tree.maxDepth}</div>
+    </section>
+  `;
+
+  const treeHtml = hasNodes
+    ? `<section class="card" id="subagent-tree">
+        <h2>${escapeHtml(t("Subagent tree", "子智能体树"))}</h2>
+        <div class="meta">${escapeHtml(t("Indentation shows parent-child relationships. Click session key to view details.", "缩进表示父子关系。点击会话 Key 可跳转查看详情。"))}</div>
+        <div class="subagent-tree-container">
+          ${tree.roots.map((root) => renderSubagentNode(root, language)).join("")}
+        </div>
+      </section>`
+    : `<section class="card" id="subagent-tree">
+        <h2>${escapeHtml(t("Subagent tree", "子智能体树"))}</h2>
+        <div class="empty-state">${escapeHtml(t("No subagent activity detected. Sessions with spawn relationships will appear here.", "暂无子智能体活动。有派生关系的会话将显示在这里。"))}</div>
+      </section>`;
+
+  const errorHighlights = hasNodes
+    ? renderSubagentExceptionHighlights(tree, language)
+    : "";
+
+  return `${summaryPanel}${treeHtml}${errorHighlights}`;
+}
+
+function renderSubagentNode(node: SubagentNode, language: UiLanguage, isLast = false): string {
+  const t = (en: string, zh: string) => pickUiText(language, en, zh);
+  const stateClass = node.state === "error" ? "subagent-node-error" : node.state === "blocked" || node.state === "waiting_approval" ? "subagent-node-warn" : node.state === "running" ? "subagent-node-active" : "";
+  const label = node.label || node.sessionKey.split(":").slice(-2).join(":");
+  const sessionHref = `/session/${encodeURIComponent(node.sessionKey)}`;
+  const costStr = node.cost > 0 ? `$${node.cost.toFixed(4)}` : "";
+  const tokenStr = node.totalTokens > 0 ? `${node.totalTokens.toLocaleString()} tok` : "";
+  const modelStr = node.model ?? "";
+  const metaParts = [modelStr, tokenStr, costStr].filter(Boolean).join(" · ");
+
+  const stateBadge = `<span class="badge ${stateBadgeClass(node.state)}">${escapeHtml(node.state)}</span>`;
+  const stageBadge = node.stage !== "idle" ? ` <span class="badge badge-${node.stage === "running" ? "ok" : "info"}">${escapeHtml(node.stage)}</span>` : "";
+
+  const childrenHtml = node.children.length > 0
+    ? `<div class="subagent-children">${node.children.map((child, idx) => renderSubagentNode(child, language, idx === node.children.length - 1)).join("")}</div>`
+    : "";
+
+  return `<div class="subagent-node ${escapeHtml(stateClass)}" data-depth="${node.depth}">
+    <div class="subagent-node-head">
+      <span class="subagent-connector">${node.depth > 0 ? (isLast ? "└── " : "├── ") : ""}</span>
+      <a class="subagent-node-link" href="${escapeHtml(sessionHref)}"><code>${escapeHtml(label)}</code></a>
+      ${stateBadge}${stageBadge}
+      ${node.agentId ? `<span class="meta">${escapeHtml(node.agentId)}</span>` : ""}
+    </div>
+    ${metaParts ? `<div class="subagent-node-meta" style="padding-left:${(node.depth + 1) * 24}px;">${escapeHtml(metaParts)}${node.lastActivity ? ` · ${escapeHtml(t("last", "最近"))} ${escapeHtml(node.lastActivity)}` : ""}</div>` : ""}
+    ${childrenHtml}
+  </div>`;
+}
+
+function stateBadgeClass(state: AgentRunState): string {
+  if (state === "running") return "badge-ok";
+  if (state === "error") return "badge-action-required";
+  if (state === "blocked" || state === "waiting_approval") return "badge-warn";
+  return "badge-idle";
+}
+
+function renderSubagentExceptionHighlights(tree: SubagentTreeSnapshot, language: UiLanguage): string {
+  const t = (en: string, zh: string) => pickUiText(language, en, zh);
+  const items: string[] = [];
+
+  if (tree.errorNodes > 0) {
+    items.push(`<div class="subagent-alert subagent-alert-error">
+      <strong>${escapeHtml(t("Error", "异常"))}</strong>：${tree.errorNodes} ${escapeHtml(t("subagent(s) in error state", "个子智能体处于异常状态"))}
+    </div>`);
+  }
+  if (tree.blockedNodes > 0) {
+    items.push(`<div class="subagent-alert subagent-alert-warn">
+      <strong>${escapeHtml(t("Blocked", "阻塞"))}</strong>：${tree.blockedNodes} ${escapeHtml(t("subagent(s) blocked or waiting approval", "个子智能体被阻塞或等待审批"))}
+    </div>`);
+  }
+  if (tree.maxDepth >= 5) {
+    items.push(`<div class="subagent-alert subagent-alert-warn">
+      <strong>${escapeHtml(t("Deep chain", "深层链路"))}</strong>：${escapeHtml(t("Max depth", "最大深度"))} ${tree.maxDepth}${escapeHtml(t(", consider reviewing the spawning strategy", "，建议检查派生策略"))}
+    </div>`);
+  }
+
+  if (items.length === 0) return "";
+
+  return `<section class="card" id="subagent-exceptions">
+    <h2>${escapeHtml(t("Subagent alerts", "子智能体告警"))}</h2>
+    ${items.join("")}
+  </section>`;
 }
 
 function renderNativeMotionScript(language: UiLanguage = "zh"): string {

@@ -15,6 +15,8 @@ export const TASK_HEARTBEAT_MAX_TASKS_PER_RUN = parsePositiveInt(
   3,
 );
 
+export const SUBAGENT_MAX_DEPTH_WARN = parsePositiveInt(process.env.SUBAGENT_MAX_DEPTH_WARN, 5);
+
 export const POLLING_INTERVALS_MS = {
   sessionsList: 5000,
   sessionStatus: 2000,

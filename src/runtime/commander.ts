@@ -1,4 +1,5 @@
 import { listTasks } from "./task-store";
+import { SUBAGENT_MAX_DEPTH_WARN } from "../config";
 import type {
   AlertLevel,
   BudgetEvaluation,
@@ -18,7 +19,9 @@ export interface CommanderAlert {
     | "HAS_BLOCKED"
     | "HAS_PENDING_APPROVALS"
     | "HAS_OVER_BUDGET"
-    | "HAS_TASKS_DUE";
+    | "HAS_TASKS_DUE"
+    | "HAS_SUBAGENT_ERRORS"
+    | "HAS_DEEP_CHAIN";
   message: string;
   route: "timeline" | "operator-watch" | "action-queue";
 }
@@ -79,6 +82,26 @@ export function commanderAlerts(snapshot: ReadModelSnapshot): CommanderAlert[] {
       message: `${exceptions.counts.tasksDue} task(s) are due.`,
       route: routeForLevel("warn"),
     });
+  }
+
+  if (snapshot.subagentStats) {
+    const stats = snapshot.subagentStats;
+    if (stats.errorNodes > 0) {
+      alerts.push({
+        level: "action-required",
+        code: "HAS_SUBAGENT_ERRORS",
+        message: `${stats.errorNodes} subagent session(s) are in error state.`,
+        route: routeForLevel("action-required"),
+      });
+    }
+    if (stats.maxDepth >= SUBAGENT_MAX_DEPTH_WARN) {
+      alerts.push({
+        level: "warn",
+        code: "HAS_DEEP_CHAIN",
+        message: `Subagent chain depth ${stats.maxDepth} exceeds threshold ${SUBAGENT_MAX_DEPTH_WARN}.`,
+        route: routeForLevel("warn"),
+      });
+    }
   }
 
   return alerts;
@@ -195,6 +218,32 @@ export function commanderExceptionsFeed(snapshot: ReadModelSnapshot): CommanderE
       route: routeForLevel("warn"),
       occurredAt: task.dueAt ?? task.updatedAt ?? fallbackOccurredAt,
     });
+  }
+
+  if (snapshot.subagentStats) {
+    const stats = snapshot.subagentStats;
+    if (stats.errorNodes > 0) {
+      items.push({
+        level: "action-required",
+        code: "SUBAGENT_ERROR",
+        source: "subagent",
+        sourceId: "subagent-tree",
+        message: `${stats.errorNodes} subagent session(s) are in error state.`,
+        route: routeForLevel("action-required"),
+        occurredAt: fallbackOccurredAt,
+      });
+    }
+    if (stats.maxDepth >= SUBAGENT_MAX_DEPTH_WARN) {
+      items.push({
+        level: "warn",
+        code: "SUBAGENT_DEEP_CHAIN",
+        source: "subagent",
+        sourceId: "subagent-tree",
+        message: `Subagent chain depth ${stats.maxDepth} exceeds threshold ${SUBAGENT_MAX_DEPTH_WARN}.`,
+        route: routeForLevel("warn"),
+        occurredAt: fallbackOccurredAt,
+      });
+    }
   }
 
   const sortedItems = [...items].sort(compareFeedItems);

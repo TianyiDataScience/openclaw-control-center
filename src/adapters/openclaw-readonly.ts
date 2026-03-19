@@ -18,6 +18,7 @@ import { loadProjectStore } from "../runtime/project-store";
 import { computeProjectSummaries } from "../runtime/project-summary";
 import { loadTaskStore } from "../runtime/task-store";
 import { computeTasksSummary } from "../runtime/task-summary";
+import { inferSubagentStatsFromKeys } from "../runtime/subagent-tree";
 
 /**
  * Official-first adapter (read path only).
@@ -72,6 +73,8 @@ export class OpenClawReadonlyAdapter {
       });
     }
 
+    const subagentStats = inferSubagentStatsFromKeys(sessions, statuses);
+
     return {
       sessions,
       statuses,
@@ -82,6 +85,7 @@ export class OpenClawReadonlyAdapter {
       tasks,
       tasksSummary,
       budgetSummary,
+      subagentStats,
       generatedAt: new Date().toISOString(),
     };
   }

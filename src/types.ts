@@ -173,6 +173,17 @@ export interface BudgetPolicyConfig {
   task: Record<string, BudgetThresholds>;
 }
 
+export interface SubagentTreeStats {
+  totalNodes: number;
+  activeNodes: number;
+  idleNodes: number;
+  errorNodes: number;
+  blockedNodes: number;
+  totalCost: number;
+  totalTokens: number;
+  maxDepth: number;
+}
+
 export interface ReadModelSnapshot {
   sessions: SessionSummary[];
   statuses: SessionStatusSnapshot[];
@@ -183,6 +194,7 @@ export interface ReadModelSnapshot {
   tasks: TaskStoreSnapshot;
   tasksSummary: TasksSummary;
   budgetSummary: BudgetSummary;
+  subagentStats?: SubagentTreeStats;
   generatedAt: string;
 }
 
@@ -224,8 +236,10 @@ export interface ExceptionFeedItem {
     | "SESSION_ERROR"
     | "PENDING_APPROVAL"
     | "OVER_BUDGET"
-    | "TASK_DUE";
-  source: "system" | "session" | "approval" | "budget" | "task";
+    | "TASK_DUE"
+    | "SUBAGENT_ERROR"
+    | "SUBAGENT_DEEP_CHAIN";
+  source: "system" | "session" | "approval" | "budget" | "task" | "subagent";
   sourceId: string;
   message: string;
   route: "timeline" | "operator-watch" | "action-queue";
