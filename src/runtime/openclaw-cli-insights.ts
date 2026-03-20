@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { buildOpenClawCliEnv, resolveOpenClawWorkspaceRootPath } from "./current-agent-catalog";
 
 const execFileAsync = promisify(execFile);
 const INSIGHT_CACHE_TTL_MS = 15_000;
-const INSIGHT_COMMAND_TIMEOUT_MS = 4_000;
-const STATUS_COMMAND_TIMEOUT_MS = 8_000;
-const UPDATE_STATUS_COMMAND_TIMEOUT_MS = 8_000;
+const INSIGHT_COMMAND_TIMEOUT_MS = 15_000;
+const STATUS_COMMAND_TIMEOUT_MS = 15_000;
+const UPDATE_STATUS_COMMAND_TIMEOUT_MS = 15_000;
 const INSIGHT_COMMAND_MAX_BUFFER = 4 * 1024 * 1024;
 
 interface TimedSourceCache<T> {
@@ -401,24 +402,15 @@ async function loadSourceWithCache<T>(
 ): Promise<T> {
   const now = Date.now();
   if (cache && cache.expiresAt > now) return cache.value;
-  if (cache) {
-    if (!inFlight) {
-      const nextValue = loader();
-      assignInFlight(nextValue);
-      void nextValue
-        .then((value) => {
-          assignCache({
-            value,
-            expiresAt: Date.now() + INSIGHT_CACHE_TTL_MS,
-          });
-        })
-        .finally(() => {
-          assignInFlight(undefined);
-        });
+
+  if (inFlight) {
+    try {
+      return await inFlight;
+    } catch {
+      if (cache) return cache.value;
+      throw new Error("cached source refresh failed without fallback");
     }
-    return cache.value;
   }
-  if (inFlight) return inFlight;
 
   const nextValue = loader();
   assignInFlight(nextValue);
@@ -426,9 +418,12 @@ async function loadSourceWithCache<T>(
     const value = await nextValue;
     assignCache({
       value,
-      expiresAt: now + INSIGHT_CACHE_TTL_MS,
+      expiresAt: Date.now() + INSIGHT_CACHE_TTL_MS,
     });
     return value;
+  } catch (error) {
+    if (cache) return cache.value;
+    throw error;
   } finally {
     assignInFlight(undefined);
   }
@@ -441,6 +436,8 @@ async function runOpenClawJson(
 ): Promise<unknown> {
   try {
     const { stdout } = await execFileAsync("openclaw", args, {
+      cwd: resolveOpenClawWorkspaceRootPath(),
+      env: buildOpenClawCliEnv(),
       timeout: options?.timeoutMs ?? INSIGHT_COMMAND_TIMEOUT_MS,
       maxBuffer: INSIGHT_COMMAND_MAX_BUFFER,
       shell: process.platform === "win32",

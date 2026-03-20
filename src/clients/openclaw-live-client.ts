@@ -14,7 +14,12 @@ import type {
   SessionsListResponse,
 } from "../contracts/openclaw-tools";
 import { APPROVAL_ACTIONS_ENABLED } from "../config";
-import { loadCurrentAgentCatalog, resolveOpenClawHomePath } from "../runtime/current-agent-catalog";
+import {
+  buildOpenClawCliEnv,
+  loadCurrentAgentCatalog,
+  resolveOpenClawHomePath,
+  resolveOpenClawWorkspaceRootPath,
+} from "../runtime/current-agent-catalog";
 import type { ToolClient } from "./tool-client";
 
 const execFileAsync = promisify(execFile);
@@ -364,6 +369,8 @@ async function runText(
   options?: { timeoutMs?: number; maxBuffer?: number },
 ): Promise<string> {
   const { stdout } = await execFileAsync("openclaw", args, {
+    cwd: resolveOpenClawWorkspaceRootPath(),
+    env: buildOpenClawCliEnv(),
     timeout: options?.timeoutMs ?? 20_000,
     maxBuffer: options?.maxBuffer ?? 2 * 1024 * 1024,
     shell: process.platform === "win32",
