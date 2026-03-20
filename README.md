@@ -246,9 +246,9 @@ Phase 1: inspect the environment
 8. Do not assume any fixed agent names. If `openclaw.json` is readable, treat it as the source of truth.
 
 Phase 2: install the project
-9. Confirm that the current directory is the control-center repo root.
+9. Confirm that the current directory is the control-center repo root. If it has not been cloned yet, clone it first: `git clone https://github.com/TianyiDataScience/openclaw-control-center.git`
 10. Verify the repo is complete before editing anything.
-11. If core paths are missing, stop and re-clone the official repo.
+11. If core paths (`src/runtime`, `src/ui`, `package.json`) are missing, do not continue. Re-clone from `https://github.com/TianyiDataScience/openclaw-control-center.git`.
 12. Run dependency install.
 13. If `.env` does not exist, create it from `.env.example`; otherwise correct it while preserving safe defaults.
 

@@ -246,9 +246,9 @@ cp .env.example .env
 8. 不要假设任何固定 agent 名称。若 `openclaw.json` 可读，就以它为准。
 
 第二阶段：安装项目
-9. 确认当前目录是 control-center 仓库根目录。
+9. 确认当前目录是 control-center 仓库根目录。如果还没有 clone，先执行：`git clone https://github.com/TianyiDataScience/openclaw-control-center.git`
 10. 先确认仓库本体完整。
-11. 如果缺少 `src/runtime`、`src/ui` 或 `package.json`，不要继续安装，直接重新 clone 官方仓库。
+11. 如果缺少 `src/runtime`、`src/ui` 或 `package.json`，不要继续安装，重新 clone：`https://github.com/TianyiDataScience/openclaw-control-center.git`。
 12. 运行依赖安装。
 13. 如果 `.env` 不存在，就从 `.env.example` 创建；如果存在，就在保留安全默认值的前提下修正它。
 
