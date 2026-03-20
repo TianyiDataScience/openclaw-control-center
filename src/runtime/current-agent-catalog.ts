@@ -83,6 +83,27 @@ export function resolveOpenClawConfigPath(): string {
   return join(resolveOpenClawHomePath(), "openclaw.json");
 }
 
+export function resolveOpenClawWorkspaceRootPath(): string {
+  const explicit = process.env.OPENCLAW_WORKSPACE_ROOT?.trim();
+  if (explicit) return explicit;
+  return join(resolveOpenClawHomePath(), "workspace");
+}
+
+export function buildOpenClawCliEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("npm_") || key === "INIT_CWD") {
+      delete env[key];
+    }
+  }
+
+  delete env.OPENCLAW_HOME;
+  delete env.OPENCLAW_CONFIG_PATH;
+  delete env.OPENCLAW_WORKSPACE_ROOT;
+  return env;
+}
+
 function isFsNotFound(error: unknown): boolean {
   return Boolean(
     error &&
