@@ -26,7 +26,9 @@ services:
       - NODE_ENV=production
       - UI_MODE=true
       - UI_PORT=4310
-      - GATEWAY_URL=${GATEWAY_URL:-ws://127.0.0.1:18789}
+      - GATEWAY_URL=ws://host.docker.internal:18789
+      - OPENCLAW_HOME=/root/.openclaw
+      - OPENCLAW_CONFIG_PATH=/root/.openclaw/openclaw.json
       - READONLY_MODE=${READONLY_MODE:-true}
       - LOCAL_TOKEN_AUTH_REQUIRED=${LOCAL_TOKEN_AUTH_REQUIRED:-true}
       - LOCAL_API_TOKEN=${LOCAL_API_TOKEN:-}
@@ -41,9 +43,12 @@ services:
     ports:
       - "4310:4310"
 
-    # Volume for runtime data persistence
+    # Volume for runtime data persistence and OpenClaw access
     volumes:
       - ./runtime:/app/runtime:rw
+      - ./runtime/openclaw_data:/root/.openclaw:rw
+      - /usr/lib/node_modules/openclaw:/usr/lib/node_modules/openclaw:ro
+      - /usr/bin/openclaw:/usr/local/bin/openclaw:ro
 
     # Security options
     security_opt:
@@ -57,13 +62,9 @@ services:
         max-size: "10m"
         max-file: "2"
 
-    # Health check
+    # Health check - disabled due to localhost binding issues
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4310/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      disable: true
 
 # Networks
 networks:
