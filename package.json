@@ -37,9 +37,14 @@
     "dod:check": "node --import tsx scripts/dod-check.ts"
   },
   "devDependencies": {
-    "@types/node": "^22.13.10",
+    "@types/node": "^22.19.15",
     "cross-env": "^7.0.3",
-    "tsx": "^4.20.0",
-    "typescript": "^5.8.2"
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@types/ws": "^8.18.1",
+    "http-proxy": "^1.18.1",
+    "ws": "^8.20.0"
   }
 }

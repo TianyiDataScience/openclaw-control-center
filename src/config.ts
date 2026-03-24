@@ -17,6 +17,7 @@ export const IMPORT_MUTATION_DRY_RUN = process.env.IMPORT_MUTATION_DRY_RUN === "
 export const LOCAL_TOKEN_AUTH_REQUIRED = process.env.LOCAL_TOKEN_AUTH_REQUIRED !== "false";
 export const LOCAL_API_TOKEN = (process.env.LOCAL_API_TOKEN ?? "").trim();
 export const LOCAL_TOKEN_HEADER = "x-local-token" as const;
+export const PAIRING_AUTH_ENABLED = process.env.PAIRING_AUTH_ENABLED === "true";
 export const TASK_HEARTBEAT_ENABLED = process.env.TASK_HEARTBEAT_ENABLED !== "false";
 export const TASK_HEARTBEAT_DRY_RUN = process.env.TASK_HEARTBEAT_DRY_RUN !== "false";
 export const TASK_HEARTBEAT_MAX_TASKS_PER_RUN = parsePositiveInt(

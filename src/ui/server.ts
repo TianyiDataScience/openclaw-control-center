@@ -12,9 +12,11 @@ import {
   LOCAL_API_TOKEN,
   LOCAL_TOKEN_AUTH_REQUIRED,
   LOCAL_TOKEN_HEADER,
+  PAIRING_AUTH_ENABLED,
   POLLING_INTERVALS_MS,
   READONLY_MODE,
 } from "../config";
+import { authMiddleware } from "../auth/simple-auth";
 import type { ToolClient } from "../clients/tool-client";
 import { mapSessionsListToSummaries } from "../mappers/openclaw-mappers";
 import { buildApiDocs } from "../runtime/api-docs";
@@ -922,6 +924,12 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
     const method = req.method ?? "GET";
     const requestId = resolveRequestId(req);
     res.setHeader("x-request-id", requestId);
+
+    // 配对认证中间件
+    if (PAIRING_AUTH_ENABLED) {
+      const { handled } = await authMiddleware(req, res);
+      if (handled) return;
+    }
 
     try {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
