@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { open, readdir, readFile } from "node:fs/promises";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -478,6 +478,12 @@ async function readSessionHistoryFile(
 ): Promise<SessionHistoryFileReadResult> {
   const targetLineCount = Math.max(limit * SESSION_HISTORY_TAIL_LINE_MULTIPLIER, SESSION_HISTORY_TAIL_MIN_LINES);
   try {
+    // Directories (or other non-files) can look readable but produce empty/noisy output.
+    // Treat them as errors so we fall back to bounded CLI recovery.
+    const entry = await stat(sessionFile);
+    if (!entry.isFile()) {
+      throw new Error("session history path is not a file");
+    }
     const raw = await readRecentSessionHistoryChunk(sessionFile, targetLineCount);
     return {
       response: normalizeSessionHistoryChunk(raw, limit),

@@ -444,7 +444,7 @@ test("usage dashboard includes token type share and cron token share sections", 
 });
 
 test("dashboard wires CLI insight cards into overview, usage, memory, and settings", async () => {
-  const source = await readFile("src/ui/server.ts", "utf8");
+  const source = (await readFile("src/ui/server.ts", "utf8")).replace(/\r\n/g, "\n");
   assert(source.includes('id="overview-connection-health"'));
   assert(source.includes('pickUiText(language, "Connection health", "接线状态")'));
   assert(source.includes('pickUiText(language, "Gateway", "网关")'));
@@ -568,32 +568,46 @@ test("editable agent scopes follow configured agents before workspace folders", 
     resolveEditableAgentScopesWithFallbackForSmoke,
   } = await import("../src/ui/server");
 
+  const normalizePath = (value: string): string => value.replace(/\r\n/g, "\n").replace(/\\/g, "/");
+  const stripWindowsDrivePrefix = (value: string): string => value.replace(/^[A-Za-z]:/, "");
   assert.equal(
-    resolveOpenClawWorkspaceRootForSmoke({
-      openclawHomeDir: "/home/test/.openclaw",
-      configPath: "/home/test/.openclaw/openclaw.json",
-      configText: JSON.stringify({
-        agents: {
-          list: [
-            { id: "main" },
-            { id: "pandas", workspace: "/srv/openclaw/workspace/agents/pandas" },
-          ],
-        },
-      }),
-    }),
+    stripWindowsDrivePrefix(
+      normalizePath(
+        resolveOpenClawWorkspaceRootForSmoke({
+          openclawHomeDir: "/home/test/.openclaw",
+          configPath: "/home/test/.openclaw/openclaw.json",
+          configText: JSON.stringify({
+            agents: {
+              list: [
+                { id: "main" },
+                { id: "pandas", workspace: "/srv/openclaw/workspace/agents/pandas" },
+              ],
+            },
+          }),
+        }),
+      ),
+    ),
     "/srv/openclaw/workspace",
   );
   assert.equal(
-    resolveOpenClawWorkspaceRootForSmoke({
-      explicitWorkspaceRoot: "/data/openclaw/workspace",
-      openclawHomeDir: "/home/test/.openclaw",
-    }),
+    stripWindowsDrivePrefix(
+      normalizePath(
+        resolveOpenClawWorkspaceRootForSmoke({
+          explicitWorkspaceRoot: "/data/openclaw/workspace",
+          openclawHomeDir: "/home/test/.openclaw",
+        }),
+      ),
+    ),
     "/data/openclaw/workspace",
   );
   assert.equal(
-    resolveOpenClawWorkspaceRootForSmoke({
-      openclawHomeDir: "/home/test/.openclaw",
-    }),
+    stripWindowsDrivePrefix(
+      normalizePath(
+        resolveOpenClawWorkspaceRootForSmoke({
+          openclawHomeDir: "/home/test/.openclaw",
+        }),
+      ),
+    ),
     "/home/test/.openclaw/workspace",
   );
 

@@ -45,12 +45,14 @@ export function renderLatestDigestPage(digest: LatestDigest): string {
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Digest Latest</title>
   <style>
     body { font-family: "SF Mono", Menlo, monospace; background: #0b1016; color: #d6e7f9; margin: 0; padding: 16px; }
     .meta { color: #93aac2; font-size: 12px; }
     a { color: #7dd3fc; }
     .card { margin-top: 10px; border: 1px solid #27405a; border-radius: 8px; padding: 12px; background: #111923; }
+    @media (max-width: 740px) { body { padding: 12px; } }
   </style>
 </head>
 <body>
@@ -66,6 +68,7 @@ export function renderLatestDigestPage(digest: LatestDigest): string {
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Digest ${escapeHtml(digest.date ?? "latest")}</title>
   <style>
     body { font-family: "SF Mono", Menlo, monospace; background: #0b1016; color: #d6e7f9; margin: 0; padding: 16px; }
@@ -77,6 +80,7 @@ export function renderLatestDigestPage(digest: LatestDigest): string {
     p { margin: 8px 0; }
     ul { margin: 8px 0 8px 18px; padding: 0; }
     code { color: #9bd5ff; }
+    @media (max-width: 740px) { body { padding: 12px; } }
   </style>
 </head>
 <body>
