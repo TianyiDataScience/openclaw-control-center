@@ -476,6 +476,8 @@ interface DashboardOptions {
   usageView: UsageView;
   preferencesPath: string;
   search: DashboardSearchQuery;
+  customMemoryFolder?: string;
+  customMissionSourcePath?: string;
 }
 
 interface DashboardSectionLink {
@@ -964,6 +966,8 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
               owner: filters.owner,
               project: filters.project,
             },
+            ...(prefs.preferences.customMemoryFolder ? { customMemoryFolder: prefs.preferences.customMemoryFolder } : {}),
+            ...(prefs.preferences.customMissionSourcePath ? { customMissionSourcePath: prefs.preferences.customMissionSourcePath } : {}),
             updatedAt: new Date().toISOString(),
           });
         }
@@ -975,6 +979,8 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
           usageView,
           preferencesPath: prefs.path,
           search,
+          customMemoryFolder: prefs.preferences.customMemoryFolder,
+          customMissionSourcePath: prefs.preferences.customMissionSourcePath,
         });
         return writeText(res, 200, html, "text/html; charset=utf-8");
       }
@@ -1580,6 +1586,51 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
           projectId: payload.projectId,
         });
         return writeJson(res, 200, { ok: true, ...updated });
+      }
+
+      if (method === "POST" && path === "/api/agents") {
+        assertMutationAuthorized(req, "/api/agents");
+        assertJsonContentType(req);
+        const payload = expectObject(await readJsonBody(req), "create agent payload");
+        const agentId = typeof payload.id === "string" ? payload.id.trim() : "";
+        if (!agentId || agentId.length > 80) {
+          throw new RequestValidationError("id must be a non-empty string (max 80 chars).", 400);
+        }
+        if (/[/\\<>:"|?*\x00-\x1f]/.test(agentId)) {
+          throw new RequestValidationError("id contains invalid characters.", 400);
+        }
+        const agentName = typeof payload.name === "string" ? payload.name.trim() : agentId;
+        const agentModel = typeof payload.model === "string" ? payload.model.trim() : "";
+        const agentWorkspace = typeof payload.workspace === "string" ? payload.workspace.trim() : "";
+        const toolsProfile = typeof payload.toolsProfile === "string" ? payload.toolsProfile.trim() : "default";
+
+        const configPath = OPENCLAW_CONFIG_PATH;
+        const rawConfig = await safeReadTextFile(configPath);
+        let config: Record<string, unknown>;
+        if (rawConfig) {
+          try {
+            config = JSON.parse(rawConfig) as Record<string, unknown>;
+          } catch {
+            throw new RequestValidationError("openclaw.json is not valid JSON; cannot add agent.", 400);
+          }
+        } else {
+          config = { agents: { defaults: { model: { primary: "" } }, list: [] } };
+        }
+        const agentsRoot = (config.agents ?? {}) as Record<string, unknown>;
+        const list = Array.isArray(agentsRoot.list) ? (agentsRoot.list as Array<Record<string, unknown>>) : [];
+        if (list.some((item) => typeof item === "object" && item !== null && (item as Record<string, unknown>).id === agentId)) {
+          throw new RequestValidationError(`Agent '${agentId}' already exists.`, 409);
+        }
+        const newAgent: Record<string, unknown> = { id: agentId, name: agentName };
+        if (agentModel) newAgent.model = agentModel;
+        if (agentWorkspace) newAgent.workspace = agentWorkspace;
+        newAgent.tools = { profile: toolsProfile };
+        list.push(newAgent);
+        agentsRoot.list = list;
+        config.agents = agentsRoot;
+        await mkdir(dirname(configPath), { recursive: true });
+        await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+        return writeJson(res, 201, { ok: true, agentId, message: `Agent '${agentId}' created.` });
       }
 
       if (method === "GET" && (path === "/sessions" || path === "/api/sessions")) {
@@ -4895,14 +4946,14 @@ async function renderHtml(
   }
   const [teamSnapshot, memoryFiles, memoryFacetOptions, workspaceFiles, workspaceFacetOptions, taskEvidenceItems, connectionHealthSummary, securitySummary, updateSummary, memoryStateSummary] = await Promise.all([
     needsTeamSnapshot
-      ? loadTeamSnapshot(officeRoster)
+      ? loadTeamSnapshot(officeRoster, options.customMissionSourcePath)
       : Promise.resolve<TeamSnapshot>({
           missionStatement: t("No shared mission loaded.", "尚未加载共同目标。"),
           members: [],
-          sourcePath: OPENCLAW_CONFIG_PATH,
+          sourcePath: options.customMissionSourcePath || OPENCLAW_CONFIG_PATH,
           detail: t("Loaded on the staff page only.", "仅在员工页加载。"),
         }),
-    needsMemoryFiles ? listEditableFiles("memory") : Promise.resolve<EditableFileEntry[]>([]),
+    needsMemoryFiles ? listEditableFiles("memory", options.customMemoryFolder) : Promise.resolve<EditableFileEntry[]>([]),
     needsMemoryFiles ? listMemoryFacetOptions() : Promise.resolve<Array<{ key: string; label: string }>>([]),
     needsWorkspaceFiles ? listEditableFiles("workspace") : Promise.resolve<EditableFileEntry[]>([]),
     needsWorkspaceFiles ? listWorkspaceFacetOptions() : Promise.resolve<Array<{ key: string; label: string }>>([]),
@@ -6210,13 +6261,49 @@ async function renderHtml(
       <summary>${escapeHtml(t("Shared staff mission", "员工共同目标"))}</summary>
       <div class="fold-body">
         <div class="mission-banner">${escapeHtml(teamSnapshot.missionStatement)}</div>
-        <div class="meta">${escapeHtml(t("Source", "来源"))}：${escapeHtml(teamSnapshot.sourcePath)}</div>
+        <div class="meta">
+          ${escapeHtml(t("Source", "来源"))}：<code style="font-size:0.85em;">${escapeHtml(teamSnapshot.sourcePath)}</code>
+          <button class="btn" type="button" style="margin-left:8px;font-size:0.8em;padding:2px 8px;" onclick="(function(){
+            var current = ${JSON.stringify(options.customMissionSourcePath || "")};
+            var filePath = prompt(${JSON.stringify(t("Enter a new file path as staff mission source (leave empty to reset to default)", "请输入新的员工共同目标来源文件路径（留空则恢复默认）"))}, current);
+            if (filePath === null) return;
+            fetch('/api/ui/preferences', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ customMissionSourcePath: filePath.trim() || null })
+            }).then(function(r) { if (r.ok) location.reload(); else r.json().then(function(d) { alert(d.message || 'Error'); }); });
+          })()">${escapeHtml(t("Change source", "更换来源"))}</button>
+        </div>
         <div class="meta">${escapeHtml(teamSnapshot.detail)}</div>
       </div>
     </details>
     <details class="card compact-details">
       <summary>${escapeHtml(t("Staff system details", "员工配置明细"))}</summary>
       <div class="fold-body">
+        <div style="margin-bottom:8px;">
+          <button class="btn" type="button" style="font-size:0.85em;" onclick="(function(){
+            var id = prompt(${JSON.stringify(t("Enter the new agent ID (required, e.g. alice)", "请输入新员工 ID（必填，如 alice）"))});
+            if (!id || !id.trim()) return;
+            var name = prompt(${JSON.stringify(t("Enter display name (optional, defaults to ID)", "请输入显示名称（可选，默认使用 ID）"))}, id.trim());
+            var model = prompt(${JSON.stringify(t("Enter model name (optional, e.g. claude-sonnet-4-20250514)", "请输入模型名称（可选，如 claude-sonnet-4-20250514）"))}, '');
+            var workspace = prompt(${JSON.stringify(t("Enter workspace path (optional)", "请输入工作目录路径（可选）"))}, '');
+            var toolsProfile = prompt(${JSON.stringify(t("Enter tools profile (optional, default: default)", "请输入工具权限配置（可选，默认 default）"))}, 'default');
+            fetch('/api/agents', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                id: id.trim(),
+                name: (name || '').trim() || id.trim(),
+                model: (model || '').trim(),
+                workspace: (workspace || '').trim(),
+                toolsProfile: (toolsProfile || '').trim() || 'default'
+              })
+            }).then(function(r) { return r.json(); }).then(function(d) {
+              if (d.ok) { alert(${JSON.stringify(t("Agent created successfully!", "员工创建成功！"))}); location.reload(); }
+              else { alert(d.message || 'Error'); }
+            });
+          })()">${escapeHtml(t("New employee", "新建员工"))}</button>
+        </div>
         <table>
           <thead><tr><th>${escapeHtml(t("Name", "名称"))}</th><th>agentId</th><th>${escapeHtml(t("Model", "模型"))}</th><th>${escapeHtml(t("Tool profile", "工具权限"))}</th><th>${escapeHtml(t("Workspace", "工作目录"))}</th></tr></thead>
           <tbody>${teamMembersTableRows}</tbody>
@@ -6299,6 +6386,7 @@ async function renderHtml(
       })
     : "";
   const memoryViewsLabel = joinDisplayList(["Main", ...memoryFacetOptions.filter((item) => item.key !== "main").map((item) => item.label)], options.language);
+  const currentMemoryFolder = options.customMemoryFolder || OPENCLAW_WORKSPACE_ROOT;
   const memorySection = `
     <section class="card">
       <h2>${escapeHtml(t("Memory overview", "记忆概览"))}</h2>
@@ -6306,6 +6394,20 @@ async function renderHtml(
       <div class="meta">${escapeHtml(t("Available views", "可切换查看"))}${escapeHtml(options.language === "en" ? ": " : "：")}${escapeHtml(memoryViewsLabel)}</div>
       <div class="meta">${escapeHtml(t("Only memory-related files are kept here: root MEMORY.md, memory/, and each agent's own MEMORY.md and memory/.", "这里只保留记忆相关文件：根目录 MEMORY.md、memory/，以及各智能体自己的 MEMORY.md 与 memory/。"))}</div>
       <div class="meta">${escapeHtml(t("Edits here sync directly back to the real memory files on the OpenClaw machine.", "这里的编辑会直接同步到 OpenClaw 机器上的真实记忆文件。"))}</div>
+      <div class="meta" style="margin-top:6px;">
+        ${escapeHtml(t("Current folder", "当前文件夹"))}${escapeHtml(options.language === "en" ? ": " : "：")}
+        <code style="font-size:0.85em;">${escapeHtml(currentMemoryFolder)}</code>
+        <button class="btn" type="button" style="margin-left:8px;font-size:0.8em;padding:2px 8px;" onclick="(function(){
+          var current = ${JSON.stringify(options.customMemoryFolder || "")};
+          var folder = prompt(${JSON.stringify(t("Enter the memory folder path (leave empty to reset to default)", "请输入记忆文件所在文件夹路径（留空则恢复默认）"))}, current);
+          if (folder === null) return;
+          fetch('/api/ui/preferences', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ customMemoryFolder: folder.trim() || null })
+          }).then(function(r) { if (r.ok) location.reload(); else r.json().then(function(d) { alert(d.message || 'Error'); }); });
+        })()">${escapeHtml(t("Change folder", "选择文件夹"))}</button>
+      </div>
     </section>
     ${memoryWorkbench}
     ${memoryStateSection}
@@ -10485,6 +10587,34 @@ function mergeUiPreferencesPatch(current: UiPreferences, payload: Record<string,
     }
   }
 
+  if (payload.customMemoryFolder !== undefined) {
+    if (payload.customMemoryFolder === null || payload.customMemoryFolder === "") {
+      next.customMemoryFolder = undefined;
+    } else if (typeof payload.customMemoryFolder === "string") {
+      const trimmed = payload.customMemoryFolder.trim();
+      if (trimmed.length > 512) {
+        throw new RequestValidationError("customMemoryFolder must be <= 512 characters.", 400);
+      }
+      next.customMemoryFolder = trimmed;
+    } else {
+      throw new RequestValidationError("customMemoryFolder must be a string.", 400);
+    }
+  }
+
+  if (payload.customMissionSourcePath !== undefined) {
+    if (payload.customMissionSourcePath === null || payload.customMissionSourcePath === "") {
+      next.customMissionSourcePath = undefined;
+    } else if (typeof payload.customMissionSourcePath === "string") {
+      const trimmed = payload.customMissionSourcePath.trim();
+      if (trimmed.length > 512) {
+        throw new RequestValidationError("customMissionSourcePath must be <= 512 characters.", 400);
+      }
+      next.customMissionSourcePath = trimmed;
+    } else {
+      throw new RequestValidationError("customMissionSourcePath must be a string.", 400);
+    }
+  }
+
   return next;
 }
 
@@ -10896,7 +11026,7 @@ async function walkWorkspaceMarkdownFiles(root: string, currentDir = root): Prom
   }
 }
 
-async function listEditableMemoryFiles(): Promise<EditableFileEntry[]> {
+async function listEditableMemoryFiles(customFolder?: string): Promise<EditableFileEntry[]> {
   const output: EditableFileEntry[] = [];
   const seen = new Set<string>();
   const mainFacetKey = "main";
@@ -10910,6 +11040,25 @@ async function listEditableMemoryFiles(): Promise<EditableFileEntry[]> {
     seen.add(key);
     output.push(entry);
   };
+
+  if (customFolder) {
+    const customDir = resolve(customFolder);
+    const customFiles = await listFileEntries(customDir);
+    for (const file of customFiles) {
+      const ext = extname(file.name).toLowerCase();
+      if (!MEMORY_EDITABLE_EXTENSIONS.has(ext)) continue;
+      await append(
+        await buildEditableFileEntry({
+          scope: "memory",
+          category: "自定义记忆文件夹",
+          sourcePath: file.path,
+          relativeBase: customDir,
+          facetKey: mainFacetKey,
+          facetLabel: mainFacetLabel,
+        }),
+      );
+    }
+  }
 
   const mainRootFiles = [
     join(OPENCLAW_WORKSPACE_ROOT, "MEMORY.md"),
@@ -11073,8 +11222,8 @@ function documentFilePriority(relativePath: string): number {
   return index === -1 ? order.length + 1 : index;
 }
 
-async function listEditableFiles(scope: EditableFileScope): Promise<EditableFileEntry[]> {
-  if (scope === "memory") return listEditableMemoryFiles();
+async function listEditableFiles(scope: EditableFileScope, customFolder?: string): Promise<EditableFileEntry[]> {
+  if (scope === "memory") return listEditableMemoryFiles(customFolder);
   return listEditableWorkspaceFiles();
 }
 
@@ -11505,8 +11654,8 @@ function renderStructuredChatDocSummary(entries: StructuredChatDocEntry[]): stri
     .join("")}</ul>`;
 }
 
-async function loadTeamSnapshot(officeRoster: AgentRosterSnapshot): Promise<TeamSnapshot> {
-  const sourcePath = OPENCLAW_CONFIG_PATH;
+async function loadTeamSnapshot(officeRoster: AgentRosterSnapshot, customMissionSourcePath?: string): Promise<TeamSnapshot> {
+  const sourcePath = customMissionSourcePath || OPENCLAW_CONFIG_PATH;
   const fallbackMission = "构建可持续自治的 AI 员工体系，持续完成高价值任务。";
   const missionFromAgentDoc = await safeReadTextFile(join(AGENT_ROOT_DIR, "AGENTS.md"));
   const missionLine = missionFromAgentDoc

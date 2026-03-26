@@ -26,6 +26,8 @@ export interface UiPreferences {
   compactStatusStrip: boolean;
   quickFilter: UiQuickFilter;
   taskFilters: UiPreferencesTaskFilters;
+  customMemoryFolder?: string;
+  customMissionSourcePath?: string;
   updatedAt: string;
 }
 
@@ -139,6 +141,34 @@ function normalizeUiPreferences(input: unknown): { preferences: UiPreferences; i
     issues.push("quickFilter must be a string");
   }
 
+  let customMemoryFolder: string | undefined;
+  if (typeof obj.customMemoryFolder === "string") {
+    const trimmed = obj.customMemoryFolder.trim();
+    if (trimmed) {
+      if (trimmed.length > 512) {
+        issues.push("customMemoryFolder must be <= 512 characters");
+      } else {
+        customMemoryFolder = trimmed;
+      }
+    }
+  } else if (obj.customMemoryFolder !== undefined && obj.customMemoryFolder !== null) {
+    issues.push("customMemoryFolder must be a string");
+  }
+
+  let customMissionSourcePath: string | undefined;
+  if (typeof obj.customMissionSourcePath === "string") {
+    const trimmed = obj.customMissionSourcePath.trim();
+    if (trimmed) {
+      if (trimmed.length > 512) {
+        issues.push("customMissionSourcePath must be <= 512 characters");
+      } else {
+        customMissionSourcePath = trimmed;
+      }
+    }
+  } else if (obj.customMissionSourcePath !== undefined && obj.customMissionSourcePath !== null) {
+    issues.push("customMissionSourcePath must be a string");
+  }
+
   const taskFilters = normalizeTaskFilters(obj.taskFilters, issues);
   if (taskFilters.status === undefined && isTaskState(quickFilter)) {
     taskFilters.status = quickFilter;
@@ -157,6 +187,8 @@ function normalizeUiPreferences(input: unknown): { preferences: UiPreferences; i
       compactStatusStrip,
       quickFilter,
       taskFilters,
+      ...(customMemoryFolder ? { customMemoryFolder } : {}),
+      ...(customMissionSourcePath ? { customMissionSourcePath } : {}),
       updatedAt,
     },
     issues,
