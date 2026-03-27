@@ -988,7 +988,7 @@ export function startUiServer(port: number, toolClient: ToolClient): Server {
         ).join("");
         const docsHref = buildHomeHref({ quick: "all" }, true, "docs", language);
         const homeHref = buildHomeHref({ quick: "all" }, true, "overview", language);
-        const html = `<!doctype html><html><head><meta charset="utf-8" /><title>${escapeHtml(t("OpenClaw Control Center Docs", "OpenClaw Control Center 文档"))}</title></head><body><h1>${escapeHtml(t("OpenClaw Control Center Docs", "OpenClaw Control Center 文档"))}</h1><ul>${links}</ul><p><a href="${escapeHtml(docsHref)}">${escapeHtml(t("Open document workbench", "打开文档工作台"))}</a> · <a href="${escapeHtml(homeHref)}">${escapeHtml(t("Back to control center", "返回控制中心"))}</a></p></body></html>`;
+        const html = `<!doctype html><html><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" /><title>${escapeHtml(t("OpenClaw Control Center Docs", "OpenClaw Control Center 文档"))}</title></head><body><h1>${escapeHtml(t("OpenClaw Control Center Docs", "OpenClaw Control Center 文档"))}</h1><ul>${links}</ul><p><a href="${escapeHtml(docsHref)}">${escapeHtml(t("Open document workbench", "打开文档工作台"))}</a> · <a href="${escapeHtml(homeHref)}">${escapeHtml(t("Back to control center", "返回控制中心"))}</a></p></body></html>`;
         return writeText(res, 200, html, "text/html; charset=utf-8");
       }
 
@@ -6746,6 +6746,7 @@ async function renderHtml(
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>OpenClaw Control Center</title>
   <script>
     (() => {
@@ -6837,6 +6838,71 @@ async function renderHtml(
         try { window.sessionStorage.removeItem(restoreKey); } catch {}
         if (!parsed) return;
         window.requestAnimationFrame(() => restoreState(parsed));
+      };
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot, { once: true });
+      } else {
+        boot();
+      }
+    })();
+  </script>
+  <script>
+    (() => {
+      const MOBILE_BREAKPOINT_PX = 1080;
+      const navKey = 'openclaw:nav-open';
+
+      const isMobile = () => {
+        try {
+          return window.matchMedia && window.matchMedia('(max-width: ' + MOBILE_BREAKPOINT_PX + 'px)').matches;
+        } catch {
+          return false;
+        }
+      };
+
+      const readStoredOpen = () => {
+        try {
+          return window.sessionStorage.getItem(navKey) === '1';
+        } catch {
+          return false;
+        }
+      };
+
+      const setOpen = (open) => {
+        document.documentElement.dataset.navOpen = open ? '1' : '0';
+        try {
+          window.sessionStorage.setItem(navKey, open ? '1' : '0');
+        } catch {}
+        const btn = document.getElementById('nav-toggle');
+        if (btn) {
+          btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+      };
+
+      const boot = () => {
+        if (!isMobile()) {
+          document.documentElement.dataset.navOpen = '1';
+          return;
+        }
+        setOpen(readStoredOpen());
+        const btn = document.getElementById('nav-toggle');
+        if (btn) {
+          btn.addEventListener('click', () => {
+            const open = document.documentElement.dataset.navOpen === '1';
+            setOpen(!open);
+          });
+        }
+        document.addEventListener(
+          'click',
+          (evt) => {
+            const target = evt.target;
+            if (!target || !(target instanceof Element)) return;
+            if (target.closest('#nav-toggle')) return;
+            if (target.closest('#nav-links')) return;
+            if (document.documentElement.dataset.navOpen === '1') setOpen(false);
+          },
+          { capture: true },
+        );
       };
 
       if (document.readyState === 'loading') {
@@ -7156,6 +7222,21 @@ async function renderHtml(
     .brand .meta { margin-top: 6px; }
     .meta { color: var(--muted); font-size: 13px; line-height: 1.62; }
     .meta-inline { color: var(--muted); font-size: 12px; margin-left: 6px; }
+    .nav-toggle {
+      display: none;
+      width: 100%;
+      margin-top: 12px;
+      border: 1px solid rgba(17, 24, 39, 0.08);
+      border-radius: 16px;
+      padding: 12px 13px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(251, 253, 255, 0.86));
+      color: var(--text);
+      font-weight: 680;
+      text-align: left;
+      cursor: pointer;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    }
+    .nav-toggle:focus-visible { outline: none; box-shadow: var(--ring-soft); }
     .nav-links { margin-top: 14px; display: grid; gap: 9px; }
     .nav-link {
       display: block;
@@ -9921,6 +10002,14 @@ async function renderHtml(
       .file-editor-head { flex-direction: column; }
       .file-editor-panel { grid-template-rows: auto minmax(280px, 1fr) auto; }
       .file-editor-textarea { min-height: 360px; }
+      /* Mobile nav: collapse section links into a menu */
+      .nav-toggle { display: block; }
+      .nav-links { display: none; }
+      html[data-nav-open="1"] .nav-links { display: grid; }
+      html[data-nav-open="1"] .nav-links { animation: panel-in 220ms ease both; }
+      /* Mobile: status-strip cards should stack one per row */
+      .status-strip,
+      .status-strip.compact { grid-template-columns: 1fr !important; }
     }
     @media (prefers-reduced-motion: reduce) {
       * {
@@ -9956,7 +10045,10 @@ async function renderHtml(
         <div class="meta">${escapeHtml(t("Updated", "更新时间"))}${escapeHtml(options.language === "en" ? ": " : "：")}${escapeHtml(snapshot.generatedAt ?? t("Not available", "暂无"))}</div>
         ${languageToggle}
       </div>
-      <nav class="nav-links">${sectionNav}</nav>
+      <button id="nav-toggle" type="button" class="nav-toggle" aria-expanded="false" aria-controls="nav-links">
+        ${escapeHtml(t("Menu", "菜单"))}
+      </button>
+      <nav id="nav-links" class="nav-links">${sectionNav}</nav>
     </aside>
     <main class="panel">
       <header class="section-hero-head">
@@ -17094,6 +17186,7 @@ function renderSessionDrilldownPage(
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>${escapeHtml(t("OpenClaw Control Center Session Drilldown", "OpenClaw 控制中心会话详情"))}</title>
   <style>
     body { font-family: "SF Mono", Menlo, monospace; background: #0b1016; color: #d6e7f9; padding: 16px; margin: 0; }
@@ -17110,6 +17203,7 @@ function renderSessionDrilldownPage(
     .badge.idle, .badge.todo, .badge.message, .badge.tool_event { color: #9ca3af; border-color: #9ca3af; }
     .badge.accepted { color: #22c55e; border-color: #22c55e; }
     .cell-content { white-space: pre-wrap; word-break: break-word; max-width: 760px; }
+    @media (max-width: 740px) { body { padding: 12px; } }
   </style>
 </head>
 <body>
@@ -17185,6 +17279,7 @@ function renderAuditPage(timeline: AuditTimelineSnapshot, severity: AuditSeverit
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>OpenClaw Control Center Audit Timeline</title>
   <style>
     body { font-family: "SF Mono", Menlo, monospace; background: #0b1016; color: #d6e7f9; padding: 16px; margin: 0; }
@@ -17201,6 +17296,7 @@ function renderAuditPage(timeline: AuditTimelineSnapshot, severity: AuditSeverit
     .badge.error { color: #f43f5e; border-color: #f43f5e; }
     label { color: #93aac2; font-size: 12px; margin-right: 8px; }
     select, button { background: #09141f; color: #d6e7f9; border: 1px solid #27405a; border-radius: 6px; padding: 6px; font-size: 12px; }
+    @media (max-width: 740px) { body { padding: 12px; } }
   </style>
 </head>
 <body>
@@ -17259,6 +17355,7 @@ function renderTaskDetailPage(input: {
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>${escapeHtml(t("Task detail", "任务详情"))} · ${escapeHtml(task.taskId)}</title>
   <style>
     body { font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; margin:0; padding:20px; background:#f5f5f7; color:#1d1d1f; }
@@ -17271,6 +17368,7 @@ function renderTaskDetailPage(input: {
     a { color:#0068d3; }
     code { font-size:12px; color:#005ab6; }
     .story-list { margin:0; padding-left:18px; display:grid; gap:8px; }
+    @media (max-width: 740px) { body { padding: 12px; } h1 { font-size: 24px; } }
   </style>
 </head>
 <body>
@@ -17336,6 +17434,7 @@ function renderCronJobDetailPage(
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>${escapeHtml(pickUiText(language, "Cron detail", "Cron 详情"))} · ${escapeHtml(job.jobId)}</title>
   <style>
     body { font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; margin:0; padding:20px; background:#f5f5f7; color:#1d1d1f; }
@@ -17347,6 +17446,7 @@ function renderCronJobDetailPage(
     .badge { display:inline-block; border-radius:999px; padding:3px 10px; font-size:12px; border:1px solid rgba(17,24,39,0.14); background:#f7f8fb; }
     a { color:#0068d3; }
     code { font-size:12px; color:#005ab6; }
+    @media (max-width: 740px) { body { padding: 12px; } h1 { font-size: 24px; } }
   </style>
 </head>
 <body>
