@@ -240,7 +240,6 @@ const OPENCLAW_WORKSPACE_ROOT = resolveOpenClawWorkspaceRootShared({
   openclawHomeDir: OPENCLAW_HOME_DIR,
   configPath: OPENCLAW_CONFIG_PATH,
 });
-const CONTROL_CENTER_ROOT = resolveControlCenterRoot(process.cwd());
 const WORKSPACE_EDITABLE_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "coverage"]);
 const WORKSPACE_EDITABLE_EXTENSIONS = new Set([".md", ".markdown"]);
 const MEMORY_EDITABLE_EXTENSIONS = new Set([".md", ".markdown", ".txt"]);
@@ -1431,11 +1430,6 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         return await serveAvatarFile(res, fileName, method === "HEAD");
       }
 
-      if ((method === "GET" || method === "HEAD") && path.startsWith("/hall-avatars/")) {
-        assertAllowedQueryParams(url.searchParams, [], true);
-        const fileName = decodeURIComponent(path.slice("/hall-avatars/".length));
-        return await serveHallAvatarFile(res, fileName, method === "HEAD");
-      }
 
       if (method === "GET" && path === "/api/search/tasks") {
         const query = parseSearchQuery(url.searchParams);
@@ -16750,7 +16744,7 @@ function renderFileWorkbenchScript(): string {
 function renderAgentVisualEnhancerScript(): string {
   return `<script>
 (() => {
-  const avatars = Array.from(document.querySelectorAll('.agent-avatar, .staff-avatar'));
+  const avatars = Array.from(document.querySelectorAll('.agent-avatar, .staff-avatar, .hall-agent-avatar'));
   if (!avatars.length) return;
   const prefersReducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   // Pixel motion runs fully on client; no network polling and no extra token usage.
@@ -18957,35 +18951,6 @@ async function serveAvatarFile(res: ServerResponse, rawFileName: string, headOnl
   } catch {
     return writeApiError(res, 404, "NOT_FOUND", "Avatar file not found.");
   }
-}
-
-async function serveHallAvatarFile(res: ServerResponse, rawFileName: string, headOnly = false): Promise<void> {
-  const fileName = normalizeSafeFileName(rawFileName);
-  if (!fileName) return writeApiError(res, 404, "NOT_FOUND", "Hall avatar file not found.");
-  const filePath = join(CONTROL_CENTER_ROOT, "runtime", "exports", "staff-avatars", fileName);
-  try {
-    const buffer = await readFile(filePath);
-    res.writeHead(200, {
-      "content-type": avatarContentType(fileName),
-      "cache-control": "public, max-age=3600",
-    });
-    res.end(headOnly ? undefined : buffer);
-  } catch {
-    return writeApiError(res, 404, "NOT_FOUND", "Hall avatar file not found.");
-  }
-}
-
-function resolveControlCenterRoot(startDir: string): string {
-  const visited = new Set<string>();
-  let cursor = resolve(startDir || process.cwd());
-  while (!visited.has(cursor)) {
-    visited.add(cursor);
-    if (existsSync(join(cursor, "runtime", "exports", "staff-avatars"))) return cursor;
-    const parent = dirname(cursor);
-    if (parent === cursor) break;
-    cursor = parent;
-  }
-  return resolve(startDir || process.cwd());
 }
 
 async function writeAvatarUploadFromDataUrl(input: { dataUrl: string; fileNameHint?: string }): Promise<{ fileName: string; sizeBytes: number }> {

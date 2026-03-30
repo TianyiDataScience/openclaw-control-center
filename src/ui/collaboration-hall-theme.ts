@@ -224,16 +224,11 @@ export function renderCollaborationHallTheme(): string {
       display: grid;
       place-items: center;
     }
-    .hall-agent-avatar .hall-avatar-fallback,
     .hall-agent-avatar .agent-pixel-canvas {
       position: absolute;
       inset: 0;
       width: 100%;
       height: 100%;
-    }
-    .hall-agent-avatar .hall-avatar-fallback {
-      display: block;
-      object-fit: cover;
     }
     .hall-member-avatar,
     .hall-task-card-avatar,

@@ -585,7 +585,7 @@ test("memory and workspace sections expose editable file workbenches", async () 
   assert(source.includes('const staffOverviewCards = needsTeamSnapshot'));
   assert(source.includes(".staff-brief-grid {\n      margin-top: 12px;\n      display: grid;\n      grid-template-columns: repeat(3, minmax(0, 1fr));"));
   assert(source.includes('<canvas class="agent-pixel-canvas" width="256" height="256"></canvas>'));
-  assert(source.includes("querySelectorAll('.agent-avatar, .staff-avatar')"));
+  assert(source.includes("querySelectorAll('.agent-avatar, .staff-avatar, .hall-agent-avatar')"));
   assert(source.includes('data-animal="${escapeHtml(effectiveAnimal)}"'));
   assert(source.includes('t("Shared staff mission", "员工共同目标")'));
   assert(source.includes('t("Staff system details", "员工配置明细")'));
