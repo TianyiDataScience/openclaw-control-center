@@ -610,9 +610,14 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   };
   const hallAvatarMarkup = (label, className) => {
     const avatar = deriveHallAvatar(label);
-    return '<div class="' + esc(className) + ' hall-agent-avatar" style="--agent-accent:' + esc(avatar.accent) + ';" aria-hidden="true"><div class="agent-stage"><img class="agent-avatar-img hall-avatar-fallback" src="/hall-avatars/' + esc(avatar.asset) + '" alt="" loading="lazy" /></div></div>';
+    return '<div class="' + esc(className) + ' hall-agent-avatar" style="--agent-accent:' + esc(avatar.accent) + ';" data-animal="' + esc(avatar.animal) + '" aria-hidden="true"><div class="agent-stage"><canvas class="agent-pixel-canvas" width="128" height="128"></canvas></div></div>';
   };
-  const paintHallPixelAvatars = () => {};
+  const paintHallPixelAvatars = (container) => {
+    const api = window.__openclawPixelAvatar;
+    if (!api || typeof api.renderElement !== 'function') return;
+    const els = container ? Array.from(container.querySelectorAll('.hall-agent-avatar')) : [];
+    els.forEach((el) => api.renderElement(el));
+  };
 
   const setFlash = (message) => {
     if (!flash) return;
@@ -3221,7 +3226,7 @@ function initialsForName(value: string): string {
 
 function renderHallPixelAvatar(label: string, className: string): string {
   const identity = resolveHallAvatarIdentity(label);
-  return `<div class="${escapeHtml(className)} hall-agent-avatar" style="--agent-accent:${escapeHtml(identity.accent)};" aria-hidden="true"><div class="agent-stage"><img class="agent-avatar-img hall-avatar-fallback" src="/hall-avatars/${escapeHtml(identity.asset)}" alt="" loading="lazy" /></div></div>`;
+  return `<div class="${escapeHtml(className)} hall-agent-avatar" style="--agent-accent:${escapeHtml(identity.accent)};" data-animal="${escapeHtml(identity.animal)}" aria-hidden="true"><div class="agent-stage"><canvas class="agent-pixel-canvas" width="128" height="128"></canvas></div></div>`;
 }
 
 function resolveHallAvatarIdentity(input: string): { animal: string; accent: string; asset: string } {

@@ -21,7 +21,7 @@ test("collaboration hall renders a three-pane hall-first shell", () => {
   assert(html.includes('data-hall-create-task'));
   assert(html.includes('data-hall-handoff'));
   assert(html.match(/data-hall-toggle-context/g)?.length >= 2);
-  assert(html.includes('/hall-avatars/'));
+  assert(html.includes('agent-pixel-canvas'));
   assert(html.includes('hall-empty-actions'));
   assert(html.includes('hall-thread-subtitle'));
   const script = renderCollaborationHallClientScript("en");
@@ -90,7 +90,7 @@ test("hall chat page source wires the hall workbench into its own section", asyn
   assert(source.includes("collaborationHallWorkbench"));
   assert(source.includes("renderCollaborationHall({"));
   assert(source.includes("renderCollaborationHallClientScript(options.language)"));
-  assert(source.includes("const hallChatSection = `"));
+  assert(source.includes("const hallChatSection = needsHallChat ? `"));
   assert(source.includes("${collaborationHallWorkbench}"));
   assert(source.includes('if (options.section === "hall-chat") sectionBody = hallChatSection;'));
 });
