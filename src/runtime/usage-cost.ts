@@ -1272,7 +1272,7 @@ function buildSessionTypeBreakdownFromSessionContexts(
   const uniqueSessions = dedupeSessionContexts(contexts);
   if (uniqueSessions.length === 0) return [];
 
-  const order = ["Cron", "Discord", "Telegram", "Main/内部会话"] as const;
+  const order = ["Cron", "Discord", "Telegram", "飞书", "微信", "Main/内部会话"] as const;
   const buckets = new Map<string, UsageBreakdownRow>(
     order.map((label) => [
       label,
@@ -1307,7 +1307,7 @@ function buildSessionTypeBreakdownFromRuntimeEvents(
   sourceStatus: ConnectionStatus,
 ): UsageBreakdownRow[] {
   if (sourceStatus === "not_connected" || events.length === 0) return [];
-  const order = ["Cron", "Discord", "Telegram", "Main/内部会话"] as const;
+  const order = ["Cron", "Discord", "Telegram", "飞书", "微信", "Main/内部会话"] as const;
   const buckets = new Map<string, UsageBreakdownRow>(
     order.map((label) => [
       label,
@@ -1505,7 +1505,9 @@ function dedupeSessionContexts(contexts: RuntimeSessionContext[]): RuntimeSessio
   return [...byIdentity.values()];
 }
 
-function classifySessionTypeLabel(context: RuntimeSessionContext): "Cron" | "Discord" | "Telegram" | "Main/内部会话" {
+function classifySessionTypeLabel(
+  context: RuntimeSessionContext,
+): "Cron" | "Discord" | "Telegram" | "飞书" | "微信" | "Main/内部会话" {
   const key = context.sessionKey.trim().toLowerCase();
   const channel = context.channel?.trim().toLowerCase() ?? "";
   const surface = context.surface?.trim().toLowerCase() ?? "";
@@ -1529,15 +1531,37 @@ function classifySessionTypeLabel(context: RuntimeSessionContext): "Cron" | "Dis
   ) {
     return "Telegram";
   }
+  if (
+    key.includes(":feishu:") ||
+    key.startsWith("feishu:") ||
+    channel.includes("feishu") ||
+    surface.includes("feishu")
+  ) {
+    return "飞书";
+  }
+  if (
+    key.includes(":weixin:") ||
+    key.startsWith("weixin:") ||
+    channel.includes("weixin") ||
+    channel.includes("wechat") ||
+    surface.includes("weixin") ||
+    surface.includes("wechat")
+  ) {
+    return "微信";
+  }
   return "Main/内部会话";
 }
 
-function classifySessionTypeFromSessionKey(sessionKey: string | undefined): "Cron" | "Discord" | "Telegram" | "Main/内部会话" {
+function classifySessionTypeFromSessionKey(
+  sessionKey: string | undefined,
+): "Cron" | "Discord" | "Telegram" | "飞书" | "微信" | "Main/内部会话" {
   const key = sessionKey?.trim().toLowerCase() ?? "";
   if (!key) return "Main/内部会话";
   if (key.includes(":cron:") || key.startsWith("cron:")) return "Cron";
   if (key.includes(":discord:") || key.startsWith("discord:")) return "Discord";
   if (key.includes(":telegram:") || key.startsWith("telegram:")) return "Telegram";
+  if (key.includes(":feishu:") || key.startsWith("feishu:")) return "飞书";
+  if (key.includes(":weixin:") || key.startsWith("weixin:")) return "微信";
   return "Main/内部会话";
 }
 
