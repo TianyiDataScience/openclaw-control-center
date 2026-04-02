@@ -7476,7 +7476,7 @@ async function renderHtml(
     </section>
     <section class="card">
       <h2>${escapeHtml(t("AI usage mix (all sessions)", "AI 用量构成（全部会话）"))}</h2>
-      <div class="meta">${escapeHtml(t("Timed jobs, Discord, Telegram, internal sessions", "定时任务、Discord、Telegram、内部会话"))}</div>
+      <div class="meta">${escapeHtml(t("Timed jobs, Feishu, Discord, Telegram, internal sessions", "定时任务、Feishu、Discord、Telegram、内部会话"))}</div>
       ${usageSessionTypeShareHtml}
     </section>
     <section class="card">

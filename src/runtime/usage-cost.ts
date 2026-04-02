@@ -505,10 +505,10 @@ export function computeUsageCostSnapshot(
           runtime.sourceStatus,
           (event) => event.provider?.trim() || inferProvider(event.model),
         );
-  const bySessionType = buildSessionTypeBreakdownFromSessionContexts(
-    runtimeUsage?.sessionContexts ?? [],
-    runtime.sourceStatus,
-  );
+  const bySessionType =
+    runtime.sourceStatus === "not_connected"
+      ? buildSessionTypeBreakdownFromSessionContexts(runtimeUsage?.sessionContexts ?? [], runtime.sourceStatus)
+      : buildSessionTypeBreakdownFromRuntimeEvents(runtimeEvents30d, runtime.sourceStatus);
   const byCronJob = buildCronJobBreakdownFromSessionContexts(
     runtimeUsage?.sessionContexts ?? [],
     runtime.sourceStatus,
@@ -927,7 +927,10 @@ function resolveRuntimeUsage(
         : event.sessionId
           ? sessionById.get(event.sessionId)
           : undefined;
-      const sessionKey = event.sessionKey ?? context?.sessionKey;
+      const sessionKey =
+        event.sessionKey ??
+        context?.sessionKey ??
+        (event.agentId && event.sessionId ? `agent:${event.agentId}:orphaned:${event.sessionId}` : undefined);
       const model = event.model ?? context?.model;
       const provider = event.provider ?? context?.provider ?? inferProvider(model);
 
@@ -1272,7 +1275,7 @@ function buildSessionTypeBreakdownFromSessionContexts(
   const uniqueSessions = dedupeSessionContexts(contexts);
   if (uniqueSessions.length === 0) return [];
 
-  const order = ["Cron", "Discord", "Telegram", "Main/内部会话"] as const;
+  const order = ["Cron", "Discord", "Telegram", "Feishu", "Webchat", "其它", "Main/内部会话"] as const;
   const buckets = new Map<string, UsageBreakdownRow>(
     order.map((label) => [
       label,
@@ -1307,7 +1310,7 @@ function buildSessionTypeBreakdownFromRuntimeEvents(
   sourceStatus: ConnectionStatus,
 ): UsageBreakdownRow[] {
   if (sourceStatus === "not_connected" || events.length === 0) return [];
-  const order = ["Cron", "Discord", "Telegram", "Main/内部会话"] as const;
+  const order = ["Cron", "Discord", "Telegram", "Feishu", "Webchat", "其它", "Main/内部会话"] as const;
   const buckets = new Map<string, UsageBreakdownRow>(
     order.map((label) => [
       label,
@@ -1505,7 +1508,7 @@ function dedupeSessionContexts(contexts: RuntimeSessionContext[]): RuntimeSessio
   return [...byIdentity.values()];
 }
 
-function classifySessionTypeLabel(context: RuntimeSessionContext): "Cron" | "Discord" | "Telegram" | "Main/内部会话" {
+function classifySessionTypeLabel(context: RuntimeSessionContext): "Cron" | "Discord" | "Telegram" | "Feishu" | "Webchat" | "其它" | "Main/内部会话" {
   const key = context.sessionKey.trim().toLowerCase();
   const channel = context.channel?.trim().toLowerCase() ?? "";
   const surface = context.surface?.trim().toLowerCase() ?? "";
@@ -1529,15 +1532,26 @@ function classifySessionTypeLabel(context: RuntimeSessionContext): "Cron" | "Dis
   ) {
     return "Telegram";
   }
+  if (key.includes(":feishu:") || channel === "feishu" || surface === "feishu") {
+    return "Feishu";
+  }
+  if (key.includes(":webchat:") || channel === "webchat" || surface === "webchat") {
+    return "Webchat";
+  }
+  if (!key) {
+    return "其它";
+  }
   return "Main/内部会话";
 }
 
-function classifySessionTypeFromSessionKey(sessionKey: string | undefined): "Cron" | "Discord" | "Telegram" | "Main/内部会话" {
+function classifySessionTypeFromSessionKey(sessionKey: string | undefined): "Cron" | "Discord" | "Telegram" | "Feishu" | "Webchat" | "其它" | "Main/内部会话" {
   const key = sessionKey?.trim().toLowerCase() ?? "";
-  if (!key) return "Main/内部会话";
+  if (!key) return "其它";
   if (key.includes(":cron:") || key.startsWith("cron:")) return "Cron";
   if (key.includes(":discord:") || key.startsWith("discord:")) return "Discord";
   if (key.includes(":telegram:") || key.startsWith("telegram:")) return "Telegram";
+  if (key.includes(":feishu:")) return "Feishu";
+  if (key.includes(":webchat:")) return "Webchat";
   return "Main/内部会话";
 }
 
@@ -2570,6 +2584,16 @@ function parseSubscriptionUsage(
   const limit = isSyntheticSnapshot ? undefined : rawLimit;
   const remaining = isSyntheticSnapshot ? undefined : rawRemaining;
 
+  // Quota window fields (primary=5h, secondary=Week)
+  const primaryWindowLabel = asString(subscription.primaryWindowLabel) ?? undefined;
+  const primaryUsedPercent = asNumber(subscription.primaryUsedPercent) ?? undefined;
+  const primaryRemainingPercent = asNumber(subscription.primaryRemainingPercent) ?? undefined;
+  const primaryResetAt = asString(subscription.primaryResetAt) ?? undefined;
+  const secondaryWindowLabel = asString(subscription.secondaryWindowLabel) ?? undefined;
+  const secondaryUsedPercent = asNumber(subscription.secondaryUsedPercent) ?? undefined;
+  const secondaryRemainingPercent = asNumber(subscription.secondaryRemainingPercent) ?? undefined;
+  const secondaryResetAt = asString(subscription.secondaryResetAt) ?? undefined;
+
   const cycleStart =
     asString(subscription.cycleStart) ??
     asString(subscription.currentPeriodStart) ??
@@ -2655,6 +2679,14 @@ function parseSubscriptionUsage(
       : missingProviderFields.length === 0
         ? "provider_connected"
         : "provider_snapshot_partial",
+    primaryWindowLabel,
+    primaryUsedPercent,
+    primaryRemainingPercent,
+    primaryResetAt,
+    secondaryWindowLabel,
+    secondaryUsedPercent,
+    secondaryRemainingPercent,
+    secondaryResetAt,
   };
 }
 
