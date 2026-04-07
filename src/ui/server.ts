@@ -276,6 +276,7 @@ const AGENT_DOCUMENT_FILE_CANDIDATES = [
 ] as const;
 const STAFF_ROLE_EVIDENCE_FILE_CANDIDATES = [
   "IDENTITY.md",
+  "SOUL.md",
   "AGENTS.md",
   "README.md",
   "MEMORY.md",
