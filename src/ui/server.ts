@@ -12076,10 +12076,19 @@ function extractLabeledField(input: string, labels: string[]): string | undefine
     if (!line) continue;
     const lower = line.toLowerCase();
     for (const label of labels) {
+      // Format: "Role: xxx" or "职责: xxx"
       const prefix = `${label.toLowerCase()}:`;
-      if (!lower.startsWith(prefix)) continue;
-      const value = line.slice(prefix.length).trim();
-      if (value) return value;
+      if (lower.startsWith(prefix)) {
+        const value = line.slice(prefix.length).trim();
+        if (value) return value;
+        continue;
+      }
+      // Format: "## Role xxx" or "## 职责 xxx" (markdown heading, no colon)
+      const headingPrefix = `## ${label.toLowerCase()} `;
+      if (lower.startsWith(headingPrefix)) {
+        const value = line.slice(headingPrefix.length).trim();
+        if (value) return value;
+      }
     }
   }
   return undefined;
