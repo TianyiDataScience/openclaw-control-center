@@ -884,6 +884,105 @@ async function routeAndDispatchHallMessage(input: RouteAndDispatchInput): Promis
       }),
     ),
   );
+
+  // Observer dispatch: if main was NOT the primary target, let it observe after the round settles
+  const mainAgentId = resolveMainAgentParticipantId(hall.participants);
+  const mainWasPrimaryTarget = mainAgentId != null && targetParticipants.some((p) => p.participantId === mainAgentId);
+  if (!mainWasPrimaryTarget && mainAgentId) {
+    const mainParticipant = hall.participants.find((p) => p.participantId === mainAgentId);
+    if (mainParticipant && canDispatchHallToRuntime(toolClient, mainParticipant)) {
+      await dispatchMainObserver({
+        hall,
+        taskCard,
+        mainParticipant,
+        toolClient,
+      });
+    }
+  }
+}
+
+function resolveMainAgentParticipantId(participants: HallParticipant[]): string | undefined {
+  return participants.find((p) => p.active && /\bmain\b/i.test(p.agentId ?? p.participantId))?.participantId;
+}
+
+const OBSERVE_SILENT_MARKER = "OBSERVE_SILENT";
+
+async function dispatchMainObserver(input: {
+  hall: CollaborationHall;
+  taskCard: HallTaskCard;
+  mainParticipant: HallParticipant;
+  toolClient: ToolClient;
+}): Promise<void> {
+  const { hall, taskCard, mainParticipant, toolClient } = input;
+
+  // Reload thread messages to include the latest agent responses
+  const recentThreadMessages = await loadRecentHallThreadMessages(taskCard);
+
+  let result: HallRuntimeDispatchResult;
+  try {
+    result = await dispatchHallRuntimeTurn({
+      client: toolClient,
+      hall,
+      taskCard,
+      participant: mainParticipant,
+      recentThreadMessages,
+      mode: "execution",
+      note: [
+        "You are observing this thread as a background reviewer.",
+        "Review the recent agent exchanges above.",
+        "Only speak if you have a genuinely useful observation, suggestion, or correction.",
+        "If nothing to add, respond with exactly: " + OBSERVE_SILENT_MARKER,
+        "Do NOT speak just to agree, summarize, or acknowledge. Silence is preferred over noise.",
+      ].join(" "),
+    });
+  } catch {
+    return; // Observer failures are silent
+  }
+
+  if (result.canceled) return;
+
+  // Suppress silent responses
+  const trimmed = result.content.trim();
+  if (!trimmed || trimmed === OBSERVE_SILENT_MARKER || trimmed.startsWith(OBSERVE_SILENT_MARKER)) return;
+
+  // Persist the observer's message
+  await appendPersistedHallMessage({
+    hallId: hall.hallId,
+    kind: result.kind,
+    participant: mainParticipant,
+    content: result.content,
+    targetParticipantIds: [],
+    projectId: taskCard.projectId,
+    taskId: taskCard.taskId,
+    taskCardId: taskCard.taskCardId,
+    roomId: taskCard.roomId,
+    payload: result.payload,
+  });
+
+  // If observer @mentioned someone, auto-chain
+  const observerMentions = resolveHallMentionTargets(result.content, hall.participants);
+  const chainTargets = observerMentions.targets
+    .map((t) => findParticipant(hall.participants, t.participantId))
+    .filter((p): p is HallParticipant =>
+      p != null && p.active && p.participantId !== mainParticipant.participantId,
+    );
+  if (chainTargets.length > 0) {
+    const updatedMessages = await loadRecentHallThreadMessages(taskCard);
+    const lastMessage = updatedMessages[updatedMessages.length - 1];
+    await Promise.allSettled(
+      chainTargets.map((target) =>
+        dispatchHallAgentReply({
+          hall,
+          taskCard,
+          participant: target,
+          triggerMessage: lastMessage ?? { content: result.content } as HallMessage,
+          recentThreadMessages: updatedMessages,
+          toolClient,
+          chainDepth: 1,
+        }),
+      ),
+    );
+  }
 }
 
 async function dispatchHallAgentReply(input: {
