@@ -359,12 +359,6 @@ export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): 
 }
 
 function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: HallRuntimeRepoContext): string {
-  const discussionMode = input.mode === "discussion";
-  const firstParticipantTurnInThread = isFirstParticipantTurnInHallThread(
-    input.taskCard,
-    input.participant.agentId ?? input.participant.participantId,
-  );
-  const cleanThreadOpeningGuard = shouldApplyCleanHallThreadOpeningGuard(input, firstParticipantTurnInThread);
   const responseLanguage = inferHallResponseLanguage(
     input.triggerMessage?.content
       ?? `${input.taskCard.title}\n${input.taskCard.description}\n${input.task?.title ?? ""}`,
@@ -372,186 +366,134 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
   const responseLanguageInstruction = responseLanguage === "zh"
     ? "Reply in Simplified Chinese unless the latest human message explicitly asks for another language."
     : "Reply in English unless the latest human message explicitly asks for another language.";
+
+  // Recent thread messages (expanded from 10 to 30)
   const recentMessages = dedupeHallPromptMessages(
     [...(input.recentThreadMessages ?? []), ...(input.triggerMessage ? [input.triggerMessage] : [])],
-  ).slice(-10);
+  ).slice(-30);
+
   const transcriptBlock = recentMessages.length > 0
     ? [
-        "Recent shared thread transcript (oldest -> newest):",
-        ...recentMessages.map((message) => `- ${message.authorLabel}${!discussionMode && message.authorSemanticRole ? ` [${message.authorSemanticRole}]` : ""}: ${message.content}`),
+        responseLanguage === "zh"
+          ? "以下是当前线程的最近对话（从旧到新）："
+          : "Recent thread conversation (oldest to newest):",
+        ...recentMessages.map((message) =>
+          `- ${message.authorLabel}${message.authorSemanticRole ? ` [${message.authorSemanticRole}]` : ""}: ${message.content}`,
+        ),
       ].join("\n")
     : "";
+
   const role = input.participant.semanticRole;
-  const currentExecutionItem = resolveCurrentExecutionItem(input.taskCard, input.participant.participantId);
-  const nextParticipantId = currentExecutionItem?.handoffToParticipantId?.trim()
-    || input.taskCard.plannedExecutionOrder[0]
-    || "";
-  const nextParticipant = nextParticipantId
-    ? input.hall.participants.find((participant) => participant.participantId === nextParticipantId)
-    : undefined;
-  const nextExecutionItem = nextParticipantId
-    ? resolvePlannedExecutionItem(input.taskCard, nextParticipantId)
-    : undefined;
-  const repoContextLines = repoContext.lines;
-  const roundRosterBlock = discussionMode
-    ? buildHallDiscussionRosterBlock(input)
-    : buildHallRuntimeRosterBlock(input);
+  const selfWorkspacePersona = describeHallParticipantWorkspacePersona(input.participant);
+  const rosterBlock = buildHallRuntimeRosterBlock(input);
   const hallRulesBlock = buildHallRulesPromptBlock();
-  const selfWorkspacePersona = !discussionMode || isDiscussionParticipantExplicitlyMentioned(input)
-    ? describeHallParticipantWorkspacePersona(input.participant)
-    : "";
   const taskArtifactBlock = buildHallRuntimeArtifactBlock(input.task?.artifacts, responseLanguage, "task");
-  const handoffArtifactBlock = buildHallRuntimeArtifactBlock(input.handoff?.artifactRefs, responseLanguage, "handoff");
-  const operatorIntent = resolveHallOperatorIntent(input);
-  const directResponseIntent = isDirectResponseIntent(operatorIntent) ? operatorIntent : undefined;
-  const commonBase = [
-    `You are ${input.participant.displayName}, participating in the control-center Collaboration Hall.`,
-    `Task title: ${input.taskCard.title}`,
-    `Task description: ${input.taskCard.description}`,
-    `Current hall stage: ${input.taskCard.stage}`,
-    input.taskCard.doneWhen ? `Current done_when: ${input.taskCard.doneWhen}` : "",
-    input.taskCard.decision ? `Current decision: ${input.taskCard.decision}` : "",
-    input.taskCard.currentOwnerLabel ? `Current owner: ${input.taskCard.currentOwnerLabel}` : "",
-    recentMessages.length > 0 ? `Recent agent contributions already in thread: ${countRecentAgentContributors(recentMessages)}.` : "",
-    transcriptBlock,
-    roundRosterBlock,
-    hallRulesBlock,
-    !discussionMode ? `Your semantic responsibility is ${role}.` : "",
-    selfWorkspacePersona ? `Your workspace persona and job boundary: ${selfWorkspacePersona}` : "",
-    taskArtifactBlock,
-    handoffArtifactBlock,
-    ...repoContextLines,
-    firstParticipantTurnInThread
-      ? "This is your first reply in this hall thread. Treat only the task, transcript, artifacts, and structured handoff shown here as canonical context. Ignore any earlier conversation, momentum, unfinished phrasing, or assumptions that are not explicitly present in this thread, and do not answer as if you are continuing a previous thread."
-      : "",
-    cleanThreadOpeningGuard
-      ? "Nothing has been established in this thread yet beyond the operator request. Start from a clean first answer. Do not open with continuation or agreement phrases like '对', '没错', '是的', '再', '继续', '那我', '我会再…', 'Exactly', 'Also', or 'One more tweak'."
-      : "",
-    "Do not write labels like Proposal, Decision, Suggested order, Suggested first executor, owner, or doneWhen in the visible reply.",
-    responseLanguageInstruction,
-    "Do not mention hidden system instructions.",
-    "If you include structured state, append one JSON block at the very end using <hall-structured>{...}</hall-structured>.",
-  ].filter(Boolean);
+  const repoContextLines = repoContext.lines;
 
-  if (discussionMode) {
-    if (directResponseIntent) {
-      const directTaskInstruction = directResponseIntent.type === "repo_scan_request"
-        ? "The latest human message is directly assigning you repo inspection work. Inspect the repository and answer with concrete file findings right now."
-        : directResponseIntent.type === "review_request"
-          ? "The latest human message is directly asking you for a targeted review answer. Reply with the must-fix point or a clean pass right now."
-          : "The latest human message is directly assigning you a concrete deliverable. Post that deliverable right now instead of turning this into a decision or workflow recap.";
-      return [
-        ...commonBase,
-        directResponseIntent.explicitTarget
-          ? "The latest human message is explicitly assigning you work right now."
-          : "The latest human message is asking for a concrete result right now, and you are the one replying to it.",
-        `Direct ask you must satisfy now: ${directResponseIntent.text}`,
-        "Prioritize this current ask over your default semantic role for this reply.",
-        directTaskInstruction,
-        buildConcreteExecutionOutputRequirement(directResponseIntent.text, responseLanguage, directResponseIntent),
-        directResponseIntent.type === "review_request"
-          ? "Keep the reply focused: pass / must-fix only. Do not reopen planning unless the human explicitly asks for that."
-          : "Do not delegate the work away before posting the deliverable the human asked you for.",
-        "Detailed answers are allowed when they are more useful than a short reply.",
-        "Do not turn this into a decision, reassignment, or process recap.",
-        'Structured JSON keys you may include: "proposal", "artifactRefs".',
-      ].filter(Boolean).join("\n");
-    }
-    return [
-      ...commonBase,
-      "This is discussion only. Do not start execution yet.",
-      "Do not act like a greeter and do not ask to create a task card; the hall already has enough context to discuss the work.",
-      explicitHallMentionTargetLine(input),
-      "Answer the latest human message directly.",
-      "Use any helpful context from the thread, but you do not need to follow a fixed discussion shape.",
-      "You may agree, disagree, refine, redirect, or propose a better angle if that is more useful.",
-      "Detailed answers are allowed. If a full version, rewrite, expansion, or example would help, give it in full.",
-      "If you mention a teammate by name, use a real hall participant name.",
-      role === "manager" || role === "planner"
-        ? 'Structured JSON keys you may include: "proposal", "decision", "executor", "doneWhen", "artifactRefs", "parallelTasks".'
-        : 'Structured JSON keys you may include: "proposal", "decision", "executor", "doneWhen", "artifactRefs".',
-    ].join("\n");
-  }
+  const firstParticipantTurnInThread = isFirstParticipantTurnInHallThread(
+    input.taskCard,
+    input.participant.agentId ?? input.participant.participantId,
+  );
 
-  if (input.mode === "handoff" && input.handoff) {
-    return [
-      ...commonBase,
-      "Reply like a real coworker in a busy work chat: concrete, specific, and natural, without memo tone.",
-      "Sound like a teammate helping the work move, not a narrator explaining the workflow.",
-      "Lead with the point itself, not with scene-setting or report language.",
-      "Only answer the part that still matters. Do not rewrite the whole thread.",
-      "Prefer direct work-chat phrasing: decisive, easy to hand off, and natural. Avoid retrospective or report tone.",
-      'Avoid filler openings like "我先把…", "当前结果是…", "现阶段…", "我建议下一步…", "I want to clarify", or "At this stage". Start with the concrete action or result.',
-      "You are receiving a structured handoff and should continue the real work now.",
-      `Handoff goal: ${input.handoff.goal}`,
-      `Current result: ${input.handoff.currentResult}`,
-      `Done when: ${input.handoff.doneWhen}`,
-      input.handoff.blockers.length > 0 ? `Blockers: ${input.handoff.blockers.join("; ")}` : "",
-      input.handoff.requiresInputFrom.length > 0
-        ? `Requires input from: ${input.handoff.requiresInputFrom.join(", ")}`
-        : "",
-      nextParticipant
-        ? `The next queued owner after you is ${nextParticipant.displayName}. If you finish your step without a real blocker, hand the work to ${nextParticipant.displayName} instead of stopping at a vague review note.`
-        : "There is no further queued owner after you. If you finish your step without a real blocker, move the work to review.",
-      nextExecutionItem?.task
-        ? `Your exact planned execution item is: ${nextExecutionItem.task}`
-        : "",
-      "Use your real tools if needed. Then reply like a coworker in chat, not like a memo.",
-      "Post the full deliverable the step actually needs. Do not summarize or compress away real output.",
-      "For repo/code-scan work, inspect the repo before replying and cite real file paths plus what each file proves.",
-      buildConcreteExecutionOutputRequirement(nextExecutionItem?.task ?? input.handoff.goal, responseLanguage),
-      "Prefer this shape: what changed, and @who acts next.",
-      "If it is ready for review, say it like a teammate: '现在请老板评审。' / 'Ready for review.' Do not say '推进到 review' or other system phrasing.",
-      "No numbered list unless the deliverable itself is literally a list.",
-      'Good example: "这版先收住了，owner 还不够显眼。@下一位 你把最后一拍改成可执行句。" ',
-      "If there is a next owner and no blocker, explicitly @ that owner in the visible reply.",
-    nextExecutionItem?.task
-      ? `If you hand off, keep your visible @handoff aligned with the planned next task for ${nextParticipant?.displayName ?? "the next owner"}: ${nextExecutionItem.task}`
-      : "",
-      "Do not say the work is ready, done, or ready for review until the visible reply already contains the concrete deliverable for your step.",
-      "Do not restate the whole thread. Do not write a retrospective. Do not reopen earlier owners unless there is a real blocker.",
-      'Structured JSON keys you may include: "latestSummary", "blockers", "requiresInputFrom", "doneWhen", "nextAction", "nextStep", "artifactRefs", "parallelTasks".',
-    ].filter(Boolean).join("\n");
-  }
+  // Role-specific instructions
+  const roleInstruction = buildGroupChatRoleInstruction(input.participant, input.hall.participants, responseLanguage);
 
   return [
-    ...commonBase,
-    "Reply like a real coworker in a busy work chat: concrete, specific, and natural, without memo tone.",
-    "Sound like a teammate helping the work move, not a narrator explaining the workflow.",
-    "Lead with the point itself, not with scene-setting or report language.",
-    "Only answer the part that still matters. Do not rewrite the whole thread.",
-    "Prefer direct work-chat phrasing: decisive, easy to hand off, and natural. Avoid retrospective or report tone.",
-    'Avoid filler openings like "我先把…", "当前结果是…", "现阶段…", "我建议下一步…", "I want to clarify", or "At this stage". Start with the concrete action or result.',
-    "You are the current execution owner. Do the real work now if needed, then post the full worker result needed by the hall.",
-    currentExecutionItem?.task ? `Your current execution item: ${currentExecutionItem.task}` : "",
-    currentExecutionItem?.handoffWhen ? `Your step is done when: ${currentExecutionItem.handoffWhen}` : "",
-    nextParticipant
-      ? `The next queued owner after you is ${nextParticipant.displayName}. When your current execution item is complete, hand the work off to ${nextParticipant.displayName} instead of doing their step yourself.`
-      : "If your current execution item is complete and there is no next owner, move the work to review instead of inventing extra steps.",
-    nextExecutionItem?.task ? `The next owner's step after you is: ${nextExecutionItem.task}` : "",
-    input.note ? `Assignment note: ${input.note}` : "",
-    "Stay inside the current execution item only. Do not complete deliverables that belong to later owners in the execution order.",
-    "Write like a coworker in a work chat.",
-    "Post the full deliverable the step actually needs. Do not compress real output into two lines.",
-    "Say only what concrete result now exists, any real blocker, and @who acts next.",
-    "If your current execution item asks for a concrete deliverable, the visible reply must contain that deliverable itself: the actual hooks, thumbnail ideas, URLs, script lines, file findings, or repo evidence. Do not just comment on what should be done.",
-    "For code-scan / repo-summary work, inspect the repo before replying. The visible reply must cite real file paths and what you found in them.",
-    buildConcreteExecutionOutputRequirement(currentExecutionItem?.task, responseLanguage),
-    "If your step is done and there is a next owner, make the visible reply read like a handoff between coworkers, not a status report.",
-    "No numbered list unless the deliverable itself is literally a list.",
-    'Good example: "第一版脚本先锁住了，核心句是‘不是在聊天，是在推进任务’。@下一位 你只挑必须改的一点。" ',
-    "If there is a next queued owner and you are not blocked, explicitly @ that owner in the visible reply.",
-    nextExecutionItem?.task
-      ? `If you hand off, do not invent a different next task. Keep your visible @handoff aligned with the planned next task for ${nextParticipant?.displayName ?? "the next owner"}: ${nextExecutionItem.task}`
+    // Identity
+    `You are ${input.participant.displayName}, participating in a group chat called the Collaboration Hall (协作大厅).`,
+    `The hall has both human operators and AI agents. Messages you see are from the current thread.`,
+    selfWorkspacePersona ? `Your identity and job boundary: ${selfWorkspacePersona}` : "",
+
+    // Thread context
+    input.taskCard.title ? `Thread topic: ${input.taskCard.title}` : "",
+    input.taskCard.description ? `Thread description: ${input.taskCard.description}` : "",
+    transcriptBlock,
+
+    // Team roster
+    rosterBlock,
+
+    // Shared rules & repo context
+    hallRulesBlock,
+    taskArtifactBlock,
+    ...repoContextLines,
+
+    // Assignment note (if any)
+    input.note ? `Note: ${input.note}` : "",
+
+    // Behavioral instructions
+    "Reply like a real coworker in a busy work chat: concrete, specific, and natural.",
+    "Lead with the point itself. Do not restate the whole thread.",
+    "Avoid filler openings like ‘我先把...’, ‘当前结果是...’, ‘I want to clarify’. Start with the concrete action or result.",
+    "If you mention a teammate, use their real name with @ prefix (e.g. @林纳斯 Linus). The system will auto-dispatch them.",
+    "Post concrete deliverables, not descriptions of what should be done.",
+
+    // First-turn guard
+    firstParticipantTurnInThread
+      ? "This is your first reply in this thread. Start from a clean first answer. Do not open with continuation phrases."
       : "",
-    "Do not say the work is done, hand off, or ask for review until the visible reply already contains the concrete deliverable for your step.",
-    "Do not write a project recap, status memo, or generic brainstorming. If there is a next queued owner and you are not blocked, hand off instead of lingering on your own step.",
-    'Structured JSON keys you may include: "latestSummary", "blockers", "requiresInputFrom", "doneWhen", "nextAction", "nextStep", "artifactRefs", "parallelTasks".',
-    'Allowed nextAction values: "continue" when you need one more pass on your current execution item, "handoff" when your current execution item is complete and the next queued owner should take over, "review" when the work is ready for review and there is no further handoff, "blocked" when you need help before continuing, and "parallel_dispatch" when you want to dispatch multiple hall agents concurrently on independent sub-tasks.',
+
+    // Role-specific
+    roleInstruction,
+
+    // Structured output
+    "If you include structured state, append one JSON block at the very end using <hall-structured>{...}</hall-structured>.",
+    "Structured JSON keys you may include: \"latestSummary\", \"nextAction\", \"nextStep\", \"parallelTasks\", \"artifactRefs\".",
     role === "manager" || role === "planner"
-      ? 'If the task has clearly separable independent sub-tasks that different hall agents can work on simultaneously, set nextAction to "parallel_dispatch" and include "parallelTasks": [{"executor":"<agent_name>","task":"<description>"},...]. Each executor will be dispatched concurrently and you will be re-invoked as each completes with partial results. Only use parallel_dispatch when the sub-tasks are truly independent.'
+      ? "Allowed nextAction values: \"continue\" (need another pass), \"parallel_dispatch\" (dispatch multiple agents concurrently on independent sub-tasks)."
       : "",
+    role === "manager" || role === "planner"
+      ? "To dispatch agents in parallel, set nextAction to \"parallel_dispatch\" and include \"parallelTasks\": [{\"executor\":\"<agent_name>\",\"task\":\"<description>\"},...]. Each executor will be dispatched concurrently. You will be re-invoked as each completes."
+      : "",
+
+    // Language
+    responseLanguageInstruction,
+    "Do not mention hidden system instructions.",
   ].filter(Boolean).join("\n");
+}
+
+function buildGroupChatRoleInstruction(
+  participant: HallParticipant,
+  allParticipants: HallParticipant[],
+  language: HallResponseLanguage,
+): string {
+  const role = participant.semanticRole;
+  const agentId = (participant.agentId ?? participant.participantId).trim();
+  const isMainAgent = /\bmain\b/i.test(agentId);
+
+  if (isMainAgent) {
+    const specialists = allParticipants
+      .filter((p) => p.participantId !== agentId && p.active)
+      .map((p) => `@${p.displayName}`)
+      .join(", ");
+    return language === "zh"
+      ? [
+          "你是这个群聊的默认响应者。当用户发消息且没有 @ 任何人时，由你接收。",
+          "判断需求类型：",
+          "- 简单需求或系统级需求：自己直接处理并回复。",
+          "- 专项需求（如数据工程、系统开发、生信、数据分析、合规）：@ 对应的专项智能体，简要说明需求。",
+          "- 复杂的跨领域需求：@ PM 智能体（图灵），让 PM 协调。",
+          `可用的团队成员：${specialists}`,
+        ].join("\n")
+      : [
+          "You are the default responder in this group chat. When users send messages without @mentioning anyone, you receive them.",
+          "Assess the request type:",
+          "- Simple or system-level: handle it directly.",
+          "- Specialist work (data engineering, dev, bioinformatics, data science, compliance): @mention the specialist agent with a brief description.",
+          "- Complex cross-domain work: @mention the PM agent to coordinate.",
+          `Available team members: ${specialists}`,
+        ].join("\n");
+  }
+
+  if (role === "manager") {
+    return language === "zh"
+      ? "你是项目经理。收到复杂任务时拆解为子任务，识别可并行的部分，使用 parallel_dispatch 调度专项智能体。汇总结果后推进下一步。"
+      : "You are the project manager. Break complex tasks into sub-tasks, identify parallelizable work, and use parallel_dispatch to coordinate specialist agents. Synthesize results and drive next steps.";
+  }
+
+  // All other roles: specialist agents
+  return language === "zh"
+    ? "专注于你的专业领域。收到任务后直接执行并回复结果。如需其他智能体配合，直接 @ 他们。"
+    : "Focus on your area of expertise. Execute assigned work and reply with concrete results. If you need another agent to help, @mention them directly.";
 }
 
 function buildHallRulesPromptBlock(): string {

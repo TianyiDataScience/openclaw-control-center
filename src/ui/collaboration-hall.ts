@@ -1836,32 +1836,20 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     const roomLink = taskCard.roomId
       ? '<a class="hall-thread-link" href="?section=collaboration&roomId=' + encodeURIComponent(taskCard.roomId) + '">' + esc(textOpenDetailThread) + '</a>'
       : '';
+    const participantNames = participants.map((p) => p.displayName).join(' · ');
     detail.innerHTML =
       '<div class="hall-detail-list">' +
-        '<div class="hall-detail-group"><h4>' + esc(textExecutionPlan) + '</h4>' +
-          '<div class="hall-detail-meta"><span class="hall-stage-pill">' + esc(decisionCardStageText(taskCard)) + '</span> <span class="hall-stage-pill">' + esc(taskCard.status) + '</span></div>' +
-          '<div class="hall-detail-meta" style="margin-top:8px;">' + esc(ownerMeta.heading) + ': ' + esc(ownerMeta.label || '-') + '</div>' +
-          '<div class="hall-detail-meta">' + esc(stepMeta.heading) + ': ' + esc(currentTaskValue) + '</div>' +
-          '<div class="hall-detail-meta">' + esc(textQueuedOwners) + ': ' + esc(plannedQueueLabels) + '</div>' +
-          '<div class="hall-detail-meta">' + esc((hasPendingStartablePlan(taskCard) || taskCard.stage === 'discussion') ? textNextAction : textExecutionFeed) + ': ' + esc(executionFeedHint) + '</div>' +
-          '<div class="hall-detail-actions hall-decision-actions">' +
-            (shouldShowDecisionPrimaryAction(taskCard)
-              ? '<button type="button" class="hall-button" onclick="return window.__openclawHallAssignOwner ? window.__openclawHallAssignOwner() : false">' + esc(textStartExecutionPrefix + (ownerMeta.label || '-') + textStartExecutionSuffix) + '</button>'
-              : '') +
-            '<button type="button" class="hall-secondary-button hall-secondary-button--accent" onclick="return window.__openclawHallSetExecutionOrder ? window.__openclawHallSetExecutionOrder() : false">' + esc(taskCard.stage === 'discussion' ? textPlanExecutionOrder : textAdjustExecutionOrder) + '</button>' +
-            '<button type="button" class="hall-secondary-button" data-hall-continue-discussion onclick="return window.__openclawHallContinueDiscussion ? window.__openclawHallContinueDiscussion() : false">' + esc(textContinueDiscussion) + '</button>' +
-          '</div>' +
+        '<div class="hall-detail-group"><h4>' + esc(taskCard.title || 'Thread') + '</h4>' +
+          '<div class="hall-detail-meta">' + esc(taskCard.description || '-') + '</div>' +
         '</div>' +
         renderParallelGroupsDetailSection(taskCard, participants) +
-        '<div class="hall-detail-group"><h4>' + esc(textEvidence) + '</h4>' +
-          '<div class="hall-detail-meta">' + esc(textLinkedTask) + ': ' + esc(task ? (task.projectId + ':' + task.taskId) : taskCard.projectId + ':' + taskCard.taskId) + '</div>' +
-          '<div class="hall-detail-meta">' + esc(textLinkedRoom) + ': ' + esc(taskCard.roomId || '-') + '</div>' +
-          '<div class="hall-detail-meta" style="margin-top:8px;">' + roomLink + '</div>' +
-        '</div>' +
         '<div class="hall-detail-group"><h4>' + esc(textTaskArtifacts) + '</h4>' +
           ((task?.artifacts || []).length > 0
             ? '<div class="hall-artifact-list">' + renderArtifactChips(task.artifacts) + '</div>'
             : '<div class="hall-detail-meta">' + esc(textNoArtifactsYet) + '</div>') +
+        '</div>' +
+        '<div class="hall-detail-group"><h4>Participants</h4>' +
+          '<div class="hall-detail-meta">' + esc(participantNames) + '</div>' +
         '</div>' +
       '</div>';
   };

@@ -646,21 +646,6 @@ export async function createHallTaskFromOperatorRequest(
       sessionKeys: [],
     })
   ).taskCard;
-  taskCard = openDiscussionCycle(
-    taskCard,
-    authorParticipantId,
-    context.hall.participants,
-    buildDynamicDiscussionParticipantQueue(context.hall, taskCard, patchedTask.task, input.content),
-  );
-  taskCard = (
-    await updateHallTaskCard({
-      taskCardId: taskCard.taskCardId,
-      discussionCycle: taskCard.discussionCycle,
-      stage: "discussion",
-      roomId: room.roomId,
-    })
-  ).taskCard;
-
   const initialMessage = (
     await appendHallMessage({
       hallId: context.hall.hallId,
@@ -674,23 +659,8 @@ export async function createHallTaskFromOperatorRequest(
       taskId,
       taskCardId: taskCard.taskCardId,
       roomId: room.roomId,
-      payload: {
-        projectId,
-        taskId,
-        taskCardId: taskCard.taskCardId,
-        roomId: room.roomId,
-        taskStage: taskCard.stage,
-        taskStatus: patchedTask.task.status,
-      },
     })
   ).message;
-  const createdRoom = await requireLinkedRoom(room.roomId);
-  await publishTaskRoomBridgeEvent({
-    type: "room_created",
-    room: createdRoom,
-    task: patchedTask.task,
-    note: "Room auto-created from collaboration hall task creation.",
-  });
 
   await appendOperationAudit({
     action: "hall_task_create",
@@ -706,16 +676,15 @@ export async function createHallTaskFromOperatorRequest(
   const hallRead = await readCollaborationHall(context.hall.hallId);
   const taskDetail = await readCollaborationHallTaskDetail(taskCard.taskCardId);
 
-  if (!options.skipDiscussion) {
-    scheduleHallDiscussion(
-      taskCard.taskCardId,
-      {
-        triggerMessage: initialMessage,
-        explicitTargetParticipantIds: directedMentionParticipantIds,
-        strictMentions: directedMentionParticipantIds.length > 0,
-        toolClient: options.toolClient,
-      },
-    );
+  // Route to agent(s) using the new group chat model
+  if (options.toolClient) {
+    scheduleRouteAndDispatch({
+      hall: context.hall,
+      taskCard,
+      triggerMessage: initialMessage,
+      mentionRouting,
+      toolClient: options.toolClient,
+    });
   }
 
   return {
@@ -738,32 +707,26 @@ export async function postHallMessage(
   const authorParticipantId = input.authorParticipantId?.trim() || "operator";
   const authorLabel = input.authorLabel?.trim() || "Operator";
   const normalizedContent = input.content.trim();
+
+  // Resolve task card (thread container)
   const taskCard = input.taskCardId
     ? await requireTaskCard(input.taskCardId)
     : input.projectId && input.taskId
       ? await requireTaskCardByProjectTask(input.projectId, input.taskId)
       : undefined;
-  const mentionRouting = resolveHallMentionTargets(input.content, context.hall.participants);
-  const hasDirectedMention = mentionRouting.targets.length > 0 && !mentionRouting.broadcastAll;
-  const defaultSpeaker = resolveDefaultSpeakerForStage(taskCard, context.hall.participants);
-  const targetParticipantIds = mentionRouting.broadcastAll
-    ? buildDiscussionParticipantQueue(context.hall.participants)
-    : mentionRouting.targets.length > 0
-      ? mentionRouting.targets.map((target) => target.participantId)
-      : defaultSpeaker
-        ? [defaultSpeaker]
-        : [];
 
-  if (!taskCard && authorParticipantId === "operator" && shouldPromoteHallMessageToTask(input.content, hasDirectedMention)) {
+  // If no thread exists and operator is sending, auto-create a thread
+  if (!taskCard && authorParticipantId === "operator" && normalizedContent) {
     return createHallTaskFromOperatorRequest({
       hallId: context.hall.hallId,
-      content: input.content,
+      content: normalizedContent,
       authorParticipantId,
       authorLabel,
     }, options);
   }
 
-  if (taskCard && authorParticipantId === "operator" && normalizedContent && mentionRouting.targets.length === 0) {
+  // Duplicate detection (operator, same content within 30s)
+  if (taskCard && authorParticipantId === "operator" && normalizedContent) {
     const recentMessages = await loadRecentHallThreadMessages(taskCard, 6);
     const duplicateMessage = [...recentMessages]
       .reverse()
@@ -790,30 +753,11 @@ export async function postHallMessage(
     }
   }
 
-  if (taskCard?.stage === "execution" && authorParticipantId !== "operator") {
-    assertHallExecutionAllowed(taskCard, authorParticipantId);
-  }
-
-  let nextTaskCard = taskCard;
-  let openedImplicitDiscussionCycle = false;
-  if (nextTaskCard && authorParticipantId === "operator" && shouldRouteOperatorMessageBackToDiscussion(nextTaskCard, input.content, mentionRouting.targets)) {
-    nextTaskCard = await reopenHallTaskToDiscussion(nextTaskCard, context.hall, "discussion_reopened");
-  }
-
-  if (nextTaskCard && authorParticipantId === "operator" && nextTaskCard.stage === "discussion" && mentionRouting.targets.length === 0) {
-    nextTaskCard = openDiscussionCycle(
-      nextTaskCard,
-      authorParticipantId,
-      context.hall.participants,
-      buildDynamicDiscussionParticipantQueue(context.hall, nextTaskCard, undefined, input.content),
-    );
-    nextTaskCard = (await updateHallTaskCard({
-      taskCardId: nextTaskCard.taskCardId,
-      discussionCycle: nextTaskCard.discussionCycle,
-      stage: "discussion",
-      })).taskCard;
-    openedImplicitDiscussionCycle = true;
-  }
+  // Persist the message
+  const mentionRouting = resolveHallMentionTargets(input.content, context.hall.participants);
+  const targetParticipantIds = mentionRouting.broadcastAll
+    ? context.hall.participants.filter((p) => p.active && p.participantId !== authorParticipantId).map((p) => p.participantId)
+    : mentionRouting.targets.map((target) => target.participantId);
 
   const message = (
     await appendHallMessage({
@@ -824,146 +768,209 @@ export async function postHallMessage(
       content: normalizedContent,
       targetParticipantIds,
       mentionTargets: mentionRouting.targets,
-      projectId: nextTaskCard?.projectId,
-      taskId: nextTaskCard?.taskId,
-      taskCardId: nextTaskCard?.taskCardId,
-      roomId: nextTaskCard?.roomId,
-      payload: nextTaskCard
-        ? {
-            projectId: nextTaskCard.projectId,
-            taskId: nextTaskCard.taskId,
-            taskCardId: nextTaskCard.taskCardId,
-            roomId: nextTaskCard.roomId,
-            taskStage: nextTaskCard.stage,
-            taskStatus: nextTaskCard.status,
-          }
-        : undefined,
+      projectId: taskCard?.projectId,
+      taskId: taskCard?.taskId,
+      taskCardId: taskCard?.taskCardId,
+      roomId: taskCard?.roomId,
     })
   ).message;
 
-  if (
-    openedImplicitDiscussionCycle
-    && nextTaskCard?.discussionCycle
-    && message.taskCardId === nextTaskCard.taskCardId
-    && Date.parse(nextTaskCard.discussionCycle.openedAt) < Date.parse(message.createdAt)
-  ) {
-    nextTaskCard = (
-      await updateHallTaskCard({
-        taskCardId: nextTaskCard.taskCardId,
-        discussionCycle: {
-          ...nextTaskCard.discussionCycle,
-          openedAt: message.createdAt,
-        },
-        stage: "discussion",
-      })
-    ).taskCard;
-  }
-
-  if (nextTaskCard && authorParticipantId === "operator" && nextTaskCard.stage === "blocked") {
-    const resumeOwnerParticipantId = nextTaskCard.currentOwnerParticipantId ?? nextTaskCard.plannedExecutionOrder[0];
-    const resumeOwnerExplicitlyMentioned = matchesExplicitHallMentionForParticipant(
-      input.content,
-      resumeOwnerParticipantId ? findParticipant(context.hall.participants, resumeOwnerParticipantId) : undefined,
-    );
-    if (resumeOwnerParticipantId && (mentionRouting.targets.length === 0 || resumeOwnerExplicitlyMentioned)) {
-      const resumed = await assignHallTaskExecution({
-        taskCardId: nextTaskCard.taskCardId,
-        ownerParticipantId: resumeOwnerParticipantId,
-        note: input.content.trim(),
-      }, options);
-      return {
-        hall: resumed.hall,
-        hallSummary: resumed.hallSummary,
-        taskCard: resumed.taskCard,
-        taskSummary: resumed.taskSummary,
-        task: resumed.task,
-        roomId: resumed.roomId,
-        message,
-        generatedMessages: resumed.generatedMessages,
-      };
-    }
-
-    if (mentionRouting.targets.length === 0) {
-      nextTaskCard = openDiscussionCycle(
-        nextTaskCard,
-        authorParticipantId,
-        context.hall.participants,
-        buildDynamicDiscussionParticipantQueue(context.hall, nextTaskCard, undefined, input.content),
-      );
-      nextTaskCard = (
-        await updateHallTaskCard({
-          taskCardId: nextTaskCard.taskCardId,
-          discussionCycle: nextTaskCard.discussionCycle,
-          stage: "discussion",
-          status: "todo",
-        })
-      ).taskCard;
-    }
-  }
-
-  if (!nextTaskCard) {
-    if (authorParticipantId === "operator") {
-      const generatedMessages: HallMessage[] = [];
-      const lobbyTargets = resolveLobbyParticipants(context.hall.participants, targetParticipantIds);
-      for (const participant of lobbyTargets) {
-        generatedMessages.push(await appendLobbyHallReply({
-          hall: context.hall,
-          participant,
-          triggerMessage: message,
-        }));
-      }
-      const hallRead = await readCollaborationHall(context.hall.hallId);
-      return {
-        hall: hallRead.hall,
-        hallSummary: hallRead.hallSummary,
-        message,
-        generatedMessages,
-      };
-    }
-    const hallRead = await readCollaborationHall(context.hall.hallId);
-    return {
-      hall: hallRead.hall,
-      hallSummary: hallRead.hallSummary,
-      message,
-      generatedMessages: [],
-    };
-  }
-
-  const taskStore = await loadTaskStore();
-  const task = taskStore.tasks.find((item) => item.projectId === nextTaskCard?.projectId && item.taskId === nextTaskCard?.taskId);
-  if (nextTaskCard.roomId) {
-    const linkedRoom = await requireLinkedRoom(nextTaskCard.roomId);
-    await publishTaskRoomBridgeEvent({
-      type: "message_posted",
-      room: linkedRoom,
-      task,
-      note: "Hall message mirrored to linked task context.",
+  // Route and dispatch — the core of the new group chat model
+  if (authorParticipantId === "operator" && taskCard && options.toolClient) {
+    scheduleRouteAndDispatch({
+      hall: context.hall,
+      taskCard,
+      triggerMessage: message,
+      mentionRouting,
+      toolClient: options.toolClient,
     });
   }
 
   const hallRead = await readCollaborationHall(context.hall.hallId);
-  const taskDetail = await readCollaborationHallTaskDetail(nextTaskCard.taskCardId);
-
-  scheduleHallDiscussion(
-    nextTaskCard.taskCardId,
-    {
-      triggerMessage: message,
-      explicitTargetParticipantIds: targetParticipantIds,
-      strictMentions: mentionRouting.targets.length > 0 && !mentionRouting.broadcastAll,
-      toolClient: options.toolClient,
-    },
-  );
+  const taskDetail = taskCard ? await readCollaborationHallTaskDetail(taskCard.taskCardId) : undefined;
+  const taskStore = await loadTaskStore();
+  const task = taskCard
+    ? taskStore.tasks.find((item) => item.projectId === taskCard.projectId && item.taskId === taskCard.taskId)
+    : undefined;
 
   return {
     hall: hallRead.hall,
     hallSummary: hallRead.hallSummary,
-    taskCard: taskDetail.taskCard,
-    taskSummary: taskDetail.taskSummary,
+    taskCard: taskDetail?.taskCard,
+    taskSummary: taskDetail?.taskSummary,
     task,
-    roomId: nextTaskCard.roomId,
+    roomId: taskCard?.roomId,
     message,
     generatedMessages: [],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Group Chat Routing — replaces the old workflow-driven discussion/execution
+// ---------------------------------------------------------------------------
+
+const MAX_AUTO_CHAIN_DEPTH = 5;
+
+interface RouteAndDispatchInput {
+  hall: CollaborationHall;
+  taskCard: HallTaskCard;
+  triggerMessage: HallMessage;
+  mentionRouting: ReturnType<typeof resolveHallMentionTargets>;
+  toolClient: ToolClient;
+}
+
+function scheduleRouteAndDispatch(input: RouteAndDispatchInput): void {
+  let pending: Promise<void> | undefined;
+  pending = (async () => {
+    try {
+      await routeAndDispatchHallMessage(input);
+    } catch (error) {
+      await appendOperationAudit({
+        action: "hall_task_message",
+        source: "runtime",
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+        metadata: { taskCardId: input.taskCard.taskCardId },
+      });
+    } finally {
+      if (pending) pendingHallBackgroundWork.delete(pending);
+    }
+  })();
+  pendingHallBackgroundWork.add(pending);
+}
+
+async function routeAndDispatchHallMessage(input: RouteAndDispatchInput): Promise<void> {
+  const { hall, taskCard, triggerMessage, mentionRouting, toolClient } = input;
+
+  // Determine target agents
+  let targetParticipants: HallParticipant[];
+
+  if (mentionRouting.broadcastAll) {
+    // @all → dispatch all active agents
+    targetParticipants = hall.participants.filter((p) => p.active && p.participantId !== "operator");
+  } else if (mentionRouting.targets.length > 0) {
+    // @specific agent(s) → dispatch those
+    targetParticipants = mentionRouting.targets
+      .map((t) => findParticipant(hall.participants, t.participantId))
+      .filter((p): p is HallParticipant => p != null && p.active);
+  } else {
+    // No @mention → dispatch main agent (default responder)
+    const mainAgent = hall.participants.find((p) => p.active && /\bmain\b/i.test(p.agentId ?? p.participantId));
+    if (mainAgent) {
+      targetParticipants = [mainAgent];
+    } else {
+      // Fallback: first active agent
+      const fallback = hall.participants.find((p) => p.active);
+      targetParticipants = fallback ? [fallback] : [];
+    }
+  }
+
+  if (targetParticipants.length === 0) return;
+
+  // Load thread messages for context
+  const recentThreadMessages = await loadRecentHallThreadMessages(taskCard);
+
+  // Dispatch all targets concurrently
+  await Promise.allSettled(
+    targetParticipants.map((participant) =>
+      dispatchHallAgentReply({
+        hall,
+        taskCard,
+        participant,
+        triggerMessage,
+        recentThreadMessages,
+        toolClient,
+        chainDepth: 0,
+      }),
+    ),
+  );
+}
+
+async function dispatchHallAgentReply(input: {
+  hall: CollaborationHall;
+  taskCard: HallTaskCard;
+  participant: HallParticipant;
+  triggerMessage: HallMessage;
+  recentThreadMessages: HallMessage[];
+  toolClient: ToolClient;
+  chainDepth: number;
+}): Promise<void> {
+  const { hall, taskCard, participant, triggerMessage, recentThreadMessages, toolClient, chainDepth } = input;
+
+  if (!canDispatchHallToRuntime(toolClient, participant)) return;
+
+  // Dispatch the agent
+  let result: HallRuntimeDispatchResult;
+  try {
+    result = await dispatchHallRuntimeTurn({
+      client: toolClient,
+      hall,
+      taskCard,
+      participant,
+      triggerMessage,
+      recentThreadMessages,
+      mode: "execution",
+      note: input.triggerMessage.content,
+    });
+  } catch (error) {
+    await appendRuntimeFailureHallMessage(hall, taskCard, participant, error);
+    return;
+  }
+
+  if (result.canceled) return;
+
+  // Persist the agent's reply
+  const replyMessage = await appendPersistedHallMessage({
+    hallId: hall.hallId,
+    kind: result.kind,
+    participant,
+    content: result.content,
+    targetParticipantIds: [],
+    projectId: taskCard.projectId,
+    taskId: taskCard.taskId,
+    taskCardId: taskCard.taskCardId,
+    roomId: taskCard.roomId,
+    payload: result.payload,
+  });
+
+  // Handle parallel_dispatch directive
+  const directive = result.chainDirective;
+  if (directive?.nextAction === "parallel_dispatch" && directive.parallelTasks?.length) {
+    scheduleParallelDispatch({
+      hall,
+      taskCard: await requireTaskCard(taskCard.taskCardId),
+      initiator: participant,
+      parallelTasks: directive.parallelTasks,
+      toolClient,
+    });
+  }
+
+  // Auto-chain: if agent @mentioned other agents, dispatch them (up to depth limit)
+  if (chainDepth < MAX_AUTO_CHAIN_DEPTH) {
+    const replyMentions = resolveHallMentionTargets(result.content, hall.participants);
+    const chainTargets = replyMentions.targets
+      .map((t) => findParticipant(hall.participants, t.participantId))
+      .filter((p): p is HallParticipant =>
+        p != null && p.active && p.participantId !== participant.participantId,
+      );
+
+    if (chainTargets.length > 0) {
+      const updatedThreadMessages = await loadRecentHallThreadMessages(taskCard);
+      await Promise.allSettled(
+        chainTargets.map((target) =>
+          dispatchHallAgentReply({
+            hall,
+            taskCard,
+            participant: target,
+            triggerMessage: replyMessage,
+            recentThreadMessages: updatedThreadMessages,
+            toolClient,
+            chainDepth: chainDepth + 1,
+          }),
+        ),
+      );
+    }
+  }
 }
 
 function shouldPromoteHallMessageToTask(content: string, hasExplicitMention: boolean): boolean {
@@ -2417,7 +2424,7 @@ async function runHallDiscussion(
   }
 }
 
-async function loadRecentHallThreadMessages(taskCard: HallTaskCard, limit = 12): Promise<HallMessage[]> {
+async function loadRecentHallThreadMessages(taskCard: HallTaskCard, limit = 30): Promise<HallMessage[]> {
   const messageStore = await loadCollaborationHallMessageStore();
   return listHallMessages(messageStore, { hallId: taskCard.hallId })
     .filter((message) => message.taskCardId === taskCard.taskCardId || message.taskId === taskCard.taskId)
