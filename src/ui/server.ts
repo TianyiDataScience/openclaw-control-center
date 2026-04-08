@@ -16888,7 +16888,7 @@ function renderFileWorkbenchScript(): string {
 function renderAgentVisualEnhancerScript(): string {
   return `<script>
 (() => {
-  const avatars = Array.from(document.querySelectorAll('.agent-avatar, .staff-avatar'));
+  const avatars = Array.from(document.querySelectorAll('.agent-avatar, .staff-avatar, .hall-agent-avatar'));
   if (!avatars.length) return;
   const prefersReducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   // Pixel motion runs fully on client; no network polling and no extra token usage.
