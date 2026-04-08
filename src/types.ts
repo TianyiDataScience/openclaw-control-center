@@ -302,6 +302,7 @@ export interface HallTaskCard {
   sessionKeys: string[];
   discussionCycle?: TaskDiscussionCycle;
   executionLock?: ExecutionLock;
+  parallelGroups?: HallParallelGroup[];
   archivedAt?: string;
   archivedByParticipantId?: string;
   archivedByLabel?: string;
@@ -315,6 +316,29 @@ export interface HallExecutionItem {
   task: string;
   handoffToParticipantId?: string;
   handoffWhen?: string;
+}
+
+export type HallParallelSlotStatus = "pending" | "running" | "completed" | "failed";
+
+export interface HallParallelSlot {
+  slotId: string;
+  participantId: string;
+  task: string;
+  status: HallParallelSlotStatus;
+  result?: string;
+  sessionKey?: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface HallParallelGroup {
+  groupId: string;
+  initiatorParticipantId: string;
+  slots: HallParallelSlot[];
+  status: "active" | "settled";
+  createdAt: string;
+  settledAt?: string;
 }
 
 export interface CollaborationHall {

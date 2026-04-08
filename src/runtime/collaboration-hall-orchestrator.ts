@@ -69,6 +69,7 @@ import { loadBestEffortAgentRoster } from "./agent-roster";
 import {
   canDispatchHallToRuntime,
   dispatchHallRuntimeTurn,
+  type HallParallelTaskTarget,
   type HallRuntimeChainDirective,
   type HallRuntimeDispatchResult,
 } from "./hall-runtime-dispatch";
@@ -83,6 +84,8 @@ import type {
   CollaborationHallSummary,
   HallExecutionItem,
   HallMessage,
+  HallParallelGroup,
+  HallParallelSlot,
   HallParticipant,
   HallSemanticRole,
   HallTaskCard,
@@ -3039,8 +3042,342 @@ async function applyHallExecutionDirective(input: {
     };
   }
 
+  if (nextAction === "parallel_dispatch") {
+    const parallelTasks = input.directive?.parallelTasks;
+    if (!parallelTasks || parallelTasks.length === 0) {
+      return { taskCard: latestTaskCard, task: input.task, generatedMessages: [] };
+    }
+    scheduleParallelDispatch({
+      hall: latestHall,
+      taskCard: latestTaskCard,
+      task: input.task,
+      initiator: input.participant,
+      parallelTasks,
+      toolClient: input.toolClient!,
+    });
+    return { taskCard: latestTaskCard, task: input.task, generatedMessages: [] };
+  }
+
   return { taskCard: latestTaskCard, task: input.task, generatedMessages: [] };
 }
+
+// ---------------------------------------------------------------------------
+// Parallel Dispatch — Hall-level Agent-to-Agent async collaboration
+// ---------------------------------------------------------------------------
+
+interface ParallelDispatchInput {
+  hall: CollaborationHall;
+  taskCard: HallTaskCard;
+  task?: ProjectTask;
+  initiator: HallParticipant;
+  parallelTasks: HallParallelTaskTarget[];
+  toolClient: ToolClient;
+}
+
+function scheduleParallelDispatch(input: ParallelDispatchInput): void {
+  let pending: Promise<void> | undefined;
+  pending = (async () => {
+    try {
+      await executeParallelDispatch(input);
+    } catch (error) {
+      await appendOperationAudit({
+        action: "hall_parallel_dispatch",
+        source: "runtime",
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+        metadata: { taskCardId: input.taskCard.taskCardId },
+      });
+    } finally {
+      if (pending) pendingHallBackgroundWork.delete(pending);
+    }
+  })();
+  pendingHallBackgroundWork.add(pending);
+}
+
+async function executeParallelDispatch(input: ParallelDispatchInput): Promise<void> {
+  const { hall, taskCard, task, initiator, parallelTasks, toolClient } = input;
+  const groupId = randomUUID();
+  const now = new Date().toISOString();
+
+  // 1. Resolve targets and build slots
+  const slots: HallParallelSlot[] = [];
+  for (const target of parallelTasks) {
+    const participant = findParticipant(hall.participants, target.executor);
+    if (!participant) continue;
+    slots.push({
+      slotId: randomUUID(),
+      participantId: participant.participantId,
+      task: target.task,
+      status: "pending",
+      startedAt: now,
+    });
+  }
+  if (slots.length === 0) return;
+
+  // 2. Create the parallel group and persist
+  const group: HallParallelGroup = {
+    groupId,
+    initiatorParticipantId: initiator.participantId,
+    slots,
+    status: "active",
+    createdAt: now,
+  };
+  const existingGroups = taskCard.parallelGroups ?? [];
+  await updateHallTaskCard({
+    taskCardId: taskCard.taskCardId,
+    parallelGroups: [...existingGroups, group],
+  });
+
+  // 3. System message announcing the parallel dispatch
+  const language = inferHallResponseLanguage(`${taskCard.title}\n${taskCard.description}`);
+  const slotSummary = slots
+    .map((slot) => {
+      const participant = findParticipant(hall.participants, slot.participantId);
+      return `${participant?.displayName ?? slot.participantId}: ${slot.task}`;
+    })
+    .join(language === "zh" ? "；" : "; ");
+  await appendHallSystemMessage({
+    hallId: hall.hallId,
+    projectId: taskCard.projectId,
+    taskId: taskCard.taskId,
+    taskCardId: taskCard.taskCardId,
+    roomId: taskCard.roomId,
+    content: language === "zh"
+      ? `${initiator.displayName} 发起并行调度：${slotSummary}`
+      : `${initiator.displayName} initiated parallel dispatch: ${slotSummary}`,
+    payload: {
+      taskStage: taskCard.stage,
+      taskStatus: taskCard.status,
+      status: "parallel_dispatch_started",
+    },
+  });
+
+  // 4. Serialize initiator wake-ups to prevent concurrent Manager re-invocations
+  let initiatorWakeChain: Promise<unknown> = Promise.resolve();
+
+  // 5. Dispatch all slots concurrently
+  const slotPromises = slots.map((slot) => {
+    return (async () => {
+      const participant = findParticipant(hall.participants, slot.participantId);
+      if (!participant || !canDispatchHallToRuntime(toolClient, participant)) {
+        await updateParallelSlot(taskCard.taskCardId, groupId, slot.slotId, {
+          status: "failed",
+          error: "Agent unavailable for runtime dispatch",
+          completedAt: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // Mark running
+      await updateParallelSlot(taskCard.taskCardId, groupId, slot.slotId, { status: "running" });
+
+      try {
+        const result = await dispatchHallRuntimeTurn({
+          client: toolClient,
+          hall,
+          taskCard: await requireTaskCard(taskCard.taskCardId),
+          participant,
+          task,
+          mode: "execution",
+          note: language === "zh"
+            ? `[并行任务 — 来自 ${initiator.displayName}] ${slot.task}`
+            : `[Parallel task from ${initiator.displayName}] ${slot.task}`,
+        });
+
+        // Persist the agent's visible message
+        await appendPersistedHallMessage({
+          hallId: hall.hallId,
+          kind: result.kind,
+          participant,
+          content: result.content,
+          targetParticipantIds: [initiator.participantId],
+          projectId: taskCard.projectId,
+          taskId: taskCard.taskId,
+          taskCardId: taskCard.taskCardId,
+          roomId: taskCard.roomId,
+          payload: result.payload,
+        });
+
+        // Update slot as completed
+        const resultSummary = result.content.length > 800
+          ? `${result.content.slice(0, 800)}…`
+          : result.content;
+        await updateParallelSlot(taskCard.taskCardId, groupId, slot.slotId, {
+          status: "completed",
+          result: resultSummary,
+          sessionKey: result.sessionKey,
+          completedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        await updateParallelSlot(taskCard.taskCardId, groupId, slot.slotId, {
+          status: "failed",
+          error: error instanceof Error ? error.message : String(error),
+          completedAt: new Date().toISOString(),
+        });
+      }
+
+      // Wake initiator (serialized)
+      initiatorWakeChain = initiatorWakeChain.then(() =>
+        wakeParallelInitiator({
+          hall,
+          taskCardId: taskCard.taskCardId,
+          groupId,
+          completedSlotId: slot.slotId,
+          initiator,
+          task,
+          toolClient,
+        }).catch(() => undefined),
+      );
+      await initiatorWakeChain;
+    })();
+  });
+
+  await Promise.allSettled(slotPromises);
+
+  // 6. Mark group as settled
+  const latestCard = await requireTaskCard(taskCard.taskCardId);
+  const settledGroups = (latestCard.parallelGroups ?? []).map((g) =>
+    g.groupId === groupId ? { ...g, status: "settled" as const, settledAt: new Date().toISOString() } : g,
+  );
+  await updateHallTaskCard({
+    taskCardId: taskCard.taskCardId,
+    parallelGroups: settledGroups,
+  });
+
+  await appendOperationAudit({
+    action: "hall_parallel_dispatch",
+    source: "runtime",
+    ok: true,
+    detail: `parallel dispatch group ${groupId} settled (${slots.length} slots)`,
+    metadata: { taskCardId: taskCard.taskCardId, groupId },
+  });
+}
+
+async function updateParallelSlot(
+  taskCardId: string,
+  groupId: string,
+  slotId: string,
+  patch: Partial<Pick<HallParallelSlot, "status" | "result" | "sessionKey" | "completedAt" | "error">>,
+): Promise<void> {
+  const card = await requireTaskCard(taskCardId);
+  const groups = (card.parallelGroups ?? []).map((g) => {
+    if (g.groupId !== groupId) return g;
+    return {
+      ...g,
+      slots: g.slots.map((s) =>
+        s.slotId === slotId ? { ...s, ...patch } : s,
+      ),
+    };
+  });
+  await updateHallTaskCard({ taskCardId, parallelGroups: groups });
+}
+
+async function wakeParallelInitiator(input: {
+  hall: CollaborationHall;
+  taskCardId: string;
+  groupId: string;
+  completedSlotId: string;
+  initiator: HallParticipant;
+  task?: ProjectTask;
+  toolClient: ToolClient;
+}): Promise<void> {
+  const latestCard = await requireTaskCard(input.taskCardId);
+  const group = latestCard.parallelGroups?.find((g) => g.groupId === input.groupId);
+  if (!group) return;
+
+  const completedSlot = group.slots.find((s) => s.slotId === input.completedSlotId);
+  if (!completedSlot) return;
+
+  const completed = group.slots.filter((s) => s.status === "completed" || s.status === "failed");
+  const pending = group.slots.filter((s) => s.status === "pending" || s.status === "running");
+  const language = inferHallResponseLanguage(`${latestCard.title}\n${latestCard.description}`);
+
+  const completedName = findParticipant(input.hall.participants, completedSlot.participantId)?.displayName
+    ?? completedSlot.participantId;
+  const pendingNames = pending
+    .map((s) => findParticipant(input.hall.participants, s.participantId)?.displayName ?? s.participantId)
+    .join(", ");
+
+  const wakeNote = language === "zh"
+    ? [
+        `[并行执行更新]`,
+        `${completedName} 已完成其任务。`,
+        completedSlot.status === "completed" ? `结果: ${completedSlot.result ?? "(无结果)"}` : `失败: ${completedSlot.error ?? "未知错误"}`,
+        ``,
+        `进度: ${completed.length}/${group.slots.length}`,
+        pending.length > 0 ? `仍在执行: ${pendingNames}` : `所有并行任务已完成。`,
+        ``,
+        `你可以:`,
+        `- 处理已完成的结果并继续等待其他 Agent`,
+        `- 发起新的 parallel_dispatch`,
+        `- 如果所有任务已完成，综合结果并决定下一步`,
+      ].filter(Boolean).join("\n")
+    : [
+        `[Parallel execution update]`,
+        `${completedName} finished its task.`,
+        completedSlot.status === "completed" ? `Result: ${completedSlot.result ?? "(no result)"}` : `Failed: ${completedSlot.error ?? "unknown error"}`,
+        ``,
+        `Progress: ${completed.length}/${group.slots.length} settled.`,
+        pending.length > 0 ? `Still running: ${pendingNames}` : `All parallel tasks have completed.`,
+        ``,
+        `You may:`,
+        `- Process this result and continue waiting for others`,
+        `- Issue new parallel_dispatch targets`,
+        `- If all tasks are done, synthesize and decide next action`,
+      ].filter(Boolean).join("\n");
+
+  if (!canDispatchHallToRuntime(input.toolClient, input.initiator)) return;
+
+  const result = await dispatchHallRuntimeTurn({
+    client: input.toolClient,
+    hall: input.hall,
+    taskCard: latestCard,
+    participant: input.initiator,
+    task: input.task,
+    mode: "execution",
+    note: wakeNote,
+  });
+
+  // Persist the initiator's response
+  if (!result.canceled && !result.suppressVisibleMessage) {
+    await appendPersistedHallMessage({
+      hallId: input.hall.hallId,
+      kind: result.kind,
+      participant: input.initiator,
+      content: result.content,
+      targetParticipantIds: [],
+      projectId: latestCard.projectId,
+      taskId: latestCard.taskId,
+      taskCardId: latestCard.taskCardId,
+      roomId: latestCard.roomId,
+      payload: result.payload,
+    });
+  }
+
+  // Handle the initiator's response directive (may trigger another parallel dispatch)
+  const directive = result.chainDirective;
+  if (directive?.nextAction === "parallel_dispatch" && directive.parallelTasks?.length) {
+    scheduleParallelDispatch({
+      hall: input.hall,
+      taskCard: await requireTaskCard(input.taskCardId),
+      task: input.task,
+      initiator: input.initiator,
+      parallelTasks: directive.parallelTasks,
+      toolClient: input.toolClient,
+    });
+  } else if (directive?.nextAction && directive.nextAction !== "continue") {
+    await applyHallExecutionDirective({
+      hall: input.hall,
+      taskCard: await requireTaskCard(input.taskCardId),
+      task: input.task,
+      participant: input.initiator,
+      directive,
+      toolClient: input.toolClient,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 function buildAutomaticRuntimeHandoffInput(
   taskCard: HallTaskCard,

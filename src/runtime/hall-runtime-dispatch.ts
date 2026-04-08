@@ -56,12 +56,18 @@ interface ToolClientWithAgentRun extends ToolClient {
   }>;
 }
 
-export type HallRuntimeNextAction = "continue" | "review" | "blocked" | "handoff" | "done";
+export type HallRuntimeNextAction = "continue" | "review" | "blocked" | "handoff" | "done" | "parallel_dispatch";
+
+export interface HallParallelTaskTarget {
+  executor: string;
+  task: string;
+}
 
 export interface HallRuntimeChainDirective {
   nextAction?: HallRuntimeNextAction;
   nextStep?: string;
   executor?: string;
+  parallelTasks?: HallParallelTaskTarget[];
 }
 
 export interface HallRuntimeDispatchInput {
@@ -142,6 +148,7 @@ interface ParsedStructuredBlock {
   nextAction?: HallRuntimeNextAction;
   nextStep?: string;
   artifactRefs?: TaskArtifact[];
+  parallelTasks?: HallParallelTaskTarget[];
 }
 
 interface HallRuntimeRepoContext {
@@ -460,7 +467,9 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
       "You may agree, disagree, refine, redirect, or propose a better angle if that is more useful.",
       "Detailed answers are allowed. If a full version, rewrite, expansion, or example would help, give it in full.",
       "If you mention a teammate by name, use a real hall participant name.",
-      'Structured JSON keys you may include: "proposal", "decision", "executor", "doneWhen", "artifactRefs".',
+      role === "manager" || role === "planner"
+        ? 'Structured JSON keys you may include: "proposal", "decision", "executor", "doneWhen", "artifactRefs", "parallelTasks".'
+        : 'Structured JSON keys you may include: "proposal", "decision", "executor", "doneWhen", "artifactRefs".',
     ].join("\n");
   }
 
@@ -501,7 +510,7 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
       : "",
       "Do not say the work is ready, done, or ready for review until the visible reply already contains the concrete deliverable for your step.",
       "Do not restate the whole thread. Do not write a retrospective. Do not reopen earlier owners unless there is a real blocker.",
-      'Structured JSON keys you may include: "latestSummary", "blockers", "requiresInputFrom", "doneWhen", "nextAction", "nextStep", "artifactRefs".',
+      'Structured JSON keys you may include: "latestSummary", "blockers", "requiresInputFrom", "doneWhen", "nextAction", "nextStep", "artifactRefs", "parallelTasks".',
     ].filter(Boolean).join("\n");
   }
 
@@ -537,8 +546,11 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
       : "",
     "Do not say the work is done, hand off, or ask for review until the visible reply already contains the concrete deliverable for your step.",
     "Do not write a project recap, status memo, or generic brainstorming. If there is a next queued owner and you are not blocked, hand off instead of lingering on your own step.",
-    'Structured JSON keys you may include: "latestSummary", "blockers", "requiresInputFrom", "doneWhen", "nextAction", "nextStep", "artifactRefs".',
-    'Allowed nextAction values: "continue" when you need one more pass on your current execution item, "handoff" when your current execution item is complete and the next queued owner should take over, "review" when the work is ready for review and there is no further handoff, and "blocked" when you need help before continuing.',
+    'Structured JSON keys you may include: "latestSummary", "blockers", "requiresInputFrom", "doneWhen", "nextAction", "nextStep", "artifactRefs", "parallelTasks".',
+    'Allowed nextAction values: "continue" when you need one more pass on your current execution item, "handoff" when your current execution item is complete and the next queued owner should take over, "review" when the work is ready for review and there is no further handoff, "blocked" when you need help before continuing, and "parallel_dispatch" when you want to dispatch multiple hall agents concurrently on independent sub-tasks.',
+    role === "manager" || role === "planner"
+      ? 'If the task has clearly separable independent sub-tasks that different hall agents can work on simultaneously, set nextAction to "parallel_dispatch" and include "parallelTasks": [{"executor":"<agent_name>","task":"<description>"},...]. Each executor will be dispatched concurrently and you will be re-invoked as each completes with partial results. Only use parallel_dispatch when the sub-tasks are truly independent.'
+      : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -1188,6 +1200,7 @@ function buildHallRuntimeResult(input: {
       nextAction: concreteDeliverable.nextAction,
       nextStep: concreteDeliverable.nextStep ?? structured.nextStep,
       executor: implicitExecutor,
+      parallelTasks: concreteDeliverable.nextAction === "parallel_dispatch" ? structured.parallelTasks : undefined,
     },
     taskCardPatch,
   };
@@ -1930,6 +1943,7 @@ function extractStructuredBlock(rawText: string): { visibleText: string; structu
       nextAction: asOptionalNextAction(parsed.nextAction),
       nextStep: asOptionalString(parsed.nextStep),
       artifactRefs: asOptionalArtifactRefs(parsed.artifactRefs),
+      parallelTasks: asOptionalParallelTasks(parsed.parallelTasks),
     };
   } catch {
     structured = {};
@@ -2137,10 +2151,23 @@ function asOptionalNextAction(value: unknown): HallRuntimeNextAction | undefined
     case "blocked":
     case "handoff":
     case "done":
+    case "parallel_dispatch":
       return value.trim().toLowerCase() as HallRuntimeNextAction;
     default:
       return undefined;
   }
+}
+
+function asOptionalParallelTasks(value: unknown): HallParallelTaskTarget[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const tasks = value
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    .map((item) => ({
+      executor: typeof item.executor === "string" ? item.executor.trim() : "",
+      task: typeof item.task === "string" ? item.task.trim() : "",
+    }))
+    .filter((item) => item.executor && item.task);
+  return tasks.length > 0 ? tasks : undefined;
 }
 
 function asOptionalArtifactRefs(value: unknown): TaskArtifact[] | undefined {

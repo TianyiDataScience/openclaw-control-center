@@ -2,10 +2,10 @@ import type { AgentRosterEntry } from "./agent-roster";
 import type { HallParticipant, HallSemanticRole } from "../types";
 
 const ROLE_PATTERNS: Record<Exclude<HallSemanticRole, "generalist">, RegExp[]> = {
-  manager: [/manager/i, /\bmain\b/i, /lead/i, /chief/i, /owner/i, /orchestr/i],
-  planner: [/planner/i, /plan/i, /research/i, /architect/i, /product/i, /design/i],
+  manager: [/manager/i, /\bmain\b/i, /\bpm\b/i, /lead/i, /chief/i, /owner/i, /orchestr/i, /coordin/i],
+  planner: [/planner/i, /plan/i, /research/i, /architect/i, /product/i, /design/i, /bioinfo/i, /bioinformat/i, /scientist/i],
   coder: [/coder/i, /code/i, /dev/i, /engineer/i, /implement/i, /build/i, /builder/i, /maker/i],
-  reviewer: [/review/i, /qa/i, /audit/i, /critic/i, /test/i, /verify/i],
+  reviewer: [/review/i, /qa/i, /audit/i, /critic/i, /test/i, /verify/i, /complian/i, /writing/i],
 };
 
 export function resolveHallParticipantsFromRoster(roster: AgentRosterEntry[]): HallParticipant[] {
@@ -83,8 +83,18 @@ function pickBestRoleCandidate(
   assigned: Set<string>,
 ): { agentId: string; displayName: string } | undefined {
   const patterns = ROLE_PATTERNS[role];
-  const fromPattern = entries.find((entry) => !assigned.has(entry.agentId) && matchesRole(entry, patterns));
-  if (fromPattern) return fromPattern;
+  const candidates = entries.filter((entry) => !assigned.has(entry.agentId) && matchesRole(entry, patterns));
+  if (candidates.length > 1) {
+    // Prefer candidates that match a non-generic pattern (not just the agent ID "main").
+    // Among multiple matches, prefer the one whose agentId or displayName contains the role keyword more explicitly.
+    const explicit = candidates.find((c) => {
+      const h = `${c.agentId} ${c.displayName}`;
+      if (role === "manager") return /\bpm\b|manager|lead|chief|orchestr|coordin/i.test(h);
+      return true;
+    });
+    if (explicit) return explicit;
+  }
+  if (candidates.length > 0) return candidates[0];
   return entries.find((entry) => !assigned.has(entry.agentId));
 }
 

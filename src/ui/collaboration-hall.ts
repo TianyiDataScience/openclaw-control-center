@@ -1789,6 +1789,31 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       '</div>';
   };
 
+  const renderParallelGroupsDetailSection = (taskCard, _participants) => {
+    const groups = taskCard?.parallelGroups;
+    if (!Array.isArray(groups) || groups.length === 0) return '';
+    const activeGroups = groups.filter((g) => g.status === 'active' || (g.status === 'settled' && g.settledAt && Date.now() - Date.parse(g.settledAt) < 5 * 60 * 1000));
+    if (activeGroups.length === 0) return '';
+    const statusBadge = (status) => {
+      const colors = { pending: '#9ca3af', running: '#3b82f6', completed: '#22c55e', failed: '#ef4444' };
+      const labels = { pending: 'Pending', running: 'Running', completed: 'Done', failed: 'Failed' };
+      const color = colors[status] || '#9ca3af';
+      return '<span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:11px;font-weight:500;border:1px solid ' + color + ';color:' + color + ';">' + esc(labels[status] || status) + '</span>';
+    };
+    const slotRows = activeGroups.flatMap((g) =>
+      g.slots.map((slot) =>
+        '<div class="hall-detail-meta" style="margin-top:4px;">' +
+          statusBadge(slot.status) + ' ' +
+          '<strong>' + esc(participantLabel(slot.participantId)) + '</strong>: ' +
+          esc(slot.task.length > 80 ? slot.task.slice(0, 80) + '...' : slot.task) +
+        '</div>'
+      )
+    ).join('');
+    const totalSlots = activeGroups.reduce((sum, g) => sum + g.slots.length, 0);
+    const completedSlots = activeGroups.reduce((sum, g) => sum + g.slots.filter((s) => s.status === 'completed' || s.status === 'failed').length, 0);
+    return '<div class="hall-detail-group"><h4>Parallel Dispatch (' + completedSlots + '/' + totalSlots + ')</h4>' + slotRows + '</div>';
+  };
+
   const renderDetail = (payload) => {
     payload = withFreshestTaskCard(payload);
     if (!detail) return;
@@ -1827,6 +1852,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
             '<button type="button" class="hall-secondary-button" data-hall-continue-discussion onclick="return window.__openclawHallContinueDiscussion ? window.__openclawHallContinueDiscussion() : false">' + esc(textContinueDiscussion) + '</button>' +
           '</div>' +
         '</div>' +
+        renderParallelGroupsDetailSection(taskCard, participants) +
         '<div class="hall-detail-group"><h4>' + esc(textEvidence) + '</h4>' +
           '<div class="hall-detail-meta">' + esc(textLinkedTask) + ': ' + esc(task ? (task.projectId + ':' + task.taskId) : taskCard.projectId + ':' + taskCard.taskId) + '</div>' +
           '<div class="hall-detail-meta">' + esc(textLinkedRoom) + ': ' + esc(taskCard.roomId || '-') + '</div>' +
@@ -2969,6 +2995,53 @@ function describeHallDecisionCardState(
   };
 }
 
+function renderServerParallelGroupsSection(
+  taskCard: HallTaskCard,
+  participantMap: Map<string, string>,
+  language: UiLanguage,
+): string {
+  const groups = taskCard.parallelGroups;
+  if (!groups || groups.length === 0) return "";
+  const activeGroups = groups.filter((g) =>
+    g.status === "active" || (g.status === "settled" && g.settledAt && Date.now() - Date.parse(g.settledAt) < 5 * 60 * 1000),
+  );
+  if (activeGroups.length === 0) return "";
+
+  const statusBadge = (status: string): string => {
+    const colorMap: Record<string, string> = { pending: "#9ca3af", running: "#3b82f6", completed: "#22c55e", failed: "#ef4444" };
+    const labelMap: Record<string, string> = {
+      pending: pickUiText(language, "Pending", "等待中"),
+      running: pickUiText(language, "Running", "执行中"),
+      completed: pickUiText(language, "Done", "已完成"),
+      failed: pickUiText(language, "Failed", "失败"),
+    };
+    const color = colorMap[status] ?? "#9ca3af";
+    return `<span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:11px;font-weight:500;border:1px solid ${color};color:${color};">${escapeHtml(labelMap[status] ?? status)}</span>`;
+  };
+
+  const slotRows = activeGroups
+    .flatMap((g) => g.slots)
+    .map((slot) => {
+      const name = participantMap.get(slot.participantId) ?? slot.participantId;
+      const taskText = slot.task.length > 80 ? `${slot.task.slice(0, 80)}…` : slot.task;
+      return `<div class="hall-detail-meta" style="margin-top:4px;">${statusBadge(slot.status)} <strong>${escapeHtml(name)}</strong>: ${escapeHtml(taskText)}</div>`;
+    })
+    .join("");
+
+  const totalSlots = activeGroups.reduce((sum, g) => sum + g.slots.length, 0);
+  const completedSlots = activeGroups.reduce(
+    (sum, g) => sum + g.slots.filter((s) => s.status === "completed" || s.status === "failed").length,
+    0,
+  );
+
+  return `
+    <div class="hall-detail-group">
+      <h4>${escapeHtml(pickUiText(language, "Parallel Dispatch", "并行调度"))} (${completedSlots}/${totalSlots})</h4>
+      ${slotRows}
+    </div>
+  `;
+}
+
 function renderHallDetail(
   selectedTaskCard: HallTaskCard | undefined,
   selectedTaskSummary: HallTaskSummary | undefined,
@@ -3008,6 +3081,7 @@ function renderHallDetail(
           <button type="button" class="hall-secondary-button" data-hall-continue-discussion onclick="return window.__openclawHallContinueDiscussion ? window.__openclawHallContinueDiscussion() : false">${escapeHtml(pickUiText(language, "Continue discussion", "继续讨论"))}</button>
         </div>
       </div>
+      ${renderServerParallelGroupsSection(selectedTaskCard, participantMap, language)}
       <div class="hall-detail-group">
         <h4>${escapeHtml(pickUiText(language, "Linked evidence", "关联证据"))}</h4>
         <div class="hall-detail-meta">${escapeHtml(pickUiText(language, "Task", "任务"))}: ${escapeHtml(selectedTask ? `${selectedTask.projectId}:${selectedTask.taskId}` : `${selectedTaskCard.projectId}:${selectedTaskCard.taskId}`)}</div>

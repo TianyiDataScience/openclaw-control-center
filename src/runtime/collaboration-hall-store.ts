@@ -111,6 +111,7 @@ export interface UpdateHallTaskCardInput {
   discussionCycle?: HallTaskCard["discussionCycle"] | null;
   executionLock?: HallTaskCard["executionLock"] | null;
   sessionKeys?: string[];
+  parallelGroups?: HallTaskCard["parallelGroups"] | null;
   archivedAt?: string | null;
   archivedByParticipantId?: string | null;
   archivedByLabel?: string | null;
@@ -365,7 +366,21 @@ export async function createHallTaskCard(input: CreateHallTaskCardInput): Promis
   return { hallPath, path, taskCard };
 }
 
-export async function updateHallTaskCard(input: UpdateHallTaskCardInput): Promise<{ path: string; taskCard: HallTaskCard }> {
+/**
+ * Serialization chain for task card writes.
+ * Prevents lost updates when multiple parallel agents complete simultaneously
+ * and try to update the same task card (load-modify-save race).
+ * Single Node.js process — a promise chain is sufficient.
+ */
+let taskCardWriteChain: Promise<unknown> = Promise.resolve();
+
+export function updateHallTaskCard(input: UpdateHallTaskCardInput): Promise<{ path: string; taskCard: HallTaskCard }> {
+  const result = taskCardWriteChain.then(() => updateHallTaskCardUnsafe(input));
+  taskCardWriteChain = result.catch(() => undefined);
+  return result;
+}
+
+async function updateHallTaskCardUnsafe(input: UpdateHallTaskCardInput): Promise<{ path: string; taskCard: HallTaskCard }> {
   const payload = validateUpdateHallTaskCardInput(input);
   const taskCardStore = await loadCollaborationTaskCardStore();
   const taskCard = getHallTaskCard(taskCardStore, payload.taskCardId);
@@ -397,6 +412,7 @@ export async function updateHallTaskCard(input: UpdateHallTaskCardInput): Promis
   if (payload.latestSummary !== undefined) taskCard.latestSummary = payload.latestSummary ?? undefined;
   if (payload.discussionCycle !== undefined) taskCard.discussionCycle = payload.discussionCycle ?? undefined;
   if (payload.executionLock !== undefined) taskCard.executionLock = payload.executionLock ?? undefined;
+  if (payload.parallelGroups !== undefined) taskCard.parallelGroups = payload.parallelGroups ?? undefined;
   if (payload.sessionKeys !== undefined) taskCard.sessionKeys = payload.sessionKeys;
   if (payload.archivedAt !== undefined) taskCard.archivedAt = payload.archivedAt ?? undefined;
   if (payload.archivedByParticipantId !== undefined) {
@@ -528,7 +544,20 @@ export async function deleteHallMessagesForTaskCard(
   return { hallPath, path, removedCount };
 }
 
-export async function appendHallMessage(input: AppendHallMessageInput): Promise<{ path: string; hallPath: string; message: HallMessage }> {
+/**
+ * Serialization chain for hall message writes.
+ * Same rationale as taskCardWriteChain — prevents lost updates
+ * when parallel agents append messages concurrently.
+ */
+let hallMessageWriteChain: Promise<unknown> = Promise.resolve();
+
+export function appendHallMessage(input: AppendHallMessageInput): Promise<{ path: string; hallPath: string; message: HallMessage }> {
+  const result = hallMessageWriteChain.then(() => appendHallMessageUnsafe(input));
+  hallMessageWriteChain = result.catch(() => undefined);
+  return result;
+}
+
+async function appendHallMessageUnsafe(input: AppendHallMessageInput): Promise<{ path: string; hallPath: string; message: HallMessage }> {
   const payload = validateAppendHallMessageInput(input);
   const [hallStore, messageStore] = await Promise.all([
     loadCollaborationHallStore(),

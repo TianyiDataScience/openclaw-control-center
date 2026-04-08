@@ -24,8 +24,9 @@ export type OperationAuditAction =
   | "hall_task_handoff"
   | "hall_task_stop"
   | "hall_task_archive"
-  | "hall_task_delete";
-export type OperationAuditSource = "api" | "command";
+  | "hall_task_delete"
+  | "hall_parallel_dispatch";
+export type OperationAuditSource = "api" | "command" | "runtime";
 
 export interface OperationAuditInput {
   action: OperationAuditAction;
