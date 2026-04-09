@@ -2,6 +2,7 @@ import type { UiLanguage } from "../runtime/ui-preferences";
 import type {
   CollaborationHall,
   CollaborationHallSummary,
+  HallFileAttachment,
   HallMessage,
   HallParticipant,
   HallExecutionItem,
@@ -26,7 +27,7 @@ const HALL_AVATAR_CATALOG = [
   { keywords: ["ada", "阿达"], animal: "otter", accent: "#8ad1ff", asset: "ada-data-scientist.png", customImage: "ada-data-scientist.png" },
   { keywords: ["florence", "弗洛伦斯"], animal: "monkey", accent: "#f4c542", asset: "florence-compliance.png", customImage: "florence-compliance.png" },
   { keywords: ["coq", "rooster", "cock"], animal: "rooster", accent: "#ffb85e", asset: "coq.png" },
-  { keywords: ["main", "lion"], animal: "lion", accent: "#ff9966", asset: "main.png" },
+  { keywords: ["main", "lion"], animal: "lion", accent: "#ff9966", asset: "main.png", customImage: "main.jpg" },
   { keywords: ["monkey"], animal: "monkey", accent: "#f4c542", asset: "monkey.png" },
   { keywords: ["otter"], animal: "otter", accent: "#8ad1ff", asset: "otter.png" },
   { keywords: ["pandas", "panda"], animal: "panda", accent: "#9df2ff", asset: "pandas.png" },
@@ -110,7 +111,7 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
   };
 
   return `
-    <section class="card collaboration-hall-card is-context-collapsed" id="collaboration-hall" data-collaboration-hall-root>
+    <section class="card collaboration-hall-card is-context-open" id="collaboration-hall" data-collaboration-hall-root>
       <style>${renderCollaborationHallTheme()}</style>
       <div class="hall-shell">
         <div class="hall-toolbar">
@@ -156,15 +157,15 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
                     <button type="button" class="hall-menu-button hall-menu-button--danger" data-hall-delete-thread>${escapeHtml(t("Delete thread", "删除线程"))}</button>
                   </div>
                 </details>
-                <button type="button" class="hall-context-toggle" data-hall-toggle-context aria-pressed="false">${escapeHtml(t("Show context", "展开上下文"))}</button>
+                <button type="button" class="hall-context-toggle" data-hall-toggle-context aria-pressed="true">${escapeHtml(t("Hide context", "收起上下文"))}</button>
               </div>
             </div>
             <div class="hall-thread" data-hall-thread>${renderHallMessages(input.messages, input.language)}</div>
             <div class="hall-decision-panel" data-hall-decision-panel ${renderInitialDecisionPanel(input.selectedTaskCard, input.selectedTask, input.hall.participants, input.language) ? "" : "hidden"}>${renderInitialDecisionPanel(input.selectedTaskCard, input.selectedTask, input.hall.participants, input.language)}</div>
             <div class="hall-typing-strip" data-hall-typing-strip hidden></div>
             <div class="hall-composer-shell">
-              <div class="hall-handoff-panel" data-hall-handoff-panel hidden></div>
               <form class="hall-composer" data-hall-compose>
+                <div class="hall-composer-files" data-hall-file-preview hidden></div>
                 <div class="hall-composer-main">
                   <textarea
                     name="content"
@@ -174,13 +175,12 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
                     onkeyup="return window.__openclawHallHandleComposerKeyup ? window.__openclawHallHandleComposerKeyup(event) : true"
                   ></textarea>
                   <div class="hall-composer-actions">
+                    <input type="file" data-hall-file-input multiple accept="image/*,.pdf,.txt,.md,.json,.zip" style="position:absolute;clip:rect(0,0,0,0);width:1px;height:1px;overflow:hidden;border:0;padding:0;margin:-1px" />
+                    <button type="button" class="hall-secondary-button hall-secondary-button--icon" data-hall-attach-file title="${escapeHtml(t("Attach file", "附件"))}" aria-label="${escapeHtml(t("Attach file", "附件"))}">&#x1F4CE;</button>
                     <details class="hall-action-menu">
                       <summary class="hall-secondary-button hall-secondary-button--icon" title="${escapeHtml(t("Task actions", "任务动作"))}" aria-label="${escapeHtml(t("Task actions", "任务动作"))}">＋</summary>
                       <div class="hall-action-menu-panel">
                         <button type="button" class="hall-menu-button" data-hall-create-task>${escapeHtml(bootstrap.labels.sendTask)}</button>
-                        <button type="button" class="hall-menu-button" data-hall-approve>${escapeHtml(bootstrap.labels.approve)}</button>
-                        <button type="button" class="hall-menu-button" data-hall-reject>${escapeHtml(bootstrap.labels.reject)}</button>
-                        <button type="button" class="hall-menu-button" data-hall-handoff>${escapeHtml(bootstrap.labels.handoff)}</button>
                       </div>
                     </details>
                     <button type="button" class="hall-secondary-button hall-secondary-button--icon" data-hall-stop-task title="${escapeHtml(t("Stop current task", "停止当前任务"))}" aria-label="${escapeHtml(t("Stop current task", "停止当前任务"))}" hidden>■</button>
@@ -200,7 +200,7 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
                 <h3>${escapeHtml(t("Context", "上下文"))}</h3>
                 <div class="meta">${escapeHtml(t("Support the chat with owner, decision, evidence, and review state.", "这里只做群聊的辅助上下文：owner、决策、证据和审核状态。"))}</div>
               </div>
-              <button type="button" class="hall-context-toggle hall-context-toggle--inline" data-hall-toggle-context aria-pressed="false">${escapeHtml(t("Hide context", "收起上下文"))}</button>
+              <button type="button" class="hall-context-toggle hall-context-toggle--inline" data-hall-toggle-context aria-pressed="true">${escapeHtml(t("Hide context", "收起上下文"))}</button>
             </div>
             <div class="hall-detail-group">
               <h4>${escapeHtml(t("Team", "成员"))}</h4>
@@ -389,6 +389,71 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   let pendingComposerSubmitAfterComposition = false;
   const draftTtlMs = 180_000;
   const threadFollowThresholdPx = 40;
+  const hallFileInput = root.querySelector('[data-hall-file-input]');
+  const hallAttachButton = root.querySelector('[data-hall-attach-file]');
+  const hallFilePreview = root.querySelector('[data-hall-file-preview]');
+  const composerShell = root.querySelector('.hall-composer-shell');
+  let pendingFiles = [];
+  const HALL_FILE_MAX_BYTES = 20 * 1024 * 1024;
+
+  const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+  const addPendingFile = async (file) => {
+    if (file.size > HALL_FILE_MAX_BYTES) { setFlash(${JSON.stringify(pickUiText(language, "File too large (max 20 MB): ", "文件过大（最大 20 MB）："))} + file.name); return; }
+    if (pendingFiles.length >= 10) { setFlash(${JSON.stringify(pickUiText(language, "Max 10 files at a time.", "最多同时附加 10 个文件。"))}); return; }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      pendingFiles.push({ file, dataUrl });
+      renderPendingFiles();
+    } catch { setFlash(${JSON.stringify(pickUiText(language, "Failed to read file: ", "读取文件失败："))} + file.name); }
+  };
+
+  const renderPendingFiles = () => {
+    if (!hallFilePreview) return;
+    if (pendingFiles.length === 0) { hallFilePreview.hidden = true; return; }
+    hallFilePreview.hidden = false;
+    hallFilePreview.innerHTML = pendingFiles.map((item, index) => {
+      const isImage = item.file.type.startsWith('image/');
+      const thumbnail = isImage
+        ? '<img class="hall-file-thumb" src="' + esc(item.dataUrl.slice(0, 200000)) + '" />'
+        : '<span class="hall-file-icon">&#x1F4C4;</span>';
+      const sizeKB = Math.round(item.file.size / 1024);
+      return '<div class="hall-file-chip">' +
+        thumbnail +
+        '<span class="hall-file-chip-name">' + esc(item.file.name) + '</span>' +
+        '<span class="hall-file-chip-size">' + sizeKB + ' KB</span>' +
+        '<button type="button" class="hall-file-chip-remove" data-remove-index="' + index + '">&times;</button>' +
+      '</div>';
+    }).join('');
+  };
+
+  hallAttachButton?.addEventListener('click', () => hallFileInput?.click());
+  hallFileInput?.addEventListener('change', async () => {
+    for (const file of Array.from(hallFileInput.files || [])) { await addPendingFile(file); }
+    hallFileInput.value = '';
+  });
+  hallFilePreview?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-remove-index]');
+    if (!btn) return;
+    const index = Number(btn.dataset.removeIndex);
+    if (Number.isFinite(index) && index >= 0 && index < pendingFiles.length) {
+      pendingFiles.splice(index, 1);
+      renderPendingFiles();
+    }
+  });
+
+  composerShell?.addEventListener('dragover', (e) => { e.preventDefault(); composerShell.classList.add('hall-dragover'); });
+  composerShell?.addEventListener('dragleave', () => composerShell.classList.remove('hall-dragover'));
+  composerShell?.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    composerShell.classList.remove('hall-dragover');
+    for (const file of Array.from(e.dataTransfer?.files || [])) { await addPendingFile(file); }
+  });
 
   const esc = (value) => String(value || '').replace(/[&<>"']/g, (ch) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'": '&#39;' }[ch]));
   const decodeLegacyHtmlEntities = (value) => {
@@ -549,14 +614,24 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     html = html.replace(codePlaceholderPattern, (_match, index) => codeBlocks[Number(index)] || '');
     return html;
   };
-  const renderArtifactFooterHtml = (artifactRefs) => {
+  const renderArtifactFooterHtml = (artifactRefs, fileAttachments) => {
     if (!Array.isArray(artifactRefs) || artifactRefs.length === 0) return '';
+    const fileMap = new Map();
+    if (Array.isArray(fileAttachments)) {
+      fileAttachments.forEach((f) => { if (f && f.fileId) fileMap.set(f.fileId, f); });
+    }
     return artifactRefs
       .filter((artifact) => artifact && artifact.location)
       .map((artifact) => {
         const label = String(artifact.label || artifact.location || '').trim();
         const type = String(artifact.type || 'other').trim();
         const href = esc(String(artifact.location || '').trim());
+        const fileMeta = artifact.artifactId ? fileMap.get(artifact.artifactId) : null;
+        if (fileMeta && typeof fileMeta.mimeType === 'string' && fileMeta.mimeType.startsWith('image/')) {
+          return '<a class="hall-file-preview" href="' + href + '" target="_blank" rel="noreferrer">' +
+            '<img class="hall-file-img" src="' + href + '" alt="' + esc(label) + '" loading="lazy" />' +
+          '</a>';
+        }
         return '<a class="hall-artifact-chip" href="' + href + '" target="_blank" rel="noreferrer">' +
           '<span class="hall-artifact-chip-kind">' + esc(type) + '</span>' +
           '<span class="hall-artifact-chip-label">' + esc(label) + '</span>' +
@@ -564,7 +639,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       })
       .join('');
   };
-  const renderArtifactChips = (artifactRefs) => renderArtifactFooterHtml(artifactRefs);
+  const renderArtifactChips = (artifactRefs, fileAttachments) => renderArtifactFooterHtml(artifactRefs, fileAttachments);
   const stageLabel = (stage) => ({
     discussion: ${JSON.stringify(pickUiText(language, "Discussion", "讨论中"))},
     execution: ${JSON.stringify(pickUiText(language, "Execution", "执行中"))},
@@ -1615,10 +1690,19 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
           : 'agent';
       const footer = [];
       if (message && message.payload && Array.isArray(message.payload.artifactRefs) && message.payload.artifactRefs.length > 0) {
-        footer.push(renderArtifactFooterHtml(message.payload.artifactRefs));
+        footer.push(renderArtifactFooterHtml(message.payload.artifactRefs, message.payload.fileAttachments));
       }
       if (message.isDraft) {
         footer.push('<span class="hall-kind-pill">' + esc(textStreaming) + '</span>');
+      }
+      let toolStripHtml = '';
+      if (message.isDraft && Array.isArray(message.toolCalls) && message.toolCalls.length > 0) {
+        const pills = message.toolCalls.map((tc) => {
+          const statusClass = tc.toolStatus === 'completed' ? 'is-completed' : tc.toolStatus === 'error' ? 'is-error' : 'is-running';
+          const icon = tc.toolStatus === 'completed' ? '\\u2713' : tc.toolStatus === 'error' ? '\\u2717' : '\\u2699';
+          return '<span class="hall-tool-pill ' + statusClass + '">' + icon + ' ' + esc(tc.toolName) + '</span>';
+        });
+        toolStripHtml = '<div class="hall-tool-strip">' + pills.join('') + '</div>';
       }
       const messageMarkup = '<article class="hall-message" data-kind="' + esc(message.kind) + '" data-author-type="' + esc(authorType) + '">' +
         '<div class="hall-message-row">' +
@@ -1629,6 +1713,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
               '<div class="hall-message-meta">' + esc(message.createdAt || '') + '</div>' +
             '</div>' +
             '<div class="hall-message-body">' + renderMarkdownHtml(message.content) + '</div>' +
+            toolStripHtml +
             (footer.length > 0 ? '<div class="hall-message-footer">' + footer.join('') + '</div>' : '') +
           '</div>' +
         '</div>' +
@@ -1704,12 +1789,12 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const draftMessages = () => visibleDrafts()
     .map((draft) => {
       const content = sanitizeDraftVisibleText(draft.content || '');
-      if (!content) return null;
+      if (!content && !(draft.toolCalls && draft.toolCalls.length)) return null;
       return {
         kind: draft.messageKind || 'chat',
         authorLabel: draft.authorLabel || draft.authorParticipantId || 'Agent',
         authorSemanticRole: draft.authorSemanticRole,
-        content,
+        content: content || '',
         createdAt: draft.createdAt || '',
         projectId: draft.projectId,
         taskId: draft.taskId,
@@ -1717,6 +1802,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         roomId: draft.roomId,
         mentionTargets: [],
         isDraft: true,
+        toolCalls: draft.toolCalls || [],
       };
     })
     .filter(Boolean);
@@ -1850,10 +1936,43 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
             ? '<div class="hall-artifact-list">' + renderArtifactChips(task.artifacts) + '</div>'
             : '<div class="hall-detail-meta">' + esc(textNoArtifactsYet) + '</div>') +
         '</div>' +
+        '<div class="hall-detail-group"><h4>' + esc(${JSON.stringify(pickUiText(language, "Workspace Files", "工作区文件"))}) + '</h4>' +
+          '<div class="hall-workspace-files" data-hall-workspace-files>' +
+            '<div class="hall-detail-meta">' + esc(${JSON.stringify(pickUiText(language, "Loading...", "加载中..."))}) + '</div>' +
+          '</div>' +
+        '</div>' +
         '<div class="hall-detail-group"><h4>Participants</h4>' +
           '<div class="hall-detail-meta">' + esc(participantNames) + '</div>' +
         '</div>' +
       '</div>';
+    if (selectedTaskCardId) { loadWorkspaceFiles(selectedTaskCardId); }
+  };
+
+  const loadWorkspaceFiles = async (taskCardId) => {
+    const container = root.querySelector('[data-hall-workspace-files]');
+    if (!container) return;
+    try {
+      const res = await callJson('/api/hall/workspace-files?taskCardId=' + encodeURIComponent(taskCardId));
+      const files = Array.isArray(res?.files) ? res.files : [];
+      if (files.length === 0) {
+        container.innerHTML = '<div class="hall-detail-meta">' + esc(${JSON.stringify(pickUiText(language, "No files yet.", "还没有文件。"))}) + '</div>';
+        return;
+      }
+      container.innerHTML = files
+        .filter((f) => !f.isDirectory)
+        .map((f) => {
+          const sizeKB = Math.round((f.sizeBytes || 0) / 1024);
+          const href = '/hall-workspace-files/' + encodeURIComponent(taskCardId) + '/' + encodeURIComponent(f.relativePath);
+          const isImage = /\.(png|jpe?g|webp|gif)$/i.test(f.relativePath);
+          return '<a class="hall-workspace-file-item" href="' + esc(href) + '" target="_blank" rel="noreferrer">' +
+            '<span class="hall-workspace-file-name">' + esc(f.relativePath) + '</span>' +
+            '<span class="hall-workspace-file-meta">' + sizeKB + ' KB</span>' +
+            (isImage ? '<img class="hall-workspace-file-thumb" src="' + esc(href) + '" loading="lazy" />' : '') +
+          '</a>';
+        }).join('');
+    } catch {
+      container.innerHTML = '<div class="hall-detail-meta">' + esc(${JSON.stringify(pickUiText(language, "Failed to load workspace files.", "加载工作区文件失败。"))}) + '</div>';
+    }
   };
 
   const extractErrorMessage = (payload) => {
@@ -2009,6 +2128,27 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         renderVisibleThread();
         return;
       }
+      if (event.type === 'draft_tool_update' && event.draftId) {
+        const draft = hallDrafts.get(event.draftId);
+        if (!draft) return;
+        if (!draft.toolCalls) draft.toolCalls = [];
+        const toolName = String(event.toolName || '');
+        const toolStatus = String(event.toolStatus || 'running');
+        if (toolStatus === 'completed' || toolStatus === 'error') {
+          const existing = [...draft.toolCalls].reverse().find((t) => t.toolName === toolName && t.toolStatus === 'running');
+          if (existing) {
+            existing.toolStatus = toolStatus;
+            existing.endedAt = event.createdAt || new Date().toISOString();
+          } else {
+            draft.toolCalls.push({ toolName, toolStatus, startedAt: event.createdAt || new Date().toISOString(), endedAt: event.createdAt || new Date().toISOString() });
+          }
+        } else {
+          draft.toolCalls.push({ toolName, toolStatus, startedAt: event.createdAt || new Date().toISOString() });
+        }
+        hallDrafts.set(event.draftId, draft);
+        renderVisibleThread();
+        return;
+      }
       if ((event.type === 'draft_complete' || event.type === 'draft_abort') && event.draftId) {
         const draft = hallDrafts.get(event.draftId);
         if (event.type === 'draft_complete' && draft) {
@@ -2113,15 +2253,31 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const postReply = async () => {
     if (!(textarea instanceof HTMLTextAreaElement)) return;
     const content = textarea.value.trim();
-    if (!content) return;
+    if (!content && pendingFiles.length === 0) return;
+    const fileAttachments = [];
+    for (const item of pendingFiles) {
+      try {
+        const result = await callMutationJson('/api/hall/files', {
+          method: 'POST',
+          body: JSON.stringify({ dataUrl: item.dataUrl, fileName: item.file.name }),
+        });
+        if (result && result.file) fileAttachments.push(result.file);
+      } catch (err) {
+        setFlash(${JSON.stringify(pickUiText(language, "Upload failed: ", "上传失败："))} + (err instanceof Error ? err.message : item.file.name));
+        return;
+      }
+    }
     await callMutationJson('/api/hall/messages', {
       method: 'POST',
       body: JSON.stringify({
         taskCardId: selectedTaskCardId || undefined,
-        content,
+        content: content || ${JSON.stringify(pickUiText(language, "(attached file)", "(附件)"))},
+        fileAttachments: fileAttachments.length > 0 ? fileAttachments : undefined,
       }),
     });
     textarea.value = '';
+    pendingFiles = [];
+    renderPendingFiles();
     autoResizeComposer();
     await loadHall();
   };
@@ -2596,7 +2752,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       setContextOpen(root.classList.contains('is-context-collapsed'));
     });
   });
-  setContextOpen(false);
+  setContextOpen(true);
   renderThreadHeader();
   syncComposerMode();
   autoResizeComposer();
@@ -2903,7 +3059,7 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
           : "agent";
       const chips: string[] = [];
       if (message.payload?.artifactRefs?.length) {
-        chips.push(renderArtifactChips(message.payload.artifactRefs));
+        chips.push(renderArtifactChips(message.payload.artifactRefs, message.payload.fileAttachments));
       }
       return `
         <article class="hall-message" data-kind="${escapeHtml(message.kind)}" data-author-type="${escapeHtml(authorType)}">
@@ -3058,6 +3214,12 @@ function renderHallDetail(
       : '<div class="hall-detail-meta">' + escapeHtml(t("No artifacts yet.", "\u8fd8\u6ca1\u6709\u4ea7\u7269\u3002")) + "</div>",
     "</div>",
     '<div class="hall-detail-group">',
+    '<div class="hall-detail-group">',
+    "<h4>" + escapeHtml(t("Workspace Files", "\u5de5\u4f5c\u533a\u6587\u4ef6")) + "</h4>",
+    '<div class="hall-workspace-files" data-hall-workspace-files>',
+    '<div class="hall-detail-meta">' + escapeHtml(t("Select a thread to view workspace files.", "\u9009\u4e2d\u7ebf\u7a0b\u540e\u67e5\u770b\u5de5\u4f5c\u533a\u6587\u4ef6\u3002")) + "</div>",
+    "</div>",
+    "</div>",
     "<h4>" + escapeHtml(t("Participants", "\u53c2\u4e0e\u8005")) + "</h4>",
     '<div class="hall-detail-meta">' + escapeHtml(participantNames) + "</div>",
     "</div>",
@@ -3343,14 +3505,24 @@ function renderMarkdown(value: string): string {
   return html;
 }
 
-function renderArtifactChips(artifactRefs: TaskArtifact[] | undefined): string {
+function renderArtifactChips(artifactRefs: TaskArtifact[] | undefined, fileAttachments?: HallFileAttachment[]): string {
   if (!artifactRefs || artifactRefs.length === 0) return "";
+  const fileMap = new Map<string, HallFileAttachment>();
+  if (fileAttachments) {
+    for (const f of fileAttachments) {
+      if (f?.fileId) fileMap.set(f.fileId, f);
+    }
+  }
   return artifactRefs
     .filter((artifact) => artifact?.location)
     .map((artifact) => {
       const label = escapeHtml((artifact.label || artifact.location || "").trim());
       const href = escapeHtml((artifact.location || "").trim());
       const kind = escapeHtml((artifact.type || "other").trim());
+      const fileMeta = artifact.artifactId ? fileMap.get(artifact.artifactId) : undefined;
+      if (fileMeta && fileMeta.mimeType?.startsWith("image/")) {
+        return `<a class="hall-file-preview" href="${href}" target="_blank" rel="noreferrer"><img class="hall-file-img" src="${href}" alt="${label}" loading="lazy" /></a>`;
+      }
       return `<a class="hall-artifact-chip" href="${href}" target="_blank" rel="noreferrer"><span class="hall-artifact-chip-kind">${kind}</span><span class="hall-artifact-chip-label">${label}</span></a>`;
     })
     .join("");
