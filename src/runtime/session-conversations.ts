@@ -439,9 +439,12 @@ function parseHistoryEntry(input: unknown): SessionHistoryMessage | null {
 }
 
 function parseToolEvent(obj: Record<string, unknown>): SessionHistoryMessage | null {
-  const toolName = inferToolName(obj) ?? "tool";
-  const toolStatus = firstString(obj, TOOL_STATUS_KEYS);
   const messageObj = asObject(obj.message);
+  const toolName = inferToolName(obj)
+    ?? (messageObj ? firstString(messageObj, TOOL_NAME_KEYS) : undefined)
+    ?? "tool";
+  const toolStatus = firstString(obj, TOOL_STATUS_KEYS)
+    ?? (messageObj ? firstString(messageObj, TOOL_STATUS_KEYS) : undefined);
   const role = extractRole(obj, messageObj) ?? "tool";
   const author = extractAuthor(obj, messageObj);
   const timestamp = extractTimestamp(obj, messageObj);

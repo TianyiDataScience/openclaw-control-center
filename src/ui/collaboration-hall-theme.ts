@@ -266,6 +266,9 @@ export function renderCollaborationHallTheme(): string {
       height: 100%;
       overflow: hidden;
     }
+    .collaboration-hall-card.is-context-open .hall-layout {
+      grid-template-columns: clamp(236px, 23vw, 292px) minmax(0, 1fr) clamp(280px, 22vw, 340px);
+    }
     .hall-pane {
       border-radius: 22px;
       border: 1px solid rgba(18, 44, 64, 0.08);
@@ -322,27 +325,17 @@ export function renderCollaborationHallTheme(): string {
       padding-right: 0;
     }
     .hall-pane--context {
-      position: absolute;
-      top: 0;
-      right: 0;
-      bottom: 0;
-      width: min(340px, calc(100vw - 80px));
       border-radius: 24px;
       background: rgba(255,255,255,0.98);
-      box-shadow: 0 18px 44px rgba(17, 43, 68, 0.12);
-      z-index: 6;
-      transition: transform 180ms ease, opacity 160ms ease, box-shadow 180ms ease;
+      box-shadow: 0 10px 28px rgba(17, 43, 68, 0.06);
       overflow: auto;
+      min-width: 0;
     }
     .collaboration-hall-card.is-context-collapsed .hall-pane--context {
-      opacity: 0;
-      pointer-events: none;
-      transform: translateX(calc(100% + 18px));
-      box-shadow: none;
+      display: none;
     }
     .collaboration-hall-card.is-context-open .hall-pane--context {
-      opacity: 1;
-      transform: translateX(0);
+      display: grid;
     }
     .hall-pane-head,
     .hall-thread-head {
@@ -1174,6 +1167,61 @@ export function renderCollaborationHallTheme(): string {
       gap: 8px;
       margin-top: 10px;
     }
+    .hall-tool-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 8px;
+    }
+    .hall-tool-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 11px;
+      line-height: 1.3;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-family: inherit;
+      white-space: nowrap;
+    }
+    .hall-tool-pill.is-running {
+      background: rgba(59, 130, 246, 0.10);
+      color: #2563eb;
+    }
+    .hall-tool-pill.is-completed {
+      background: rgba(34, 197, 94, 0.08);
+      color: #16a34a;
+    }
+    .hall-tool-pill.is-error {
+      background: rgba(239, 68, 68, 0.08);
+      color: #dc2626;
+    }
+    .hall-message-body .hall-tool-pill {
+      display: block;
+      width: fit-content;
+      margin: 4px 0;
+      position: relative;
+      cursor: default;
+    }
+    .hall-tool-pill[title]:hover::after {
+      content: attr(title);
+      position: absolute;
+      left: 0;
+      top: 100%;
+      margin-top: 4px;
+      padding: 6px 10px;
+      background: rgba(15, 23, 42, 0.92);
+      color: #f1f5f9;
+      font-size: 11px;
+      line-height: 1.4;
+      border-radius: 6px;
+      white-space: pre-wrap;
+      max-width: 360px;
+      word-break: break-all;
+      z-index: 10;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      pointer-events: none;
+    }
     .hall-artifact-list {
       display: flex;
       flex-wrap: wrap;
@@ -1215,6 +1263,113 @@ export function renderCollaborationHallTheme(): string {
       text-overflow: ellipsis;
       white-space: nowrap;
       font-weight: 700;
+    }
+    .hall-file-preview {
+      display: block;
+      margin-top: 6px;
+    }
+    .hall-file-img {
+      max-width: min(100%, 400px);
+      max-height: 300px;
+      border-radius: 8px;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      object-fit: contain;
+    }
+    .hall-composer-files {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 6px 8px 2px;
+    }
+    .hall-file-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 8px;
+      background: rgba(41, 118, 222, 0.08);
+      border: 1px solid rgba(41, 118, 222, 0.15);
+      font-size: 11px;
+      max-width: 220px;
+    }
+    .hall-file-thumb {
+      width: 32px;
+      height: 32px;
+      object-fit: cover;
+      border-radius: 4px;
+      flex: 0 0 auto;
+    }
+    .hall-file-icon {
+      font-size: 18px;
+      flex: 0 0 auto;
+    }
+    .hall-file-chip-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+    .hall-file-chip-size {
+      flex: 0 0 auto;
+      color: rgba(0, 0, 0, 0.45);
+      font-size: 10px;
+    }
+    .hall-file-chip-remove {
+      cursor: pointer;
+      background: none;
+      border: none;
+      font-size: 14px;
+      color: #888;
+      padding: 0 2px;
+      flex: 0 0 auto;
+      line-height: 1;
+    }
+    .hall-file-chip-remove:hover { color: #c33; }
+    .hall-dragover {
+      outline: 2px dashed rgba(41, 118, 222, 0.4);
+      outline-offset: -2px;
+      background: rgba(41, 118, 222, 0.03) !important;
+    }
+    .hall-workspace-files {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .hall-workspace-file-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      text-decoration: none;
+      color: inherit;
+      font-size: 12px;
+      transition: background 0.1s;
+    }
+    .hall-workspace-file-item:hover {
+      background: rgba(41, 118, 222, 0.06);
+    }
+    .hall-workspace-file-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 600;
+      color: #1d476d;
+    }
+    .hall-workspace-file-meta {
+      flex: 0 0 auto;
+      color: rgba(0, 0, 0, 0.4);
+      font-size: 10px;
+    }
+    .hall-workspace-file-thumb {
+      width: 28px;
+      height: 28px;
+      object-fit: cover;
+      border-radius: 4px;
+      flex: 0 0 auto;
+      border: 1px solid rgba(0, 0, 0, 0.06);
     }
     .hall-composer-shell {
       display: grid;

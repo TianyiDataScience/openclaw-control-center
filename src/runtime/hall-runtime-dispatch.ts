@@ -1,6 +1,9 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { existsSync, readFileSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { ensureHallTaskWorkspace, resolveHallTaskWorkspacePath } from "./hall-workspace";
+import { copyHallFilesToWorkspace } from "./hall-file-store";
 import type { ToolClient } from "../clients/tool-client";
 import {
   HALL_RUNTIME_DIRECT_STREAM_ENABLED,
@@ -27,6 +30,7 @@ import {
   beginHallDraftReply,
   completeHallDraftReply,
   pushHallDraftDelta,
+  pushHallDraftToolUpdate,
 } from "./collaboration-stream";
 import { resolveOpenClawConfigPath, resolveOpenClawHomePath } from "./current-agent-catalog";
 import { inferHallDiscussionDomainFromText } from "./hall-discussion-domain";
@@ -214,6 +218,57 @@ export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): 
   let sessionHistoryObserved = false;
   let directStdoutBuffer = "";
   let finished = false;
+  let processedStdoutToolCount = 0;
+  let processedHistoryToolCount = 0;
+
+  const TOOL_LINE_PATTERN = /\[tool\]\s+(.+?)\s+\((\w+)\)/g;
+
+  const flushStdoutToolLines = (): void => {
+    const matches: Array<{ name: string; status: string }> = [];
+    let m: RegExpExecArray | null;
+    const re = new RegExp(TOOL_LINE_PATTERN.source, "g");
+    while ((m = re.exec(directStdoutBuffer)) !== null) {
+      matches.push({ name: m[1], status: m[2] });
+    }
+    for (let i = processedStdoutToolCount; i < matches.length; i++) {
+      pushHallDraftToolUpdate({
+        hallId: input.hall.hallId,
+        taskCardId: input.taskCard.taskCardId,
+        projectId: input.taskCard.projectId,
+        taskId: input.taskCard.taskId,
+        roomId: input.taskCard.roomId,
+        draftId,
+        toolName: matches[i].name,
+        toolStatus: matches[i].status,
+      });
+    }
+    processedStdoutToolCount = matches.length;
+  };
+
+  let sessionFileToolCount = 0;
+  let baselineSessionFileToolCount = 0;
+  let historyToolCount = 0;
+
+  const emitToolUpdate = (toolName: string, toolStatus: string): void => {
+    pushHallDraftToolUpdate({
+      hallId: input.hall.hallId,
+      taskCardId: input.taskCard.taskCardId,
+      projectId: input.taskCard.projectId,
+      taskId: input.taskCard.taskId,
+      roomId: input.taskCard.roomId,
+      draftId,
+      toolName,
+      toolStatus,
+    });
+  };
+
+  const flushHistoryToolEvents = (messages: SessionHistoryMessage[]): void => {
+    const toolEvents = messages.filter((m) => m.kind === "tool_event" && m.toolName);
+    for (let i = historyToolCount; i < toolEvents.length; i++) {
+      emitToolUpdate(toolEvents[i].toolName!, toolEvents[i].toolStatus || "completed");
+    }
+    historyToolCount = toolEvents.length;
+  };
 
   const applyDraftText = (nextDraftText: string, source: "session" | "stdout"): void => {
     const normalized = formatHallRuntimeDraftVisibleText(input, nextDraftText).trim();
@@ -250,21 +305,121 @@ export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): 
       ? await safeReadHistory(input.client, expectedSessionKey)
       : [];
     baselineFingerprint = baselineHistory.at(-1) ? fingerprintHistoryMessage(baselineHistory.at(-1)!) : undefined;
+    await ensureHallTaskWorkspace(input.taskCard.taskCardId);
     const repoContext = buildHallRuntimeRepoContext(input);
     const prompt = buildHallRuntimePrompt(input, repoContext);
     const flushHistory = async (sessionKey: string | undefined): Promise<void> => {
       if (!sessionKey) return;
       const history = await safeReadHistory(input.client, sessionKey);
+      flushHistoryToolEvents(sliceMessagesAfterFingerprint(history, baselineFingerprint));
       const nextDraftText = renderRuntimeDraftText(history, baselineFingerprint);
       if (!nextDraftText) return;
       lastHistoryDraftText = nextDraftText;
       sessionHistoryObserved = true;
       applyDraftText(nextDraftText, "session");
     };
+
+    // Resolve session file and baseline tool count BEFORE agent starts
+    let resolvedSessionFilePath = await findLatestAgentSessionFile(participantAgentId).catch(() => undefined);
+    if (resolvedSessionFilePath) {
+      try {
+        const baseline = await readFile(resolvedSessionFilePath, "utf8");
+        for (const line of baseline.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const entry = JSON.parse(line);
+            const msg = entry?.message;
+            if (msg && typeof msg === "object" && typeof msg.role === "string" && msg.role.toLowerCase().includes("tool")) {
+              sessionFileToolCount++;
+            }
+          } catch { /* skip */ }
+        }
+        baselineSessionFileToolCount = sessionFileToolCount;
+      } catch { /* ok */ }
+    }
+
+    let sessionFileRescanCounter = 0;
+
+    const pollSessionFileToolCalls = async (): Promise<void> => {
+      // Re-resolve session file periodically (agent may create a new one)
+      sessionFileRescanCounter++;
+      if (!resolvedSessionFilePath || sessionFileRescanCounter % 8 === 0) {
+        const latest = await findLatestAgentSessionFile(participantAgentId).catch(() => undefined);
+        if (latest && latest !== resolvedSessionFilePath) {
+          resolvedSessionFilePath = latest;
+          sessionFileToolCount = 0; // Reset baseline for new file
+        }
+      }
+      if (!resolvedSessionFilePath) return;
+      try {
+        const raw = await readFile(resolvedSessionFilePath, "utf8");
+        let currentCount = 0;
+        // Collect toolCall arguments by callId for hover detail
+        const toolCallArgs = new Map<string, string>();
+        const newTools: Array<{ name: string; detail: string }> = [];
+        for (const line of raw.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const entry = JSON.parse(line);
+            const msg = entry?.message;
+            if (!msg || typeof msg !== "object") continue;
+            // Extract toolCall arguments from assistant messages
+            const content = msg.content;
+            if (Array.isArray(content)) {
+              for (const block of content) {
+                if (block && block.type === "toolCall" && block.id && block.arguments) {
+                  const args = block.arguments;
+                  const summary = typeof args === "object"
+                    ? Object.values(args).map((v) => String(v)).join(", ").slice(0, 120)
+                    : String(args).slice(0, 120);
+                  toolCallArgs.set(block.id, summary);
+                }
+              }
+            }
+            // Detect toolResult entries
+            const role = typeof msg.role === "string" ? msg.role.toLowerCase() : "";
+            if (role.includes("tool")) {
+              currentCount++;
+              if (currentCount > sessionFileToolCount) {
+                const toolName = msg.toolName || msg.name || "tool";
+                const callId = msg.toolCallId || "";
+                const detail = toolCallArgs.get(callId) || "";
+                emitToolUpdate(toolName, "completed");
+                newTools.push({ name: toolName, detail });
+              }
+            }
+          } catch { /* skip malformed */ }
+        }
+        sessionFileToolCount = Math.max(sessionFileToolCount, currentCount);
+        // Inject tool markers into the draft text stream so they appear inline
+        if (newTools.length > 0) {
+          const toolMarkers = newTools.map((t) =>
+            t.detail ? `[[tool:${t.name}|${t.detail}]]` : `[[tool:${t.name}]]`
+          ).join("\n");
+          const combined = (lastStreamedText ? lastStreamedText + "\n" : "") + toolMarkers;
+          lastStreamedText = combined;
+          pushHallDraftDelta({
+            hallId: input.hall.hallId,
+            taskCardId: input.taskCard.taskCardId,
+            projectId: input.taskCard.projectId,
+            taskId: input.taskCard.taskId,
+            roomId: input.taskCard.roomId,
+            draftId,
+            authorParticipantId: input.participant.participantId,
+            authorLabel: input.participant.displayName,
+            authorSemanticRole: input.participant.semanticRole,
+            messageKind: resolveHallRuntimeMessageKind(input),
+            delta: "\n" + toolMarkers,
+          });
+        }
+      } catch { /* file may not exist yet */ }
+    };
+
     poller = (async () => {
       while (!finished) {
         try {
           await flushHistory(currentSessionKey);
+          await pollSessionFileToolCalls();
         } catch {
           // Best-effort only; final completion still comes from agentRun().
         }
@@ -277,12 +432,13 @@ export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): 
       message: prompt,
       thinking: HALL_RUNTIME_THINKING_LEVEL,
       timeoutSeconds: HALL_RUNTIME_TIMEOUT_SECONDS,
-      context: buildHallRuntimeTransportContext(input, repoContext.entryFiles),
+      context: await buildHallRuntimeTransportContext(input, repoContext.entryFiles),
     };
     const response = input.client.agentRunStream && HALL_RUNTIME_DIRECT_STREAM_ENABLED
       ? await input.client.agentRunStream(request, {
           onStdoutChunk: (chunk) => {
             directStdoutBuffer += chunk;
+            flushStdoutToolLines();
             if (sessionHistoryObserved) return;
             const directText = formatHallRuntimeDraftVisibleText(input, directStdoutBuffer);
             if (!directText) return;
@@ -294,16 +450,58 @@ export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): 
         : await Promise.reject(new Error("No runtime dispatch method is available."));
     currentSessionKey = response.sessionKey?.trim() || expectedSessionKey;
     await flushHistory(currentSessionKey);
+
+    // Final session file scan for any remaining tool events
+    await pollSessionFileToolCalls().catch(() => {});
+
     const parsed = extractStructuredBlock(response.text);
     const visibleContent = sanitizeHallVisibleRuntimeText(lastHistoryDraftText)
       || sanitizeHallVisibleRuntimeText(parsed.visibleText);
     const structured = parsed.structured;
+    // Collect ONLY new tool calls (after baseline) for persisted message payload
+    const collectedToolCalls: Array<{ toolName: string; toolStatus: string; detail?: string }> = [];
+    if (resolvedSessionFilePath) {
+      try {
+        const raw = await readFile(resolvedSessionFilePath, "utf8");
+        let count = 0;
+        const callArgs = new Map<string, string>();
+        for (const line of raw.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const entry = JSON.parse(line);
+            const msg = entry?.message;
+            if (!msg || typeof msg !== "object") continue;
+            if (Array.isArray(msg.content)) {
+              for (const block of msg.content) {
+                if (block?.type === "toolCall" && block.id && block.arguments) {
+                  const args = block.arguments;
+                  callArgs.set(block.id, typeof args === "object"
+                    ? Object.values(args).map((v) => String(v)).join(", ").slice(0, 120)
+                    : String(args).slice(0, 120));
+                }
+              }
+            }
+            if (typeof msg.role === "string" && msg.role.toLowerCase().includes("tool")) {
+              count++;
+              if (count > baselineSessionFileToolCount) {
+                collectedToolCalls.push({
+                  toolName: msg.toolName || msg.name || "tool",
+                  toolStatus: "completed",
+                  detail: callArgs.get(msg.toolCallId || "") || undefined,
+                });
+              }
+            }
+          } catch { /* skip */ }
+        }
+      } catch { /* ok */ }
+    }
     const result = buildHallRuntimeResult({
       input,
       content: visibleContent,
       structured,
       sessionKey: currentSessionKey,
       sessionId: response.sessionId?.trim() || undefined,
+      toolCalls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined,
     });
     if (isHallDraftCanceled(draftId)) {
       return {
@@ -416,6 +614,11 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
     hallRulesBlock,
     taskArtifactBlock,
     ...repoContextLines,
+
+    // Per-task workspace
+    `Your working directory for this task is: ${resolveHallTaskWorkspacePath(input.taskCard.taskCardId)}`,
+    `Please save all generated files and artifacts in this directory.`,
+    `The main repository is still accessible at: ${CONTROL_CENTER_REPO_ROOT}`,
 
     // Assignment note (if any)
     input.note ? `Note: ${input.note}` : "",
@@ -650,20 +853,34 @@ function buildHallRuntimeRepoContext(input: HallRuntimeDispatchInput): HallRunti
   };
 }
 
-function buildHallRuntimeTransportContext(
+async function buildHallRuntimeTransportContext(
   input: HallRuntimeDispatchInput,
   entryFiles: string[],
-): AgentRunTransportContext {
+): Promise<AgentRunTransportContext> {
+  const fileAttachments = input.triggerMessage?.payload?.fileAttachments;
+  const taskWorkdir = resolveHallTaskWorkspacePath(input.taskCard.taskCardId);
+
+  // Copy uploaded files into the task workspace so agents can access them
+  let filePathMap = new Map<string, string>();
+  if (fileAttachments && fileAttachments.length > 0) {
+    filePathMap = await copyHallFilesToWorkspace(fileAttachments, taskWorkdir);
+  }
+
   return {
     surface: "control-center/hall",
     workspaceRoot: CONTROL_CENTER_REPO_ROOT,
-    workdir: CONTROL_CENTER_REPO_ROOT,
+    workdir: taskWorkdir,
     entryFiles,
     artifactRefs: input.task?.artifacts.map((artifact) => ({
       artifactId: artifact.artifactId,
       type: artifact.type,
       label: artifact.label,
       location: artifact.location,
+    })) ?? [],
+    attachmentRefs: fileAttachments?.map((f) => ({
+      label: f.originalName,
+      url: filePathMap.get(f.fileId) ?? join(taskWorkdir, "uploads", f.originalName),
+      mimeType: f.mimeType,
     })) ?? [],
   };
 }
@@ -973,8 +1190,9 @@ function buildHallRuntimeResult(input: {
   structured: ParsedStructuredBlock;
   sessionKey?: string;
   sessionId?: string;
+  toolCalls?: Array<{ toolName: string; toolStatus: string; detail?: string }>;
 }): HallRuntimeDispatchResult {
-  const { input: dispatch, content, structured, sessionKey, sessionId } = input;
+  const { input: dispatch, content, structured, sessionKey, sessionId, toolCalls } = input;
   const cleanedContent = stripCleanHallThreadContinuationLead(dispatch, content);
   const responseLanguage = inferHallResponseLanguage(
     `${cleanedContent}\n${dispatch.triggerMessage?.content ?? ""}\n${dispatch.taskCard.title}\n${dispatch.taskCard.description}`,
@@ -987,7 +1205,7 @@ function buildHallRuntimeResult(input: {
     responseLanguage,
     directResponseIntent,
   );
-  const visibleContent = ensureNonEmptyHallVisibleRuntimeText(
+  let visibleContent = ensureNonEmptyHallVisibleRuntimeText(
     dispatch,
     visibleContentBase,
     structured,
@@ -995,6 +1213,13 @@ function buildHallRuntimeResult(input: {
     directResponseIntent,
     true,
   );
+  // Prepend inline tool markers so they appear in the message timeline
+  if (toolCalls && toolCalls.length > 0) {
+    const markers = toolCalls.map((tc) =>
+      tc.detail ? `[[tool:${tc.toolName}|${tc.detail}]]` : `[[tool:${tc.toolName}]]`
+    ).join("\n");
+    visibleContent = markers + "\n" + visibleContent;
+  }
   let kind = resolveHallRuntimeMessageKind(dispatch, directResponseIntent);
   const payload: HallMessage["payload"] = {
     taskStage: dispatch.taskCard.stage,
@@ -1004,6 +1229,9 @@ function buildHallRuntimeResult(input: {
   const artifactRefs = resolveHallRuntimeArtifactRefs(dispatch, structured, visibleContent);
   if (artifactRefs.length > 0) {
     payload.artifactRefs = artifactRefs;
+  }
+  if (toolCalls && toolCalls.length > 0) {
+    payload.toolCalls = toolCalls;
   }
   const taskCardPatch: HallRuntimeDispatchResult["taskCardPatch"] = {
     latestSummary: structured.latestSummary ?? visibleContent,
@@ -1852,6 +2080,35 @@ function sliceMessagesAfterFingerprint(
   return lastIndex >= 0 ? messages.slice(lastIndex + 1) : messages;
 }
 
+/**
+ * Find the most recently modified session JSONL file for an agent.
+ * Checks both standard and nested OpenClaw home paths.
+ */
+async function findLatestAgentSessionFile(agentId: string): Promise<string | undefined> {
+  const openclawHome = resolveOpenClawHomePath();
+  const candidatePaths = [
+    join(openclawHome, "agents", agentId, "sessions"),
+    join(openclawHome, ".openclaw", "agents", agentId, "sessions"),
+  ];
+  let bestPath: string | undefined;
+  let bestMtime = 0;
+  for (const sessionsDir of candidatePaths) {
+    try {
+      const entries = await readdir(sessionsDir);
+      for (const f of entries) {
+        if (!f.endsWith(".jsonl")) continue;
+        const fullPath = join(sessionsDir, f);
+        const st = await stat(fullPath).catch(() => null);
+        if (st && st.mtimeMs > bestMtime) {
+          bestMtime = st.mtimeMs;
+          bestPath = fullPath;
+        }
+      }
+    } catch { continue; }
+  }
+  return bestPath;
+}
+
 function fingerprintHistoryMessage(message: SessionHistoryMessage): string {
   return [
     message.kind,
@@ -1863,7 +2120,10 @@ function fingerprintHistoryMessage(message: SessionHistoryMessage): string {
 }
 
 function formatRuntimeStreamSegments(message: SessionHistoryMessage): string[] {
-  if (message.kind === "tool_event") return [];
+  if (message.kind === "tool_event") {
+    const name = message.toolName || "tool";
+    return [`[[tool:${name}]]`];
+  }
   const role = message.role.trim().toLowerCase();
   if (role === "user" || role === "system") return [];
   const content = sanitizeHallVisibleRuntimeText(message.content);

@@ -1268,3 +1268,106 @@ test("legacy system progress copy stays hidden even when old messages are alread
   assert(!html.includes("现在请老板评审。"));
   assert(html.includes("结果给你了"));
 });
+
+test("hall composer includes file attachment controls", () => {
+  const html = renderCollaborationHallForSmoke("en");
+  assert(html.includes("data-hall-attach-file"));
+  assert(html.includes("data-hall-file-input"));
+  assert(html.includes("data-hall-file-preview"));
+  const script = renderCollaborationHallClientScript("en");
+  assert(script.includes("pendingFiles"));
+  assert(script.includes("readFileAsDataUrl"));
+  assert(script.includes("hall-dragover"));
+  assert(script.includes("renderPendingFiles"));
+  assert(script.includes("/api/hall/files"));
+  assert(script.includes("fileAttachments"));
+});
+
+test("hall composer includes file attachment controls (zh)", () => {
+  const html = renderCollaborationHallForSmoke("zh");
+  assert(html.includes("data-hall-attach-file"));
+  assert(html.includes("data-hall-file-input"));
+  const script = renderCollaborationHallClientScript("zh");
+  assert(script.includes("pendingFiles"));
+  assert(script.includes("文件过大"));
+  assert(script.includes("上传失败"));
+});
+
+test("hall renders inline image preview for file attachments", () => {
+  const html = renderCollaborationHall({
+    language: "en",
+    hall: {
+      hallId: "main",
+      title: "Collaboration Hall",
+      participants: [],
+      taskCardIds: [],
+      messageIds: ["msg-file-1"],
+      lastMessageId: "msg-file-1",
+      latestMessageAt: "2026-04-09T10:00:00.000Z",
+      createdAt: "2026-04-09T10:00:00.000Z",
+      updatedAt: "2026-04-09T10:00:00.000Z",
+    },
+    hallSummary: {
+      hallId: "main",
+      headline: "File attachment test.",
+      activeTaskCount: 0,
+      waitingReviewCount: 0,
+      blockedTaskCount: 0,
+      currentSpeakerLabel: "",
+      updatedAt: "2026-04-09T10:00:00.000Z",
+    },
+    taskCards: [],
+    messages: [{
+      hallId: "main",
+      messageId: "msg-file-1",
+      kind: "chat",
+      authorParticipantId: "operator",
+      authorLabel: "Operator",
+      content: "Here is a screenshot.",
+      targetParticipantIds: [],
+      mentionTargets: [],
+      payload: {
+        artifactRefs: [
+          { artifactId: "file-1", type: "file", label: "screenshot.png", location: "/hall-files/screenshot-abc.png" },
+          { artifactId: "file-2", type: "file", label: "report.pdf", location: "/hall-files/report-def.pdf" },
+        ],
+        fileAttachments: [
+          { fileId: "file-1", originalName: "screenshot.png", mimeType: "image/png", sizeBytes: 12345, storedFileName: "screenshot-abc.png" },
+          { fileId: "file-2", originalName: "report.pdf", mimeType: "application/pdf", sizeBytes: 67890, storedFileName: "report-def.pdf" },
+        ],
+      },
+      createdAt: "2026-04-09T10:00:00.000Z",
+    }],
+  });
+
+  // Image should render as <img> preview
+  assert(html.includes("hall-file-img"));
+  assert(html.includes("hall-file-preview"));
+  assert(html.includes("/hall-files/screenshot-abc.png"));
+  // PDF should render as artifact chip (not img)
+  assert(html.includes("report.pdf"));
+  assert(html.includes("/hall-files/report-def.pdf"));
+});
+
+test("hall detail pane includes workspace files section", () => {
+  const html = renderCollaborationHallForSmoke("en");
+  assert(html.includes("Workspace Files"));
+  assert(html.includes("data-hall-workspace-files"));
+  const script = renderCollaborationHallClientScript("en");
+  assert(script.includes("loadWorkspaceFiles"));
+  assert(script.includes("/api/hall/workspace-files"));
+  assert(script.includes("hall-workspace-file-item"));
+});
+
+test("client script handles draft_tool_update events and renders tool pills", () => {
+  const script = renderCollaborationHallClientScript("en");
+  assert(script.includes("draft_tool_update"));
+  assert(script.includes("toolCalls"));
+  assert(script.includes("hall-tool-strip"));
+  assert(script.includes("hall-tool-pill"));
+  assert(script.includes("is-running"));
+  assert(script.includes("is-completed"));
+  assert(script.includes("is-error"));
+  assert(script.includes("toolName"));
+  assert(script.includes("toolStatus"));
+});

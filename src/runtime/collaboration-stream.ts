@@ -9,7 +9,8 @@ export type CollaborationStreamEventType =
   | "draft_start"
   | "draft_delta"
   | "draft_complete"
-  | "draft_abort";
+  | "draft_abort"
+  | "draft_tool_update";
 
 export interface CollaborationStreamEvent {
   eventId: string;
@@ -31,6 +32,9 @@ export interface CollaborationStreamEvent {
   messageKind?: HallMessageKind | "chat" | "proposal" | "decision" | "handoff" | "status" | "result";
   delta?: string;
   content?: string;
+  toolName?: string;
+  toolCallId?: string;
+  toolStatus?: string;
 }
 
 interface StreamSubscriber {
@@ -324,6 +328,32 @@ export function pushHallDraftDelta(input: {
     authorSemanticRole: input.authorSemanticRole,
     messageKind: input.messageKind,
     delta: input.delta,
+  });
+}
+
+export function pushHallDraftToolUpdate(input: {
+  hallId: string;
+  taskCardId?: string;
+  projectId?: string;
+  taskId?: string;
+  roomId?: string;
+  draftId: string;
+  toolName: string;
+  toolCallId?: string;
+  toolStatus: string;
+}): void {
+  if (!input.toolName) return;
+  publishHallStreamEvent({
+    type: "draft_tool_update",
+    hallId: input.hallId,
+    taskCardId: input.taskCardId,
+    projectId: input.projectId,
+    taskId: input.taskId,
+    roomId: input.roomId,
+    draftId: input.draftId,
+    toolName: input.toolName,
+    toolCallId: input.toolCallId,
+    toolStatus: input.toolStatus,
   });
 }
 

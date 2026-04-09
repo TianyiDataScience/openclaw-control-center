@@ -605,6 +605,10 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     flushQuote();
     let html = parts.join('');
     html = html.replace(codePlaceholderPattern, (_match, index) => codeBlocks[Number(index)] || '');
+    html = html.replace(/\\[\\[tool:([^\\]|]+)(?:\\|([^\\]]*))?\\.?\\]\\]/g, (_match, name, detail) => {
+      const tooltip = detail ? ' title="' + esc(detail) + '"' : '';
+      return '<span class="hall-tool-pill is-completed"' + tooltip + '>\\u2713 ' + esc(name) + '</span>';
+    });
     return html;
   };
   const renderArtifactFooterHtml = (artifactRefs, fileAttachments) => {
@@ -1689,11 +1693,24 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         footer.push('<span class="hall-kind-pill">' + esc(textStreaming) + '</span>');
       }
       let toolStripHtml = '';
-      if (message.isDraft && Array.isArray(message.toolCalls) && message.toolCalls.length > 0) {
-        const pills = message.toolCalls.map((tc) => {
+      const toolCallsSource = (message.isDraft && Array.isArray(message.toolCalls) && message.toolCalls.length > 0)
+        ? message.toolCalls
+        : (message.payload && Array.isArray(message.payload.toolCalls) && message.payload.toolCalls.length > 0)
+          ? message.payload.toolCalls
+          : null;
+      if (toolCallsSource) {
+        const grouped = new Map();
+        toolCallsSource.forEach((tc) => {
+          const key = tc.toolName + ':' + (tc.toolStatus || 'running');
+          const existing = grouped.get(key);
+          if (existing) { existing.count += 1; }
+          else { grouped.set(key, { toolName: tc.toolName, toolStatus: tc.toolStatus || 'running', count: 1 }); }
+        });
+        const pills = Array.from(grouped.values()).map((tc) => {
           const statusClass = tc.toolStatus === 'completed' ? 'is-completed' : tc.toolStatus === 'error' ? 'is-error' : 'is-running';
           const icon = tc.toolStatus === 'completed' ? '\\u2713' : tc.toolStatus === 'error' ? '\\u2717' : '\\u2699';
-          return '<span class="hall-tool-pill ' + statusClass + '">' + icon + ' ' + esc(tc.toolName) + '</span>';
+          const label = tc.count > 1 ? tc.toolName + ' \\u00d7' + tc.count : tc.toolName;
+          return '<span class="hall-tool-pill ' + statusClass + '">' + icon + ' ' + esc(label) + '</span>';
         });
         toolStripHtml = '<div class="hall-tool-strip">' + pills.join('') + '</div>';
       }
@@ -3054,6 +3071,23 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
       if (message.payload?.artifactRefs?.length) {
         chips.push(renderArtifactChips(message.payload.artifactRefs, message.payload.fileAttachments));
       }
+      let toolStripHtml = "";
+      if (message.payload?.toolCalls?.length) {
+        const grouped = new Map<string, { toolName: string; toolStatus: string; count: number }>();
+        for (const tc of message.payload.toolCalls) {
+          const key = `${tc.toolName}:${tc.toolStatus}`;
+          const existing = grouped.get(key);
+          if (existing) existing.count += 1;
+          else grouped.set(key, { toolName: tc.toolName, toolStatus: tc.toolStatus, count: 1 });
+        }
+        const pills = Array.from(grouped.values()).map((tc) => {
+          const statusClass = tc.toolStatus === "completed" ? "is-completed" : tc.toolStatus === "error" ? "is-error" : "is-running";
+          const icon = tc.toolStatus === "completed" ? "\u2713" : tc.toolStatus === "error" ? "\u2717" : "\u2699";
+          const label = tc.count > 1 ? `${tc.toolName} \u00d7${tc.count}` : tc.toolName;
+          return `<span class="hall-tool-pill ${statusClass}">${icon} ${escapeHtml(label)}</span>`;
+        });
+        toolStripHtml = `<div class="hall-tool-strip">${pills.join("")}</div>`;
+      }
       return `
         <article class="hall-message" data-kind="${escapeHtml(message.kind)}" data-author-type="${escapeHtml(authorType)}">
           <div class="hall-message-row">
@@ -3067,6 +3101,7 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
                 <div class="hall-message-meta">${escapeHtml(message.createdAt)}</div>
               </div>
               <div class="hall-message-body">${renderMarkdown(message.content)}</div>
+              ${toolStripHtml}
               ${chips.length > 0 ? `<div class="hall-message-footer">${chips.join("")}</div>` : ""}
             </div>
           </div>
@@ -3495,6 +3530,10 @@ function renderMarkdown(value: string): string {
   let html = parts.join("");
   html = html.replace(/@@CODEBLOCK(\d+)@@/g, (_match, index) => codeBlocks[Number(index)] || "");
   html = html.replace(inlinePlaceholderPattern, (_match, index) => inlineBlocks[Number(index)] || "");
+  html = html.replace(/\[\[tool:([^\]|]+)(?:\|([^\]]*))?\]]/g, (_match, name, detail) => {
+    const tooltip = detail ? ` title="${escapeHtml(detail)}"` : "";
+    return `<span class="hall-tool-pill is-completed"${tooltip}>\u2713 ${escapeHtml(name)}</span>`;
+  });
   return html;
 }
 

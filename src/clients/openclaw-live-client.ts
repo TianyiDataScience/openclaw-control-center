@@ -1,7 +1,7 @@
 import { exec, execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { open, readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import type {
   AgentRunRequest,
@@ -457,25 +457,32 @@ export class OpenClawLiveClient implements ToolClient {
     if (cached) return cached;
 
     const openclawHome = resolveOpenClawHomePath();
-    const agentsPath = join(openclawHome, "agents");
+    const agentsPaths = [
+      join(openclawHome, "agents"),
+      join(openclawHome, ".openclaw", "agents"),
+    ];
     const configuredAgentKeys = await this.loadConfiguredAgentKeys();
     if (!matchesConfiguredAgents(extractAgentIdFromSessionKey(sessionKey), configuredAgentKeys)) {
       return undefined;
     }
     let agentDirs: string[] = [];
-    try {
-      const entries = await readdir(agentsPath, { withFileTypes: true });
-      agentDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-    } catch {
-      return undefined;
+    for (const agentsPath of agentsPaths) {
+      try {
+        const entries = await readdir(agentsPath, { withFileTypes: true });
+        const dirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+        agentDirs.push(...dirs.map((d) => join(agentsPath, d)));
+      } catch {
+        continue;
+      }
     }
 
     if (configuredAgentKeys.size > 0) {
-      agentDirs = agentDirs.filter((agentId) => matchesConfiguredAgents(agentId, configuredAgentKeys));
+      agentDirs = agentDirs.filter((fullPath) => matchesConfiguredAgents(basename(fullPath), configuredAgentKeys));
     }
 
-    for (const agentId of agentDirs) {
-      const sessionsPath = join(agentsPath, agentId, "sessions", "sessions.json");
+    for (const agentDir of agentDirs) {
+      const agentId = basename(agentDir);
+      const sessionsPath = join(agentDir, "sessions", "sessions.json");
       try {
         const parsed = JSON.parse(await readFile(sessionsPath, "utf8")) as unknown;
         for (const record of extractSessionRecords(parsed)) {

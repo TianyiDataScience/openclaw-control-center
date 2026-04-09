@@ -56,13 +56,21 @@ export type HallMessageKind =
   | "result"
   | "system";
 
-export type TaskArtifactType = "code" | "doc" | "link" | "other";
+export type TaskArtifactType = "code" | "doc" | "link" | "file" | "other";
 
 export interface TaskArtifact {
   artifactId: string;
   type: TaskArtifactType;
   label: string;
   location: string;
+}
+
+export interface HallFileAttachment {
+  fileId: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  storedFileName: string;
 }
 
 export interface RollbackPlan {
@@ -253,6 +261,8 @@ export interface HallMessagePayload {
   status?: string;
   handoff?: StructuredHandoffPacket;
   artifactRefs?: TaskArtifact[];
+  fileAttachments?: HallFileAttachment[];
+  toolCalls?: Array<{ toolName: string; toolStatus: string; detail?: string }>;
   sessionKey?: string;
   sourceSessionKey?: string;
   sourceTool?: string;

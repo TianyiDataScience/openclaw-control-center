@@ -174,6 +174,8 @@ import {
   upsertAgentAvatarPreference,
   type AvatarMode,
 } from "../runtime/avatar-preferences";
+import { serveHallFile, writeHallFileFromDataUrl, hallFileContentType } from "../runtime/hall-file-store";
+import { listHallTaskWorkspaceFiles, HALL_WORKSPACES_DIR } from "../runtime/hall-workspace";
 import type {
   ChatMessage,
   ChatRoom,
@@ -234,6 +236,7 @@ const FORM_MAX_BYTES = 16 * 1024;
 const EDITABLE_TEXT_FILE_MAX_BYTES = 1024 * 1024;
 const EDITABLE_TEXT_CONTENT_MAX_CHARS = 240_000;
 const AVATAR_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
+const HALL_FILE_UPLOAD_MAX_BYTES = 30 * 1024 * 1024;
 const SEARCH_LIMIT_MAX = 200;
 const TASK_RUNTIME_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const STALLED_RUNNING_SESSION_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -1443,6 +1446,37 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         return await serveHallAvatarFile(res, fileName, method === "HEAD");
       }
 
+      if ((method === "GET" || method === "HEAD") && path.startsWith("/hall-files/")) {
+        assertAllowedQueryParams(url.searchParams, [], true);
+        const fileName = decodeURIComponent(path.slice("/hall-files/".length));
+        return await serveHallFile(res, fileName, method === "HEAD");
+      }
+
+      if ((method === "GET" || method === "HEAD") && path.startsWith("/hall-workspace-files/")) {
+        assertAllowedQueryParams(url.searchParams, [], true);
+        const rest = decodeURIComponent(path.slice("/hall-workspace-files/".length));
+        const slashIndex = rest.indexOf("/");
+        if (slashIndex < 1) return writeApiError(res, 404, "NOT_FOUND", "Workspace file not found.");
+        const taskCardId = rest.slice(0, slashIndex);
+        const filePath = rest.slice(slashIndex + 1);
+        if (!taskCardId || !filePath || filePath.includes("..") || filePath.startsWith("/")) {
+          return writeApiError(res, 400, "VALIDATION_ERROR", "Invalid file path.");
+        }
+        const absolutePath = join(HALL_WORKSPACES_DIR, taskCardId, filePath);
+        try {
+          const buffer = await readFile(absolutePath);
+          const contentType = hallFileContentType(filePath);
+          res.writeHead(200, {
+            "content-type": contentType,
+            "cache-control": "private, max-age=60",
+          });
+          res.end(method === "HEAD" ? undefined : buffer);
+        } catch {
+          return writeApiError(res, 404, "NOT_FOUND", "Workspace file not found.");
+        }
+        return;
+      }
+
       if (method === "GET" && path === "/api/search/tasks") {
         const query = parseSearchQuery(url.searchParams);
         const snapshot = await readReadModelSnapshot();
@@ -1861,10 +1895,42 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         });
       }
 
+      if (method === "GET" && path === "/api/hall/workspace-files") {
+        assertAllowedQueryParams(url.searchParams, ["taskCardId"], true);
+        const taskCardId = normalizeQueryString(url.searchParams.get("taskCardId"), "taskCardId", 180, false);
+        if (!taskCardId) throw new RequestValidationError("taskCardId is required.", 400);
+        const files = await listHallTaskWorkspaceFiles(taskCardId);
+        const workspacePath = join(HALL_WORKSPACES_DIR, taskCardId);
+        return writeJson(res, 200, { ok: true, taskCardId, workspacePath, files });
+      }
+
+      if (method === "POST" && path === "/api/hall/files") {
+        assertCollaborationMutationAuthorized(req, "/api/hall/files");
+        assertJsonContentType(req);
+        const raw = await readRawBody(req, HALL_FILE_UPLOAD_MAX_BYTES);
+        let parsed: unknown;
+        try { parsed = JSON.parse(raw || "{}") as unknown; } catch { throw new RequestValidationError("Invalid JSON body.", 400); }
+        const payload = expectObject(parsed, "hall file upload payload");
+        const dataUrl = requiredBoundedString(payload.dataUrl, "dataUrl", HALL_FILE_UPLOAD_MAX_BYTES * 2);
+        const fileName = optionalBoundedString(payload.fileName, "fileName", 160);
+        try {
+          const file = await writeHallFileFromDataUrl({ dataUrl, fileNameHint: fileName });
+          return writeJson(res, 200, { ok: true, file });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "File upload failed.";
+          throw new RequestValidationError(message, 400);
+        }
+      }
+
       if (method === "POST" && path === "/api/hall/messages") {
         assertCollaborationMutationAuthorized(req, "/api/hall/messages");
         assertJsonContentType(req);
         const payload = expectObject(await readJsonBody(req), "create hall message payload");
+        const fileAttachments = Array.isArray(payload.fileAttachments)
+          ? (payload.fileAttachments as Array<Record<string, unknown>>)
+              .filter((f) => f && typeof f.fileId === "string" && typeof f.storedFileName === "string")
+              .slice(0, 10)
+          : undefined;
         const result = await postHallMessage({
           hallId: optionalBoundedString(payload.hallId, "hallId", 120),
           taskCardId: optionalBoundedString(payload.taskCardId, "taskCardId", 180),
@@ -1873,6 +1939,7 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
           content: requiredBoundedString(payload.content, "content", 4000),
           authorParticipantId: optionalBoundedString(payload.authorParticipantId, "authorParticipantId", 160),
           authorLabel: optionalBoundedString(payload.authorLabel, "authorLabel", 120),
+          fileAttachments: fileAttachments as any,
         }, { toolClient });
         await appendOperationAudit({
           action: "hall_task_message",
