@@ -1078,7 +1078,7 @@ async function dispatchHallAgentReply(input: {
 
     if (chainTargets.length > 0) {
       const updatedThreadMessages = await loadRecentHallThreadMessages(taskCard);
-      await Promise.allSettled(
+      const mentionResults = await Promise.allSettled(
         chainTargets.map((target) =>
           dispatchHallAgentReply({
             hall,
@@ -1091,7 +1091,115 @@ async function dispatchHallAgentReply(input: {
           }),
         ),
       );
+
+      // Notify originating agent that @mentioned agents have completed
+      if (canDispatchHallToRuntime(toolClient, participant)) {
+        await wakeMentionInitiator({
+          hall,
+          taskCard,
+          initiator: participant,
+          mentionedTargets: chainTargets,
+          mentionResults,
+          toolClient,
+        });
+      }
     }
+  }
+}
+
+async function wakeMentionInitiator(input: {
+  hall: CollaborationHall;
+  taskCard: HallTaskCard;
+  initiator: HallParticipant;
+  mentionedTargets: HallParticipant[];
+  mentionResults: PromiseSettledResult<void>[];
+  toolClient: ToolClient;
+}): Promise<void> {
+  const { hall, taskCard, initiator, mentionedTargets, toolClient } = input;
+
+  // Reload thread messages to capture what the mentioned agents wrote
+  const latestMessages = await loadRecentHallThreadMessages(taskCard);
+  const language = inferHallResponseLanguage(`${taskCard.title}\n${taskCard.description}`);
+
+  // Summarize each mentioned agent's latest response
+  const agentSummaries: string[] = [];
+  for (const target of mentionedTargets) {
+    const targetMessage = [...latestMessages]
+      .reverse()
+      .find((m) => m.authorParticipantId === target.participantId);
+    const summary = targetMessage?.content?.trim()?.slice(0, 400)
+      || (language === "zh" ? "(无回复)" : "(no reply)");
+    agentSummaries.push(`- ${target.displayName}: ${summary}`);
+  }
+
+  const wakeNote = language === "zh"
+    ? [
+        `[提及回复完成通知]`,
+        `你 @提及的 Agent 已完成回复:`,
+        ...agentSummaries,
+        ``,
+        `请审查以上回复，决定是否需要进一步操作。`,
+      ].join("\n")
+    : [
+        `[Mention reply completion notice]`,
+        `The agents you @mentioned have finished replying:`,
+        ...agentSummaries,
+        ``,
+        `Review the replies above and decide if further action is needed.`,
+      ].join("\n");
+
+  let result: HallRuntimeDispatchResult;
+  try {
+    result = await dispatchHallRuntimeTurn({
+      client: toolClient,
+      hall,
+      taskCard,
+      participant: initiator,
+      mode: "execution",
+      note: wakeNote,
+    });
+  } catch {
+    return; // Callback failures are non-fatal
+  }
+
+  if (result.canceled) return;
+
+  // Suppress silent / empty responses
+  const trimmed = result.content.trim();
+  if (!trimmed || trimmed === OBSERVE_SILENT_MARKER || trimmed.startsWith(OBSERVE_SILENT_MARKER)) return;
+
+  // Persist the initiator's follow-up message
+  await appendPersistedHallMessage({
+    hallId: hall.hallId,
+    kind: result.kind,
+    participant: initiator,
+    content: result.content,
+    targetParticipantIds: [],
+    projectId: taskCard.projectId,
+    taskId: taskCard.taskId,
+    taskCardId: taskCard.taskCardId,
+    roomId: taskCard.roomId,
+    payload: result.payload,
+  });
+
+  // Process the initiator's response directive
+  const directive = result.chainDirective;
+  if (directive?.nextAction === "parallel_dispatch" && directive.parallelTasks?.length) {
+    scheduleParallelDispatch({
+      hall,
+      taskCard: await requireTaskCard(taskCard.taskCardId),
+      initiator,
+      parallelTasks: directive.parallelTasks,
+      toolClient,
+    });
+  } else if (directive?.nextAction && directive.nextAction !== "continue") {
+    await applyHallExecutionDirective({
+      hall,
+      taskCard: await requireTaskCard(taskCard.taskCardId),
+      participant: initiator,
+      directive,
+      toolClient,
+    });
   }
 }
 
@@ -2331,6 +2439,18 @@ export async function recordHallTaskHandoff(
       taskCard = chain.taskCard;
       if (chain.task) patchedTask = { ...patchedTask, task: chain.task };
       generatedMessages.push(...chain.generatedMessages);
+
+      // Notify the originating agent that the handoff target has completed
+      const handoffCallbackMessages = await wakeHandoffInitiator({
+        hall: context.hall,
+        taskCard,
+        fromParticipant,
+        toParticipant,
+        task: patchedTask.task,
+        chainResult: chain,
+        toolClient: options.toolClient!,
+      });
+      generatedMessages.push(...handoffCallbackMessages);
     } finally {
       abortHallDraftReply({
         hallId: context.hall.hallId,
@@ -3504,6 +3624,118 @@ async function wakeParallelInitiator(input: {
       toolClient: input.toolClient,
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Handoff Completion Callback — notify the originating agent after handoff target finishes
+// ---------------------------------------------------------------------------
+
+async function wakeHandoffInitiator(input: {
+  hall: CollaborationHall;
+  taskCard: HallTaskCard;
+  fromParticipant: HallParticipant;
+  toParticipant: HallParticipant;
+  task?: ProjectTask;
+  chainResult: { taskCard: HallTaskCard; task?: ProjectTask; generatedMessages: HallMessage[] };
+  toolClient: ToolClient;
+}): Promise<HallMessage[]> {
+  const { hall, fromParticipant, toParticipant, chainResult, toolClient } = input;
+
+  // Don't notify if initiator cannot be dispatched
+  if (!canDispatchHallToRuntime(toolClient, fromParticipant)) return [];
+
+  const latestCard = chainResult.taskCard;
+  const language = inferHallResponseLanguage(`${latestCard.title}\n${latestCard.description}`);
+
+  // Summarize what the handoff target produced
+  const targetMessages = chainResult.generatedMessages
+    .filter((m) => m.authorParticipantId === toParticipant.participantId)
+    .map((m) => m.content?.trim())
+    .filter(Boolean);
+  const resultSummary = targetMessages.length > 0
+    ? targetMessages[targetMessages.length - 1]!.slice(0, 600)
+    : (language === "zh" ? "(无可见输出)" : "(no visible output)");
+
+  const wakeNote = language === "zh"
+    ? [
+        `[交接完成通知]`,
+        `${toParticipant.displayName} 已完成你交接给它的任务。`,
+        `结果摘要: ${resultSummary}`,
+        ``,
+        `当前任务状态: ${latestCard.stage}/${latestCard.status}`,
+        `你可以:`,
+        `- 审查结果并继续推进`,
+        `- 如有需要，发起新的交接或并行调度`,
+        `- 综合结果并决定下一步`,
+      ].join("\n")
+    : [
+        `[Handoff completion notice]`,
+        `${toParticipant.displayName} has completed the task you handed off.`,
+        `Result summary: ${resultSummary}`,
+        ``,
+        `Current task state: ${latestCard.stage}/${latestCard.status}`,
+        `You may:`,
+        `- Review the result and continue`,
+        `- Issue new handoffs or parallel dispatches if needed`,
+        `- Synthesize results and decide next action`,
+      ].join("\n");
+
+  let result: HallRuntimeDispatchResult;
+  try {
+    result = await dispatchHallRuntimeTurn({
+      client: toolClient,
+      hall,
+      taskCard: latestCard,
+      participant: fromParticipant,
+      task: chainResult.task,
+      mode: "execution",
+      note: wakeNote,
+    });
+  } catch {
+    return []; // Callback failures are non-fatal
+  }
+
+  const messages: HallMessage[] = [];
+
+  if (!result.canceled && !result.suppressVisibleMessage) {
+    messages.push(await appendPersistedHallMessage({
+      hallId: hall.hallId,
+      kind: result.kind,
+      participant: fromParticipant,
+      content: result.content,
+      targetParticipantIds: [],
+      projectId: latestCard.projectId,
+      taskId: latestCard.taskId,
+      taskCardId: latestCard.taskCardId,
+      roomId: latestCard.roomId,
+      payload: result.payload,
+    }));
+  }
+
+  // Process the initiator's response directive
+  const directive = result.chainDirective;
+  if (directive?.nextAction === "parallel_dispatch" && directive.parallelTasks?.length) {
+    scheduleParallelDispatch({
+      hall,
+      taskCard: await requireTaskCard(latestCard.taskCardId),
+      task: chainResult.task,
+      initiator: fromParticipant,
+      parallelTasks: directive.parallelTasks,
+      toolClient,
+    });
+  } else if (directive?.nextAction && directive.nextAction !== "continue") {
+    const transition = await applyHallExecutionDirective({
+      hall,
+      taskCard: await requireTaskCard(latestCard.taskCardId),
+      task: chainResult.task,
+      participant: fromParticipant,
+      directive,
+      toolClient,
+    });
+    messages.push(...transition.generatedMessages);
+  }
+
+  return messages;
 }
 
 // ---------------------------------------------------------------------------
