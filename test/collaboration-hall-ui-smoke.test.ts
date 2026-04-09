@@ -21,7 +21,7 @@ test("collaboration hall renders a three-pane hall-first shell", () => {
   assert(html.includes('data-hall-create-task'));
   assert(html.includes('data-hall-handoff'));
   assert(html.match(/data-hall-toggle-context/g)?.length >= 2);
-  assert(html.includes('/hall-avatars/'));
+  assert(html.includes('/avatars/'));
   assert(html.includes('hall-empty-actions'));
   assert(html.includes('hall-thread-subtitle'));
   const script = renderCollaborationHallClientScript("en");

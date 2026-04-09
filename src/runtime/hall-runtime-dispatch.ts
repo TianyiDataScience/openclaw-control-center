@@ -1199,6 +1199,11 @@ export function enforceConcreteDeliverableReply(
   const currentTask = dispatch.mode === "discussion"
     ? (operatorIntent?.text ?? "")
     : (resolveCurrentExecutionItem(dispatch.taskCard, dispatch.participant.participantId)?.task ?? "");
+  // In the group chat model, agents respond conversationally. Only enforce
+  // concrete deliverables when there is an explicit execution task assigned.
+  if (!currentTask.trim() && !strictDirectAsk) {
+    return { content: visibleContent, nextAction };
+  }
   const requiresConcreteDeliverable = strictDirectAsk || requiresConcreteDeliverableForStep(currentTask);
   if (!requiresConcreteDeliverable) {
     return { content: visibleContent, nextAction };

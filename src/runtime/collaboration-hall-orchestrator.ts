@@ -996,7 +996,8 @@ async function dispatchHallAgentReply(input: {
 }): Promise<void> {
   const { hall, taskCard, participant, triggerMessage, recentThreadMessages, toolClient, chainDepth } = input;
 
-  if (!canDispatchHallToRuntime(toolClient, participant)) return;
+  const canDispatch = canDispatchHallToRuntime(toolClient, participant);
+  if (!canDispatch) return;
 
   // Dispatch the agent
   let result: HallRuntimeDispatchResult;
