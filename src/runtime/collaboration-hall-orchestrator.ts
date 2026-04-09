@@ -66,6 +66,8 @@ import {
   upsertHallTaskSummary,
 } from "./collaboration-hall-summary-store";
 import { loadBestEffortAgentRoster } from "./agent-roster";
+import { copyHallFilesToWorkspace } from "./hall-file-store";
+import { ensureHallTaskWorkspace } from "./hall-workspace";
 import {
   canDispatchHallToRuntime,
   dispatchHallRuntimeTurn,
@@ -83,6 +85,7 @@ import type {
   CollaborationHall,
   CollaborationHallSummary,
   HallExecutionItem,
+  HallFileAttachment,
   HallMessage,
   HallParallelGroup,
   HallParallelSlot,
@@ -139,6 +142,7 @@ export interface HallMessageInput {
   content: string;
   authorParticipantId?: string;
   authorLabel?: string;
+  fileAttachments?: HallFileAttachment[];
 }
 
 export interface HallMutationResult {
@@ -759,6 +763,17 @@ export async function postHallMessage(
     ? context.hall.participants.filter((p) => p.active && p.participantId !== authorParticipantId).map((p) => p.participantId)
     : mentionRouting.targets.map((target) => target.participantId);
 
+  const fileAttachments = input.fileAttachments;
+  const fileArtifactRefs: TaskArtifact[] | undefined = fileAttachments?.map((f) => ({
+    artifactId: f.fileId,
+    type: "file" as const,
+    label: f.originalName,
+    location: `/hall-files/${f.storedFileName}`,
+  }));
+  const messagePayload = (fileAttachments || fileArtifactRefs)
+    ? { fileAttachments, artifactRefs: fileArtifactRefs }
+    : undefined;
+
   const message = (
     await appendHallMessage({
       hallId: context.hall.hallId,
@@ -772,8 +787,15 @@ export async function postHallMessage(
       taskId: taskCard?.taskId,
       taskCardId: taskCard?.taskCardId,
       roomId: taskCard?.roomId,
+      payload: messagePayload,
     })
   ).message;
+
+  // Copy uploaded files into the task workspace so agents can access them
+  if (fileAttachments && fileAttachments.length > 0 && taskCard) {
+    const workspaceDir = await ensureHallTaskWorkspace(taskCard.taskCardId);
+    await copyHallFilesToWorkspace(fileAttachments, workspaceDir).catch(() => {});
+  }
 
   // Route and dispatch — the core of the new group chat model
   if (authorParticipantId === "operator" && taskCard && options.toolClient) {
@@ -2076,8 +2098,8 @@ export async function stopHallTaskExecution(input: StopHallTaskInput): Promise<H
   });
 
   const stopText = input.note?.trim()
-    ? `Execution stopped. ${input.note.trim()}`
-    : `Execution stopped. ${previousOwnerLabel ? `${previousOwnerLabel} returned the thread to discussion.` : "The thread returned to discussion."}`;
+    ? `Stopped. ${input.note.trim()}`
+    : `${previousOwnerLabel ? `${previousOwnerLabel} stopped the current task.` : "Current task stopped."}`;
   const generatedMessages = [
     await appendHallSystemMessage({
       hallId: context.hall.hallId,

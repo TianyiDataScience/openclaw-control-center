@@ -177,13 +177,6 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
                   <div class="hall-composer-actions">
                     <input type="file" data-hall-file-input multiple accept="image/*,.pdf,.txt,.md,.json,.zip" style="position:absolute;clip:rect(0,0,0,0);width:1px;height:1px;overflow:hidden;border:0;padding:0;margin:-1px" />
                     <button type="button" class="hall-secondary-button hall-secondary-button--icon" data-hall-attach-file title="${escapeHtml(t("Attach file", "附件"))}" aria-label="${escapeHtml(t("Attach file", "附件"))}">&#x1F4CE;</button>
-                    <details class="hall-action-menu">
-                      <summary class="hall-secondary-button hall-secondary-button--icon" title="${escapeHtml(t("Task actions", "任务动作"))}" aria-label="${escapeHtml(t("Task actions", "任务动作"))}">＋</summary>
-                      <div class="hall-action-menu-panel">
-                        <button type="button" class="hall-menu-button" data-hall-create-task>${escapeHtml(bootstrap.labels.sendTask)}</button>
-                      </div>
-                    </details>
-                    <button type="button" class="hall-secondary-button hall-secondary-button--icon" data-hall-stop-task title="${escapeHtml(t("Stop current task", "停止当前任务"))}" aria-label="${escapeHtml(t("Stop current task", "停止当前任务"))}" hidden>■</button>
                     <button type="submit" class="hall-button hall-button--send" data-hall-send-reply onclick="return window.__openclawHallSendReply ? window.__openclawHallSendReply(event) : true">${escapeHtml(bootstrap.labels.reply)}</button>
                   </div>
                 </div>
