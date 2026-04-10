@@ -978,7 +978,7 @@ export function renderCollaborationHallTheme(): string {
       position: relative;
       min-width: 0;
       border-radius: 18px 18px 18px 12px;
-      overflow: hidden;
+      overflow: visible;
       border: 1px solid rgba(25, 60, 86, 0.08);
       background: #ffffff;
       padding: 11px 13px 10px;
@@ -1209,17 +1209,20 @@ export function renderCollaborationHallTheme(): string {
       left: 0;
       top: 100%;
       margin-top: 4px;
-      padding: 6px 10px;
-      background: rgba(15, 23, 42, 0.92);
+      padding: 8px 12px;
+      background: rgba(15, 23, 42, 0.94);
       color: #f1f5f9;
-      font-size: 11px;
-      line-height: 1.4;
+      font-size: 12px;
+      line-height: 1.5;
       border-radius: 6px;
       white-space: pre-wrap;
-      max-width: 360px;
-      word-break: break-all;
+      width: max-content;
+      min-width: 280px;
+      max-width: min(720px, calc(100vw - 80px));
+      overflow-wrap: anywhere;
+      word-break: normal;
       z-index: 10;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      box-shadow: 0 6px 18px rgba(0,0,0,0.22);
       pointer-events: none;
     }
     .hall-artifact-list {
