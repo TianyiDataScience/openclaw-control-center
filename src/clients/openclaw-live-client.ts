@@ -388,23 +388,32 @@ export class OpenClawLiveClient implements ToolClient {
 
   private async loadSessionsFromStores(): Promise<SessionsListResponse> {
     const openclawHome = resolveOpenClawHomePath();
-    const agentsPath = join(openclawHome, "agents");
+    const agentsPaths = [
+      join(openclawHome, "agents"),
+      join(openclawHome, ".openclaw", "agents"),
+    ];
     const configuredAgentKeys = await this.loadConfiguredAgentKeys();
-    let agentDirs: string[] = [];
-    try {
-      const entries = await readdir(agentsPath, { withFileTypes: true });
-      agentDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-    } catch {
-      return { sessions: [] };
+    let agentDirs: Array<{ agentId: string; basePath: string }> = [];
+    for (const agentsPath of agentsPaths) {
+      try {
+        const entries = await readdir(agentsPath, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            agentDirs.push({ agentId: entry.name, basePath: agentsPath });
+          }
+        }
+      } catch {
+        // directory not found — skip
+      }
     }
 
     if (configuredAgentKeys.size > 0) {
-      agentDirs = agentDirs.filter((agentId) => matchesConfiguredAgents(agentId, configuredAgentKeys));
+      agentDirs = agentDirs.filter(({ agentId }) => matchesConfiguredAgents(agentId, configuredAgentKeys));
     }
 
     const sessions: SessionsListResponse["sessions"] = [];
-    for (const agentId of agentDirs) {
-      const sessionsPath = join(agentsPath, agentId, "sessions", "sessions.json");
+    for (const { agentId, basePath } of agentDirs) {
+      const sessionsPath = join(basePath, agentId, "sessions", "sessions.json");
       try {
         const parsed = JSON.parse(await readFile(sessionsPath, "utf8")) as unknown;
         const records = extractSessionRecords(parsed);
