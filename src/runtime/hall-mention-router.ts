@@ -40,7 +40,9 @@ export function resolveHallMentionTargets(
 function containsExplicitMention(content: string, alias: string): boolean {
   const escaped = escapeRegex(alias);
   // Exact alias match: @alias followed by boundary
-  const exactPattern = new RegExp(`(^|[\\s(])@${escaped}(?=$|[\\s),.!?;:])`, "i");
+  // Pre-boundary includes `|` so mentions inside tool markers like
+  // `[[tool:sessions_yield|@图灵 Turing ...]]` are detected.
+  const exactPattern = new RegExp(`(^|[\\s(|])@${escaped}(?=$|[\\s),.!?;:|\\]])`, "i");
   if (exactPattern.test(content)) return true;
   // Prefix match: check if @<alias_prefix> appears in content
   // e.g. "@罗莎琳德 Rosalind" matches alias "罗莎琳德 Rosalind (生信工程)"
@@ -51,7 +53,7 @@ function containsExplicitMention(content: string, alias: string): boolean {
     const prefix = words.slice(0, len).join(" ");
     if (prefix.length < 2) continue;
     const prefixEscaped = escapeRegex(prefix);
-    const prefixPattern = new RegExp(`(^|[\\s(])@${prefixEscaped}(?=$|[\\s),.!?;:\\n<])`, "i");
+    const prefixPattern = new RegExp(`(^|[\\s(|])@${prefixEscaped}(?=$|[\\s),.!?;:|\\n<\\]])`, "i");
     if (prefixPattern.test(content)) return true;
   }
   return false;

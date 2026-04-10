@@ -191,7 +191,21 @@ export function canDispatchHallToRuntime(client: ToolClient | undefined, partici
   );
 }
 
-export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): Promise<HallRuntimeDispatchResult> {
+// ---------------------------------------------------------------------------
+// Per-agent dispatch serialization — prevents session file lock contention
+// when multiple threads dispatch to the same agent concurrently.
+// ---------------------------------------------------------------------------
+const agentDispatchChains = new Map<string, Promise<unknown>>();
+
+export function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): Promise<HallRuntimeDispatchResult> {
+  const agentId = (input.participant.agentId ?? input.participant.participantId).trim();
+  const prev = agentDispatchChains.get(agentId) ?? Promise.resolve();
+  const result: Promise<HallRuntimeDispatchResult> = prev.then(() => dispatchHallRuntimeTurnUnsafe(input));
+  agentDispatchChains.set(agentId, result.catch(() => undefined));
+  return result;
+}
+
+async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): Promise<HallRuntimeDispatchResult> {
   const participantAgentId = (input.participant.agentId ?? input.participant.participantId).trim();
   if (!canDispatchHallToRuntime(input.client, input.participant)) {
     throw new Error(`Runtime dispatch is unavailable for participant '${input.participant.displayName}'.`);
