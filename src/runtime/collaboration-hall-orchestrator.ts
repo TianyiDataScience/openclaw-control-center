@@ -103,6 +103,10 @@ import type {
 
 export const DEFAULT_COLLABORATION_HALL_PROJECT_ID = "collaboration-hall";
 
+function isManagerLike(role: HallSemanticRole): boolean {
+  return role === "manager" || role === "observer";
+}
+
 type HallOperatorIntent = "greeting" | "light_chat" | "discussion_request" | "task_request";
 type HallResponseLanguage = "zh" | "en";
 
@@ -1321,7 +1325,7 @@ function buildLobbyHallReply(participant: HallParticipant, rawContent: string): 
         ? `${participant.displayName} 收到。我会先把这件事收敛成一条可讨论的任务线程，然后拉相关 agent 一起讨论目标、限制、风险和执行顺序。`
         : `${participant.displayName} got it. I will first turn this into a discussable task thread, then bring the relevant agents in to discuss goals, constraints, risks, and execution order.`;
     }
-    if (participant.semanticRole === "manager") {
+    if (isManagerLike(participant.semanticRole)) {
       return language === "zh"
         ? `${participant.displayName} 收到。我们会先在大厅里展开讨论，再由你来决定谁先执行、谁后执行。`
         : `${participant.displayName} got it. We will discuss it in the hall first, then you can decide who should execute first and who should follow.`;
@@ -1332,7 +1336,7 @@ function buildLobbyHallReply(participant: HallParticipant, rawContent: string): 
       ? `${participant.displayName} 收到。你这条消息还没有绑定任务线程；如果这是一个新任务，我可以先帮你把目标、限制和完成标准收敛成第一张线程卡。`
       : `${participant.displayName} got it. This message is not attached to a task thread yet; if this is a new task, I can first help turn the goal, constraints, and definition of done into the first thread card.`;
   }
-  if (participant.semanticRole === "manager") {
+  if (isManagerLike(participant.semanticRole)) {
     return language === "zh"
       ? `${participant.displayName} 收到。先在大厅里把任务目标说清楚，我们再决定由谁执行。`
       : `${participant.displayName} got it. Let us clarify the task goal in the hall first, then decide who should execute it.`;
@@ -1504,7 +1508,7 @@ function listRecentDiscussionParticipants(
     if (!participantId || participantId === "operator" || participantId === exclude) return;
     if (ordered.includes(participantId)) return;
     const participant = findParticipant(hall.participants, participantId);
-    if (!participant || participant.semanticRole === "manager") return;
+    if (!participant || isManagerLike(participant.semanticRole)) return;
     ordered.push(participantId);
   };
 
@@ -1610,7 +1614,7 @@ function buildExecutionItemTask(
     ;
     return `Review the previous pass for "${title}", call out only the must-fix point, and if there is no real blocker, send it straight to the next owner${focus ? `, especially around ${focus}` : ""}.`;
   }
-  if (participant.semanticRole === "manager") {
+  if (isManagerLike(participant.semanticRole)) {
     if (language === "zh") return `收住这轮结果，锁一句结论和下一步；后面还有 owner 就直接交棒${focus ? `，重点别漏：${focus}` : "。"}`
     ;
     return `Close the loop on "${title}", confirm the action items and next decision, and decide whether the chain should continue${focus ? `, making sure ${focus} is covered` : ""}.`;
@@ -2648,7 +2652,7 @@ async function runHallDiscussion(
         break;
       }
       spokenParticipantIds.add(participant.participantId);
-      if (participant.semanticRole === "manager" && explicitQueue.length === 0) {
+      if (isManagerLike(participant.semanticRole) && explicitQueue.length === 0) {
         break;
       }
     }
@@ -2710,8 +2714,8 @@ function determineDiscussionTurnParticipants(input: {
   const candidates = candidateIds
     .map((participantId) => findParticipant(input.hall.participants, participantId))
     .filter((participant): participant is HallParticipant => Boolean(participant));
-  const manager = candidates.find((participant) => participant.semanticRole === "manager");
-  const nonManagers = candidates.filter((participant) => participant.semanticRole !== "manager");
+  const manager = candidates.find((participant) => isManagerLike(participant.semanticRole));
+  const nonManagers = candidates.filter((participant) => !isManagerLike(participant.semanticRole));
   const currentCycleContributorCount = input.taskCard.discussionCycle?.completedParticipantIds.length ?? 0;
   const historicalAgentContributors = countDistinctAgentContributors(input.recentThreadMessages);
   const priorAgentContributors = Math.max(
@@ -3938,7 +3942,7 @@ async function appendGeneratedHallReply(
     });
   }
 
-  if (!failureMessage && participant.semanticRole === "manager" && nextTaskCard.stage === "discussion") {
+  if (!failureMessage && isManagerLike(participant.semanticRole) && nextTaskCard.stage === "discussion") {
     nextTaskCard = closeDiscussionCycle(nextTaskCard, message.createdAt);
     nextTaskCard = (
       await updateHallTaskCard({
@@ -4280,7 +4284,7 @@ function buildGeneratedHallReply(
       },
     };
   }
-  if (participant.semanticRole === "manager") {
+  if (isManagerLike(participant.semanticRole)) {
     const executor = pickRecommendedExecutor(hall, taskCard, task);
     const suggestedPlan = buildSuggestedExecutionPlan(hall, taskCard, executor.participantId, task);
     const executionOrder = suggestedPlan.executionOrder;
@@ -4460,8 +4464,8 @@ function pickParticipantForRole(
   participants: HallParticipant[],
   role: HallSemanticRole,
 ): HallParticipant | undefined {
-  if (role === "generalist") {
-    return participants.find((participant) => participant.active && participant.semanticRole === "generalist");
+  if (role === "generalist" || role === "observer") {
+    return participants.find((participant) => participant.active && participant.semanticRole === role);
   }
   return pickPrimaryParticipantByRole(participants, role);
 }
@@ -4614,7 +4618,7 @@ function normalizeTaskKey(value: string | undefined): string | undefined {
 function toRoomParticipantRole(participant: HallParticipant): RoomParticipantRole {
   if (participant.semanticRole === "planner") return "planner";
   if (participant.semanticRole === "reviewer") return "reviewer";
-  if (participant.semanticRole === "manager") return "manager";
+  if (isManagerLike(participant.semanticRole)) return "manager";
   return "coder";
 }
 

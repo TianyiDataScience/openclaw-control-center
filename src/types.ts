@@ -43,7 +43,7 @@ export type ProjectState = "planned" | "active" | "blocked" | "done";
 export type RoomStage = "intake" | "discussion" | "assigned" | "executing" | "review" | "completed";
 export type MessageKind = "chat" | "proposal" | "decision" | "handoff" | "status" | "result";
 export type RoomParticipantRole = "human" | "planner" | "coder" | "reviewer" | "manager";
-export type HallSemanticRole = "planner" | "coder" | "reviewer" | "manager" | "generalist";
+export type HallSemanticRole = "planner" | "coder" | "reviewer" | "manager" | "observer" | "generalist";
 export type HallTaskStage = "discussion" | "execution" | "review" | "blocked" | "completed";
 export type HallMessageKind =
   | "chat"

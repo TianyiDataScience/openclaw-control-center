@@ -1300,7 +1300,7 @@ function asHallTaskStage(value: unknown): HallTaskStage | undefined {
 }
 
 function asHallSemanticRole(value: unknown): HallParticipant["semanticRole"] | undefined {
-  return value === "planner" || value === "coder" || value === "reviewer" || value === "manager" || value === "generalist"
+  return value === "planner" || value === "coder" || value === "reviewer" || value === "manager" || value === "observer" || value === "generalist"
     ? value
     : undefined;
 }

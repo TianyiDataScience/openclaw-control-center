@@ -656,11 +656,12 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     chat: ${JSON.stringify(pickUiText(language, "Chat", "对话"))},
   }[kind] || kind || '');
   const roleLabel = (role) => ({
-    planner: 'Planner',
-    coder: 'Coder',
-    reviewer: 'Reviewer',
-    manager: 'Manager',
-    generalist: ${JSON.stringify(pickUiText(language, "Generalist", "通用"))},
+    planner: ${JSON.stringify(pickUiText(language, "Executor", "执行者"))},
+    coder: ${JSON.stringify(pickUiText(language, "Executor", "执行者"))},
+    reviewer: ${JSON.stringify(pickUiText(language, "Executor", "执行者"))},
+    manager: ${JSON.stringify(pickUiText(language, "Agent Manager", "智能体管理者"))},
+    observer: ${JSON.stringify(pickUiText(language, "Observer & Manager", "观察者与管理者"))},
+    generalist: ${JSON.stringify(pickUiText(language, "Executor", "执行者"))},
   }[role] || role || '');
   const avatarCatalog = ${JSON.stringify(HALL_AVATAR_CATALOG)};
   const compactTimestamp = (value) => {
@@ -3325,11 +3326,9 @@ function messageKindLabel(kind: HallMessage["kind"], language: UiLanguage): stri
 }
 
 function roleLabel(role: HallParticipant["semanticRole"], language: UiLanguage): string {
-  if (role === "planner") return pickUiText(language, "Planner", "策划");
-  if (role === "coder") return pickUiText(language, "Coder", "执行");
-  if (role === "reviewer") return pickUiText(language, "Reviewer", "审核");
-  if (role === "manager") return pickUiText(language, "Manager", "经理");
-  return pickUiText(language, "Generalist", "通用");
+  if (role === "manager") return pickUiText(language, "Agent Manager", "智能体管理者");
+  if (role === "observer") return pickUiText(language, "Observer & Manager", "观察者与管理者");
+  return pickUiText(language, "Executor", "执行者");
 }
 
 function pickUiText(language: UiLanguage, en: string, zh: string): string {

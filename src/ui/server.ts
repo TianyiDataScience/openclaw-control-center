@@ -12264,7 +12264,7 @@ async function resolveStaffRoleLabel(member: TeamMemberSnapshot, language: UiLan
     return pickUiText(language, "Main control and coordination", "主控与协调");
   }
 
-  if (key === "codex" || normalized.includes("codex")) {
+  if (key === "codex") {
     return pickUiText(language, "Coding automation", "自动化编码执行");
   }
 
@@ -12280,6 +12280,11 @@ async function resolveStaffRoleLabel(member: TeamMemberSnapshot, language: UiLan
   }
   if (explicit && (normalizeEvidenceText(explicit).includes("creator") || explicit.includes("创作"))) {
     return pickUiText(language, "High-value content creation", "高价值内容创作");
+  }
+
+  const parenMatch = member.displayName.match(/\(([^)]+)\)/);
+  if (parenMatch && parenMatch[1].trim().length > 0) {
+    return parenMatch[1].trim();
   }
 
   return pickUiText(language, "Role not defined in workspace", "工作区未写明职责");
