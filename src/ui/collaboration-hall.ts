@@ -557,7 +557,64 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       parts.push('<blockquote>' + renderInlineMarkdown(quoteLines.join('<br>')) + '</blockquote>');
       quoteLines = [];
     };
-    lines.forEach((line) => {
+    const tableSeparatorCellPattern = new RegExp('^:?-+:?$');
+    const tablePipeLine = (value) => {
+      if (value === undefined) return null;
+      const t = value.trim();
+      if (t.length < 2 || t.charAt(0) !== '|' || t.charAt(t.length - 1) !== '|') return null;
+      return t;
+    };
+    const splitTableRow = (row) =>
+      row.replace(/^\\|/, '').replace(/\\|$/, '').split('|').map((c) => c.trim());
+    const tryParseTable = (sourceLines, startIndex) => {
+      const headerTrim = tablePipeLine(sourceLines[startIndex]);
+      if (!headerTrim) return null;
+      const sepTrim = tablePipeLine(sourceLines[startIndex + 1]);
+      if (!sepTrim) return null;
+      const sepCells = splitTableRow(sepTrim);
+      if (sepCells.length === 0 || !sepCells.every((c) => tableSeparatorCellPattern.test(c))) return null;
+      const headerCells = splitTableRow(headerTrim);
+      if (headerCells.length !== sepCells.length) return null;
+      const aligns = sepCells.map((c) => {
+        const left = c.charAt(0) === ':';
+        const right = c.charAt(c.length - 1) === ':';
+        if (left && right) return 'center';
+        if (right) return 'right';
+        if (left) return 'left';
+        return '';
+      });
+      const bodyRows = [];
+      let cursor = startIndex + 2;
+      while (cursor < sourceLines.length) {
+        const rowTrim = tablePipeLine(sourceLines[cursor]);
+        if (!rowTrim) break;
+        bodyRows.push(splitTableRow(rowTrim));
+        cursor++;
+      }
+      const colCount = headerCells.length;
+      const cellHtml = (text, align, isHeader) => {
+        const tag = isHeader ? 'th' : 'td';
+        const styleAttr = align ? ' style="text-align:' + align + '"' : '';
+        return '<' + tag + styleAttr + '>' + renderInlineMarkdown(text) + '</' + tag + '>';
+      };
+      const headHtml = '<thead><tr>' + headerCells
+        .map((c, idx) => cellHtml(c, aligns[idx] || '', true))
+        .join('') + '</tr></thead>';
+      let bodyHtml = '';
+      if (bodyRows.length > 0) {
+        bodyHtml = '<tbody>' + bodyRows.map((row) => {
+          const padded = [];
+          for (let k = 0; k < colCount; k++) padded.push(row[k] != null ? row[k] : '');
+          return '<tr>' + padded.map((c, idx) => cellHtml(c, aligns[idx] || '', false)).join('') + '</tr>';
+        }).join('') + '</tbody>';
+      }
+      return {
+        html: '<table class="hall-md-table">' + headHtml + bodyHtml + '</table>',
+        consumed: cursor - startIndex,
+      };
+    };
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      const line = lines[lineIdx];
       const trimmed = line.trim();
       const ul = trimmed.match(unorderedListPattern);
       const ol = trimmed.match(orderedListPattern);
@@ -567,20 +624,29 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         flushParagraph();
         flushList();
         flushQuote();
-        return;
+        continue;
       }
       if (quote) {
         flushParagraph();
         flushList();
         quoteLines.push(quote[1]);
-        return;
+        continue;
       }
       if (heading) {
         flushParagraph();
         flushList();
         flushQuote();
         flushHeading(Math.min(heading[1].length, 6), heading[2]);
-        return;
+        continue;
+      }
+      const table = tryParseTable(lines, lineIdx);
+      if (table) {
+        flushParagraph();
+        flushList();
+        flushQuote();
+        parts.push(table.html);
+        lineIdx += table.consumed - 1;
+        continue;
       }
       flushQuote();
       if (ul) {
@@ -588,18 +654,18 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         if (listType && listType !== 'ul') flushList();
         listType = 'ul';
         listItems.push(ul[1]);
-        return;
+        continue;
       }
       if (ol) {
         flushParagraph();
         if (listType && listType !== 'ol') flushList();
         listType = 'ol';
         listItems.push(ol[1]);
-        return;
+        continue;
       }
       flushList();
       paragraph.push(trimmed);
-    });
+    }
     flushParagraph();
     flushList();
     flushQuote();
@@ -3483,7 +3549,69 @@ function renderMarkdown(value: string): string {
   const flushHeading = (level: number, content: string) => {
     parts.push(`<h${level}>${renderInline(content)}</h${level}>`);
   };
-  for (const line of lines) {
+  const splitTableRow = (row: string): string[] =>
+    row.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  const tablePipeLine = (value: string | undefined): string | null => {
+    if (value === undefined) return null;
+    const t = value.trim();
+    if (t.length < 2 || t.charAt(0) !== "|" || t.charAt(t.length - 1) !== "|") return null;
+    return t;
+  };
+  const tableSeparatorCellPattern = /^:?-+:?$/;
+  const tryParseTable = (
+    sourceLines: string[],
+    startIndex: number,
+  ): { html: string; consumed: number } | null => {
+    const headerTrim = tablePipeLine(sourceLines[startIndex]);
+    if (!headerTrim) return null;
+    const sepTrim = tablePipeLine(sourceLines[startIndex + 1]);
+    if (!sepTrim) return null;
+    const sepCells = splitTableRow(sepTrim);
+    if (sepCells.length === 0 || !sepCells.every((c) => tableSeparatorCellPattern.test(c))) return null;
+    const headerCells = splitTableRow(headerTrim);
+    if (headerCells.length !== sepCells.length) return null;
+    const aligns = sepCells.map((c) => {
+      const left = c.startsWith(":");
+      const right = c.endsWith(":");
+      if (left && right) return "center";
+      if (right) return "right";
+      if (left) return "left";
+      return "";
+    });
+    const bodyRows: string[][] = [];
+    let cursor = startIndex + 2;
+    while (cursor < sourceLines.length) {
+      const rowTrim = tablePipeLine(sourceLines[cursor]);
+      if (!rowTrim) break;
+      bodyRows.push(splitTableRow(rowTrim));
+      cursor++;
+    }
+    const colCount = headerCells.length;
+    const cellHtml = (text: string, align: string, isHeader: boolean): string => {
+      const tag = isHeader ? "th" : "td";
+      const styleAttr = align ? ` style="text-align:${align}"` : "";
+      return `<${tag}${styleAttr}>${renderInline(text)}</${tag}>`;
+    };
+    const headHtml = `<thead><tr>${headerCells
+      .map((c, idx) => cellHtml(c, aligns[idx] || "", true))
+      .join("")}</tr></thead>`;
+    let bodyHtml = "";
+    if (bodyRows.length > 0) {
+      bodyHtml = `<tbody>${bodyRows
+        .map((row) => {
+          const padded: string[] = [];
+          for (let k = 0; k < colCount; k++) padded.push(row[k] ?? "");
+          return `<tr>${padded.map((c, idx) => cellHtml(c, aligns[idx] || "", false)).join("")}</tr>`;
+        })
+        .join("")}</tbody>`;
+    }
+    return {
+      html: `<table class="hall-md-table">${headHtml}${bodyHtml}</table>`,
+      consumed: cursor - startIndex,
+    };
+  };
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
     const trimmed = line.trim();
     const ul = trimmed.match(/^[-*]\s+(.+)$/);
     const ol = trimmed.match(/^\d+\.\s+(.+)$/);
@@ -3506,6 +3634,15 @@ function renderMarkdown(value: string): string {
       flushList();
       flushQuote();
       flushHeading(Math.min(heading[1].length, 6), heading[2]);
+      continue;
+    }
+    const table = tryParseTable(lines, lineIdx);
+    if (table) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      parts.push(table.html);
+      lineIdx += table.consumed - 1;
       continue;
     }
     flushQuote();

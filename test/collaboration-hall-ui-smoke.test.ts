@@ -871,6 +871,66 @@ test("hall message rendering turns legacy <br> tags into visible line breaks, st
   assert(!html.includes('"executor":"pandas"'));
 });
 
+test("hall message rendering converts markdown pipe tables into real <table> elements with aligned cells", () => {
+  const html = renderCollaborationHall({
+    language: "en",
+    hall: {
+      hallId: "main",
+      title: "Collaboration Hall",
+      participants: [],
+      taskCardIds: [],
+      messageIds: ["msg-1"],
+      lastMessageId: "msg-1",
+      latestMessageAt: "2026-04-10T08:00:00.000Z",
+      createdAt: "2026-04-10T08:00:00.000Z",
+      updatedAt: "2026-04-10T08:00:00.000Z",
+    },
+    hallSummary: {
+      hallId: "main",
+      headline: "Markdown tables should render as real tables.",
+      activeTaskCount: 0,
+      waitingReviewCount: 0,
+      blockedTaskCount: 0,
+      updatedAt: "2026-04-10T08:00:00.000Z",
+    },
+    taskCards: [],
+    messages: [
+      {
+        hallId: "main",
+        messageId: "msg-1",
+        kind: "proposal",
+        authorParticipantId: "linus",
+        authorLabel: "Linus",
+        authorSemanticRole: "coder",
+        content:
+          "Here is the comparison:\n\n| Item | Owner | Status |\n|:-----|:-----:|------:|\n| Auth | linus | done |\n| API  | otter | wip  |\n\nDone.",
+        targetParticipantIds: [],
+        mentionTargets: [],
+        createdAt: "2026-04-10T08:00:00.000Z",
+      },
+    ],
+  });
+
+  assert(html.includes('<table class="hall-md-table">'));
+  assert(html.includes("<thead><tr>"));
+  assert(html.includes("<th"));
+  assert(html.includes("<tbody>"));
+  assert(html.includes("<td"));
+  assert(html.includes('text-align:left'));
+  assert(html.includes('text-align:center'));
+  assert(html.includes('text-align:right'));
+  assert(html.includes(">Item</th>"));
+  assert(html.includes(">Auth</td>"));
+  assert(!html.includes("|------"));
+  assert(!html.includes("|:-----"));
+});
+
+test("hall client script includes a markdown table parser that emits hall-md-table elements", () => {
+  const script = renderCollaborationHallClientScript("en");
+  assert(script.includes("tryParseTable"));
+  assert(script.includes("hall-md-table"));
+});
+
 test("selected hall thread cards expose an aria-current marker for styling and smoke checks", () => {
   const html = renderCollaborationHall({
     language: "zh",

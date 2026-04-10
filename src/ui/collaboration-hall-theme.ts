@@ -1161,6 +1161,35 @@ export function renderCollaborationHallTheme(): string {
       font-size: 12px;
       line-height: 1.55;
     }
+    .hall-md-table {
+      display: block;
+      max-width: 100%;
+      overflow-x: auto;
+      border-collapse: collapse;
+      margin: 8px 0;
+      font-size: 12px;
+      line-height: 1.5;
+      border: 1px solid rgba(17, 43, 68, 0.12);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.9);
+    }
+    .hall-md-table thead {
+      background: rgba(17, 43, 68, 0.06);
+    }
+    .hall-md-table th,
+    .hall-md-table td {
+      padding: 6px 10px;
+      border: 1px solid rgba(17, 43, 68, 0.10);
+      text-align: left;
+      vertical-align: top;
+    }
+    .hall-md-table th {
+      font-weight: 650;
+      color: #173346;
+    }
+    .hall-md-table tbody tr:nth-child(even) td {
+      background: rgba(17, 43, 68, 0.025);
+    }
     .hall-message-footer {
       display: flex;
       flex-wrap: wrap;
