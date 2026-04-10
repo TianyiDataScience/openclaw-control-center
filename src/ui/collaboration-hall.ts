@@ -2767,6 +2767,9 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   renderThreadHeader();
   syncComposerMode();
   autoResizeComposer();
+  if (thread instanceof HTMLElement) {
+    thread.scrollTop = thread.scrollHeight;
+  }
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && root.classList.contains('is-context-open')) {
       setContextOpen(false);
