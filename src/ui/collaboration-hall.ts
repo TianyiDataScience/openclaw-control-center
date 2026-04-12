@@ -382,6 +382,14 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   let pendingComposerSubmitAfterComposition = false;
   const draftTtlMs = 180_000;
   const threadFollowThresholdPx = 40;
+
+  /* ── Demo playback state ── */
+  const DEMO_CARD_PREFIX = 'demo:';
+  let isDemoMode = false;
+  let demoMessages = null;
+  let demoPlaybackRunning = false;
+  let demoPlaybackAbort = null;
+  const isDemoCard = (id) => typeof id === 'string' && id.startsWith(DEMO_CARD_PREFIX);
   const hallFileInput = root.querySelector('[data-hall-file-input]');
   const hallAttachButton = root.querySelector('[data-hall-attach-file]');
   const hallFilePreview = root.querySelector('[data-hall-file-preview]');
@@ -1452,11 +1460,13 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     taskList.innerHTML = taskCards.map((item) => {
       const selected = item.taskCardId === selectedTaskCardId;
       const preview = item.headline || '';
-      return '<button type="button" class="hall-task-card' + (selected ? ' is-selected' : '') + '" data-task-card-id="' + esc(item.taskCardId) + '" data-project-id="' + esc(item.projectId) + '" data-task-id="' + esc(item.taskId) + '"' + (selected ? ' aria-current="page"' : '') + '>' +
+      const isDemo = isDemoCard(item.taskCardId);
+      const demoBadge = isDemo ? '<span class="hall-demo-badge">DEMO</span>' : '';
+      return '<button type="button" class="hall-task-card' + (selected ? ' is-selected' : '') + (isDemo ? ' is-demo' : '') + '" data-task-card-id="' + esc(item.taskCardId) + '" data-project-id="' + esc(item.projectId) + '" data-task-id="' + esc(item.taskId) + '"' + (selected ? ' aria-current="page"' : '') + '>' +
         '<div class="hall-task-card-row">' +
           hallAvatarMarkup(item.title || item.taskId, 'hall-task-card-avatar') +
           '<div class="hall-task-card-copy">' +
-            '<div class="hall-task-title-row"><strong class="hall-task-title">' + esc(item.title) + '</strong><span class="hall-task-timestamp">' + esc(compactTimestamp(item.updatedAt)) + '</span></div>' +
+            '<div class="hall-task-title-row"><strong class="hall-task-title">' + demoBadge + esc(item.title) + '</strong><span class="hall-task-timestamp">' + esc(compactTimestamp(item.updatedAt)) + '</span></div>' +
             '<div class="hall-task-preview' + (preview ? '' : ' is-empty') + '">' + esc(preview) + '</div>' +
           '</div>' +
         '</div>' +
@@ -1464,6 +1474,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     }).join('');
     taskList.querySelectorAll('[data-task-card-id]').forEach((button) => {
       button.addEventListener('click', () => {
+        const prevDemo = isDemoMode;
         selectedTaskCardId = button.getAttribute('data-task-card-id') || '';
         selectedTaskProjectId = button.getAttribute('data-project-id') || '';
         selectedTaskId = button.getAttribute('data-task-id') || '';
@@ -1471,6 +1482,14 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         closeHandoffPanel();
         executionPlannerOpen = false;
         selectedTaskDetailPayload = null;
+        /* Demo mode toggle */
+        if (isDemoCard(selectedTaskCardId)) {
+          hallMessages = [];
+          hallDrafts = new Map();
+          enterDemoMode();
+        } else if (prevDemo) {
+          exitDemoMode();
+        }
         syncTaskUrl(selectedTaskCardId);
         renderTaskList(hallTaskCards);
         renderThreadHeader();
@@ -1481,7 +1500,9 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         if (button instanceof HTMLElement) button.focus();
         if (thread instanceof HTMLElement) thread.scrollTop = 0;
         setFlash(textThreadSwitched + ' ' + (button.querySelector('.hall-task-title')?.textContent?.trim() || ''));
-        void loadTaskDetail();
+        if (!isDemoCard(selectedTaskCardId)) {
+          void loadTaskDetail();
+        }
       });
     });
     paintHallPixelAvatars(taskList);
@@ -2106,6 +2127,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   };
 
   const loadHall = async (quiet = false) => {
+    if (demoPlaybackRunning) return;
     if (hallReloadInFlight) return;
     hallReloadInFlight = true;
     try {
@@ -2274,6 +2296,11 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       renderVisibleThread();
       return;
     }
+    if (isDemoCard(selectedTaskCardId)) {
+      renderDetail(null);
+      renderDecisionPanel(null);
+      return;
+    }
     syncSelectedTaskRefs();
     if (!selectedTaskId) {
       renderDetail(null);
@@ -2307,6 +2334,226 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     renderThreadHeader();
     renderMemberStrip();
     renderToolbarMetaNote();
+  };
+
+  /* ── Demo playback engine ── */
+  const demoChunkContent = (content) => {
+    const trimmed = String(content || '').trim();
+    if (!trimmed) return [''];
+    const chunks = [];
+    let current = '';
+    for (const token of trimmed.split(/(\\s+)/).filter(Boolean)) {
+      if (token.length > 48) {
+        if (current) { chunks.push(current); current = ''; }
+        for (let i = 0; i < token.length; i += 32) chunks.push(token.slice(i, i + 32));
+        continue;
+      }
+      if ((current + token).length > 48 && current) {
+        chunks.push(current);
+        current = token;
+        continue;
+      }
+      current += token;
+    }
+    if (current) chunks.push(current);
+    return chunks.length > 0 ? chunks : [trimmed];
+  };
+
+  const demoSleep = (ms) => new Promise((resolve) => {
+    const id = window.setTimeout(resolve, ms);
+    if (demoPlaybackAbort) {
+      const prev = demoPlaybackAbort;
+      demoPlaybackAbort = () => { window.clearTimeout(id); prev(); };
+    }
+  });
+
+  const loadDemoData = async () => {
+    if (demoMessages) return demoMessages;
+    const res = await fetch('/api/hall/demo/data');
+    const json = await res.json();
+    demoMessages = json.messages || [];
+    return demoMessages;
+  };
+
+  const enterDemoMode = () => {
+    isDemoMode = true;
+    if (!(textarea instanceof HTMLTextAreaElement)) return;
+    loadDemoData().then((msgs) => {
+      const prompt = msgs[0]?.content || '';
+      textarea.value = prompt;
+      textarea.readOnly = true;
+      textarea.style.opacity = '0.85';
+      autoResizeComposer();
+      if (sendButton instanceof HTMLElement) {
+        sendButton.textContent = labels.reply || ${JSON.stringify(pickUiText(language, "Send reply", "发送回复"))};
+      }
+    });
+  };
+
+  const exitDemoMode = () => {
+    isDemoMode = false;
+    demoPlaybackRunning = false;
+    if (demoPlaybackAbort) { demoPlaybackAbort(); demoPlaybackAbort = null; }
+    if (!(textarea instanceof HTMLTextAreaElement)) return;
+    textarea.readOnly = false;
+    textarea.style.opacity = '';
+    textarea.value = '';
+    autoResizeComposer();
+    if (sendButton instanceof HTMLElement) {
+      sendButton.textContent = labels.reply || 'Send reply';
+    }
+  };
+
+  const runDemoPlayback = async () => {
+    if (demoPlaybackRunning) return;
+    demoPlaybackRunning = true;
+    threadAutoFollow = true;
+    let aborted = false;
+    demoPlaybackAbort = () => { aborted = true; };
+
+    const msgs = await loadDemoData();
+    if (!msgs || msgs.length === 0) { demoPlaybackRunning = false; return; }
+
+    if (sendButton instanceof HTMLElement) {
+      sendButton.disabled = true;
+    }
+    if (textarea instanceof HTMLTextAreaElement) {
+      textarea.value = '';
+      autoResizeComposer();
+    }
+
+    /* Message 0 is the operator's prompt — show it immediately as persisted */
+    const operatorMsg = msgs[0];
+    hallMessages.push({
+      messageId: operatorMsg.messageId,
+      kind: operatorMsg.kind,
+      authorLabel: operatorMsg.authorLabel,
+      authorParticipantId: operatorMsg.authorParticipantId,
+      authorSemanticRole: operatorMsg.authorSemanticRole,
+      content: operatorMsg.content,
+      taskCardId: selectedTaskCardId,
+      projectId: operatorMsg.projectId,
+      taskId: operatorMsg.taskId,
+      roomId: selectedTaskCardId,
+      createdAt: new Date().toISOString(),
+      payload: {},
+    });
+    renderVisibleThread();
+    await demoSleep(600);
+
+    /* Messages 1+ are agent replies — stream each with typewriter effect */
+    for (let i = 1; i < msgs.length; i++) {
+      if (aborted) break;
+      const msg = msgs[i];
+      const draftId = 'demo-draft-' + i;
+      const now = () => new Date().toISOString();
+
+      /* draft_start */
+      hallDrafts.set(draftId, {
+        draftId,
+        createdAt: now(),
+        lastDeltaAt: now(),
+        authorLabel: msg.authorLabel || 'Agent',
+        authorParticipantId: msg.authorParticipantId,
+        authorSemanticRole: msg.authorSemanticRole,
+        messageKind: msg.kind || 'status',
+        taskCardId: selectedTaskCardId,
+        projectId: msg.projectId,
+        taskId: msg.taskId,
+        roomId: selectedTaskCardId,
+        content: '',
+        toolCalls: [],
+      });
+      renderVisibleThread();
+      await demoSleep(200);
+      if (aborted) break;
+
+      /* Tool calls: show them progressively early in the message */
+      const toolCalls = msg.toolCalls || [];
+      const toolCount = toolCalls.length;
+      const chunks = demoChunkContent(msg.content);
+      const totalChunks = chunks.length;
+      const toolInsertInterval = toolCount > 0 ? Math.max(1, Math.floor(totalChunks * 0.15 / toolCount)) : 0;
+      let nextToolIndex = 0;
+
+      /* draft_delta — typewriter effect */
+      for (let c = 0; c < totalChunks; c++) {
+        if (aborted) break;
+        const draft = hallDrafts.get(draftId);
+        if (!draft) break;
+
+        /* Insert tool calls at spaced intervals near the beginning */
+        if (nextToolIndex < toolCount && toolInsertInterval > 0 && c > 0 && c % toolInsertInterval === 0) {
+          const tc = toolCalls[nextToolIndex];
+          if (!draft.toolCalls) draft.toolCalls = [];
+          draft.toolCalls.push({ toolName: tc.toolName, toolStatus: 'running', startedAt: now() });
+          hallDrafts.set(draftId, draft);
+          renderVisibleThread();
+          await demoSleep(150);
+          if (aborted) break;
+          /* Complete the tool call after a short delay */
+          const runningTool = [...draft.toolCalls].reverse().find((t) => t.toolName === tc.toolName && t.toolStatus === 'running');
+          if (runningTool) {
+            runningTool.toolStatus = tc.toolStatus || 'completed';
+            runningTool.endedAt = now();
+          }
+          hallDrafts.set(draftId, draft);
+          nextToolIndex++;
+        }
+
+        draft.content = (draft.content || '') + chunks[c];
+        draft.lastDeltaAt = now();
+        hallDrafts.set(draftId, draft);
+        renderVisibleThread();
+
+        /* Adaptive delay: shorter for short chunks, tiny pause for natural flow */
+        const chunkLen = chunks[c].length;
+        const delay = chunkLen > 30 ? 18 : chunkLen > 15 ? 14 : 10;
+        await demoSleep(delay);
+      }
+      if (aborted) break;
+
+      /* Complete remaining tool calls */
+      const draft = hallDrafts.get(draftId);
+      if (draft) {
+        while (nextToolIndex < toolCount) {
+          const tc = toolCalls[nextToolIndex];
+          if (!draft.toolCalls) draft.toolCalls = [];
+          draft.toolCalls.push({ toolName: tc.toolName, toolStatus: tc.toolStatus || 'completed', startedAt: now(), endedAt: now() });
+          nextToolIndex++;
+        }
+        hallDrafts.set(draftId, draft);
+      }
+
+      /* draft_complete — move to persisted messages */
+      hallDrafts.delete(draftId);
+      hallMessages.push({
+        messageId: msg.messageId,
+        kind: msg.kind,
+        authorLabel: msg.authorLabel,
+        authorParticipantId: msg.authorParticipantId,
+        authorSemanticRole: msg.authorSemanticRole,
+        content: msg.content,
+        taskCardId: selectedTaskCardId,
+        projectId: msg.projectId,
+        taskId: msg.taskId,
+        roomId: selectedTaskCardId,
+        createdAt: now(),
+        payload: { toolCalls: toolCalls.length > 0 ? toolCalls : undefined },
+      });
+      renderVisibleThread();
+
+      /* Pause between messages — longer for dense content */
+      const pauseMs = msg.content.length > 500 ? 800 : 500;
+      await demoSleep(pauseMs);
+    }
+
+    /* Playback finished */
+    demoPlaybackRunning = false;
+    demoPlaybackAbort = null;
+    if (sendButton instanceof HTMLElement) {
+      sendButton.disabled = false;
+    }
   };
 
   const createTask = async () => {
@@ -2359,6 +2606,10 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     await loadHall();
   };
   const submitComposer = async () => {
+    if (isDemoMode) {
+      await runDemoPlayback();
+      return;
+    }
     if (composerMode === 'task') {
       await createTask();
       return;

@@ -158,6 +158,7 @@ import {
   type SessionInterSessionSignal,
 } from "../runtime/session-conversations";
 import { renderCollaborationHall, renderCollaborationHallClientScript } from "./collaboration-hall";
+import { isDemoTaskCard, buildDemoTaskCard, buildDemoTaskCardSummary, getDemoMessages, getDemoPrompt, DEMO_CARD_ID } from "../runtime/demo-playback";
 import { renderTaskRoomClientScript, renderTaskRoomWorkbench, renderTaskRoomWorkbenchForSmoke } from "./task-room-workbench";
 import { loadBestEffortAgentRoster, type AgentRosterEntry, type AgentRosterSnapshot } from "../runtime/agent-roster";
 import {
@@ -1854,17 +1855,32 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
 
       if (method === "GET" && path === "/api/hall") {
         const hall = await readCollaborationHall();
+        const demoCard = buildDemoTaskCard();
+        const demoSummary = buildDemoTaskCardSummary();
+        const taskCardsWithDemo = [
+          ...hall.taskCards.map((card) => ({
+            ...card,
+            summary: hall.taskSummaries.find((summary) => summary.taskCardId === card.taskCardId),
+          })),
+          { ...demoCard, summary: demoSummary, isDemo: true },
+        ];
         return writeJson(res, 200, {
           ok: true,
           hall: hall.hall,
           summary: hall.hallSummary,
           participants: hall.participants,
-          count: hall.taskCards.length,
-          taskCards: hall.taskCards.map((card) => ({
-            ...card,
-            summary: hall.taskSummaries.find((summary) => summary.taskCardId === card.taskCardId),
-          })),
+          count: taskCardsWithDemo.length,
+          taskCards: taskCardsWithDemo,
           messages: hall.messages.slice(-180),
+        });
+      }
+
+      if (method === "GET" && path === "/api/hall/demo/data") {
+        return writeJson(res, 200, {
+          ok: true,
+          prompt: getDemoPrompt(),
+          taskCardId: DEMO_CARD_ID,
+          messages: getDemoMessages(),
         });
       }
 
@@ -1996,8 +2012,18 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
       if (method === "GET" && path.startsWith("/api/hall/tasks/") && !path.endsWith("/assign") && !path.endsWith("/review") && !path.endsWith("/handoff") && !path.endsWith("/execution-order") && !path.endsWith("/stop") && !path.endsWith("/archive") && !path.endsWith("/delete") && !path.endsWith("/evidence")) {
         const taskId = decodeRouteParam(path, /^\/api\/hall\/tasks\/([^/]+)$/, "taskId");
         assertAllowedQueryParams(url.searchParams, ["projectId", "taskCardId"], true);
-        const projectId = normalizeQueryString(url.searchParams.get("projectId"), "projectId", 120, true);
         const taskCardId = normalizeQueryString(url.searchParams.get("taskCardId"), "taskCardId", 180, true);
+        if (taskCardId && isDemoTaskCard(taskCardId)) {
+          const demoCard = buildDemoTaskCard();
+          return writeJson(res, 200, {
+            ok: true,
+            taskCard: demoCard,
+            taskSummary: buildDemoTaskCardSummary(),
+            task: null,
+            messages: [],
+          });
+        }
+        const projectId = normalizeQueryString(url.searchParams.get("projectId"), "projectId", 120, true);
         const taskCardStore = await loadCollaborationTaskCardStore();
         const taskCard = resolveHallTaskCardRequest(taskCardStore, {
           taskId,
@@ -7394,20 +7420,25 @@ async function renderHtml(
         )
       : undefined;
   const selectedHallTaskDetail =
-    selectedHallTaskCard
+    selectedHallTaskCard && !isDemoTaskCard(selectedHallTaskCard.taskCardId)
       ? await readCollaborationHallTaskDetail(selectedHallTaskCard.taskCardId)
       : undefined;
+  const demoCardForSSR = buildDemoTaskCard();
+  const demoSummaryForSSR = buildDemoTaskCardSummary();
   const collaborationHallWorkbench =
     needsHallChat && hallView
       ? renderCollaborationHall({
           language: options.language,
           hall: hallView.hall,
           hallSummary: hallView.hallSummary,
-          taskCards: hallView.taskCards.map((card) => ({
-            card,
-            summary: hallView.taskSummaries.find((summary) => summary.taskCardId === card.taskCardId),
-            task: snapshot.tasks.tasks.find((task) => task.projectId === card.projectId && task.taskId === card.taskId),
-          })),
+          taskCards: [
+            ...hallView.taskCards.map((card) => ({
+              card,
+              summary: hallView.taskSummaries.find((summary) => summary.taskCardId === card.taskCardId),
+              task: snapshot.tasks.tasks.find((task) => task.projectId === card.projectId && task.taskId === card.taskId),
+            })),
+            { card: demoCardForSSR as any, summary: demoSummaryForSSR as any, task: undefined },
+          ],
           messages: selectedHallTaskDetail?.messages ?? hallView.messages.slice(-160),
           selectedTaskCard: selectedHallTaskDetail?.taskCard ?? selectedHallTaskCard,
           selectedTaskSummary: selectedHallTaskDetail?.taskSummary ?? selectedHallTaskSummary,
@@ -8024,7 +8055,7 @@ async function renderHtml(
       const key = 'openclaw:theme';
       const stored = (() => { try { return window.localStorage.getItem(key) || ''; } catch { return ''; } })();
       const prefersDark = (() => { try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; } catch { return false; } })();
-      const theme = (stored === 'dark' || stored === 'light') ? stored : (prefersDark ? 'dark' : 'light');
+      const theme = (stored === 'dark' || stored === 'light') ? stored : 'light';
       document.documentElement.dataset.theme = theme;
     })();
   </script>

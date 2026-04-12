@@ -1854,5 +1854,57 @@ export function renderCollaborationHallTheme(): string {
           inset 0 1px 0 rgba(255,255,255,0.75) !important;
       }
     }
+
+    /* ── Demo playback styles ── */
+    .hall-demo-badge {
+      display: inline-block;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #fff;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border-radius: 4px;
+      padding: 1px 5px;
+      margin-right: 5px;
+      vertical-align: middle;
+      line-height: 1.4;
+      animation: hall-demo-badge-pulse 2.2s ease-in-out infinite;
+    }
+    @keyframes hall-demo-badge-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+    .hall-task-card.is-demo {
+      border-left: 3px solid #8b5cf6;
+    }
+    .hall-task-card.is-demo .hall-task-preview {
+      color: #7c3aed;
+      font-style: italic;
+    }
+    .hall-button--demo {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+      border-color: #6366f1 !important;
+      color: #fff !important;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      animation: hall-demo-badge-pulse 2.2s ease-in-out infinite;
+    }
+    .hall-button--demo:hover {
+      filter: brightness(1.1);
+    }
+    [data-theme="dark"] .hall-demo-badge {
+      background: linear-gradient(135deg, #818cf8, #a78bfa);
+    }
+    [data-theme="dark"] .hall-task-card.is-demo {
+      border-left-color: #a78bfa;
+    }
+    [data-theme="dark"] .hall-task-card.is-demo .hall-task-preview {
+      color: #a78bfa;
+    }
+    [data-theme="dark"] .hall-button--demo {
+      background: linear-gradient(135deg, #818cf8, #a78bfa) !important;
+      border-color: #818cf8 !important;
+    }
   `;
 }
