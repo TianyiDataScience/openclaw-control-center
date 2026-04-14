@@ -1610,6 +1610,8 @@ export function renderCollaborationHallTheme(): string {
     .hall-action-menu-panel--thread {
       left: auto;
       right: 0;
+      top: calc(100% + 8px);
+      bottom: auto;
       min-width: 156px;
     }
     .hall-menu-button {
