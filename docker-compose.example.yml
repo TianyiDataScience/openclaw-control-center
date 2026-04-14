@@ -13,7 +13,7 @@ services:
       UI_MODE: "true"
       UI_PORT: "4310"
       UI_BIND_ADDRESS: "0.0.0.0"
-      UI_TIMEZONE: "UTC"
+      UI_TIMEZONE: "America/New_York"
       READONLY_MODE: "true"
       LOCAL_TOKEN_AUTH_REQUIRED: "true"
       LOCAL_API_TOKEN: "change-this-before-exposing-the-ui"
