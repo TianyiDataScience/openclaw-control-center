@@ -1110,6 +1110,22 @@ export function renderCollaborationHallTheme(): string {
       text-decoration-thickness: 1px;
       text-underline-offset: 2px;
     }
+    .hall-md-file-path {
+      display: inline;
+      padding: 0.05rem 0.38rem;
+      border-radius: 4px;
+      background: rgba(40, 100, 160, 0.08);
+      color: #1a6bb5;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      font-size: 0.92em;
+      text-decoration: none;
+      cursor: pointer;
+      word-break: break-all;
+    }
+    .hall-md-file-path:hover {
+      background: rgba(40, 100, 160, 0.16);
+      text-decoration: underline;
+    }
     .hall-md-mention {
       display: inline-block;
       padding: 0.07rem 0.46rem;

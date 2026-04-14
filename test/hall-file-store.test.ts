@@ -108,9 +108,9 @@ test("hallFileContentType: maps common extensions correctly", () => {
   assert(hallFileContentType("test.webp") === "image/webp");
   assert(hallFileContentType("test.gif") === "image/gif");
   assert(hallFileContentType("test.pdf") === "application/pdf");
-  assert(hallFileContentType("test.txt") === "text/plain");
-  assert(hallFileContentType("test.md") === "text/markdown");
-  assert(hallFileContentType("test.json") === "application/json");
+  assert(hallFileContentType("test.txt") === "text/plain; charset=utf-8");
+  assert(hallFileContentType("test.md") === "text/markdown; charset=utf-8");
+  assert(hallFileContentType("test.json") === "application/json; charset=utf-8");
   assert(hallFileContentType("test.zip") === "application/zip");
   assert(hallFileContentType("test.unknown") === "application/octet-stream");
 });

@@ -118,9 +118,9 @@ export function hallFileContentType(fileName: string): string {
     case ".webp": return "image/webp";
     case ".gif": return "image/gif";
     case ".pdf": return "application/pdf";
-    case ".txt": return "text/plain";
-    case ".md": return "text/markdown";
-    case ".json": return "application/json";
+    case ".txt": return "text/plain; charset=utf-8";
+    case ".md": return "text/markdown; charset=utf-8";
+    case ".json": return "application/json; charset=utf-8";
     case ".zip": return "application/zip";
     default: return "application/octet-stream";
   }

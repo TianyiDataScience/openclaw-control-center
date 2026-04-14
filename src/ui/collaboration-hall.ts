@@ -486,6 +486,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const codePlaceholderPattern = new RegExp('@@CODEBLOCK(\\\\d+)@@', 'g');
   const inlinePlaceholderPattern = new RegExp('@@INLINEBLOCK(\\\\d+)@@', 'g');
   const bareImageUrlPattern = new RegExp('(^|[\\\\s(>])((https?:\\\\/\\\\/[^\\\\s<)]+))', 'g');
+  const filePathPattern = new RegExp('(^|[\\\\s(>])((?:\\\\/)?(?:[\\\\w@.-]+\\\\/)+[\\\\w@.-]+\\\\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|py|go|rs|java|cpp|c|h|hpp|css|scss|html|yaml|yml|toml|sh|sql|vue|svelte|rb|php|swift|kt|dart|lua)(?::\\\\d+(?::\\\\d+)?)?)', 'g');
   const lineBreakTagPattern = new RegExp('<br\\\\s*\\\\/?>', 'gi');
   const hallStructuredPattern = new RegExp('<hall-structured>[\\\\s\\\\S]*?<\\\\/hall-structured>', 'gi');
   const mentionPattern = new RegExp('(^|[\\\\s(>\\\\[\\\\{<,.;:!?\"\\\'\u201c\u201d\u2018\u2019，。！？；：、）】」』》])@([A-Za-z0-9_\\\\-\\\\u4e00-\\\\u9fff]+)', 'g');
@@ -517,6 +518,12 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     html = html.replace(bareImageUrlPattern, (match, prefix, url) => (
       isRenderableImageUrl(url) ? prefix + storeInlineBlock(renderInlineImage(url, '')) : match
     ));
+    html = html.replace(filePathPattern, (_match, prefix, filePath) => {
+      const cleanPath = filePath.replace(/:\\d+(?::\\d+)?$/, '');
+      return prefix + storeInlineBlock(
+        '<a class="hall-md-file-path" data-file-path="' + cleanPath + '" title="' + filePath + '">' + filePath + '</a>'
+      );
+    });
     html = html.replace(inlineCodePattern, '<code>$1</code>');
     html = html.replace(markdownStrongPattern, '<strong>$1</strong>');
     html = html.replace(markdownEmphasisPattern, '$1<em>$2</em>');
@@ -2000,14 +2007,20 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     return '<div class="hall-detail-group"><h4>Parallel Dispatch (' + completedSlots + '/' + totalSlots + ')</h4>' + slotRows + '</div>';
   };
 
+  let detailScrollTarget = -1;
+
   const renderDetail = (payload) => {
     payload = withFreshestTaskCard(payload);
     if (!detail) return;
+    const prevCardId = detail.getAttribute('data-current-card') || '';
+    const scrollBefore = contextPane ? contextPane.scrollTop : 0;
     const taskCard = payload?.taskCard;
     const taskSummary = payload?.taskSummary;
     const task = payload?.task;
     if (!taskCard) {
       detail.innerHTML = '<div class="hall-empty">' + esc(textSelectTaskToInspect) + '</div>';
+      detailScrollTarget = -1;
+      detail.style.minHeight = '';
       return;
     }
     const ownerMeta = decisionCardOwnerMeta(taskCard);
@@ -2023,6 +2036,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       ? '<a class="hall-thread-link" href="?section=collaboration&roomId=' + encodeURIComponent(taskCard.roomId) + '">' + esc(textOpenDetailThread) + '</a>'
       : '';
     const participantNames = (bootstrap.participants || []).map((p) => p.displayName).join(' · ');
+    detail.style.minHeight = detail.offsetHeight + 'px';
     detail.innerHTML =
       '<div class="hall-detail-list">' +
         '<div class="hall-detail-group"><h4>' + esc(taskCard.title || 'Thread') + '</h4>' +
@@ -2043,6 +2057,15 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
           '<div class="hall-detail-meta">' + esc(participantNames) + '</div>' +
         '</div>' +
       '</div>';
+    const nextCardId = taskCard?.taskCardId || '';
+    detail.setAttribute('data-current-card', nextCardId);
+    if (nextCardId && prevCardId === nextCardId) {
+      detailScrollTarget = scrollBefore;
+      if (contextPane) contextPane.scrollTop = scrollBefore;
+    } else {
+      detailScrollTarget = -1;
+      detail.style.minHeight = '';
+    }
     if (selectedTaskCardId) { loadWorkspaceFiles(selectedTaskCardId); }
   };
 
@@ -2054,22 +2077,27 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       const files = Array.isArray(res?.files) ? res.files : [];
       if (files.length === 0) {
         container.innerHTML = '<div class="hall-detail-meta">' + esc(${JSON.stringify(pickUiText(language, "No files yet.", "还没有文件。"))}) + '</div>';
-        return;
+      } else {
+        container.innerHTML = files
+          .filter((f) => !f.isDirectory)
+          .map((f) => {
+            const sizeKB = Math.round((f.sizeBytes || 0) / 1024);
+            const href = '/hall-workspace-files/' + encodeURIComponent(taskCardId) + '/' + encodeURIComponent(f.relativePath);
+            const isImage = /\.(png|jpe?g|webp|gif)$/i.test(f.relativePath);
+            return '<a class="hall-workspace-file-item" href="' + esc(href) + '" target="_blank" rel="noreferrer">' +
+              '<span class="hall-workspace-file-name">' + esc(f.relativePath) + '</span>' +
+              '<span class="hall-workspace-file-meta">' + sizeKB + ' KB</span>' +
+              (isImage ? '<img class="hall-workspace-file-thumb" src="' + esc(href) + '" loading="lazy" />' : '') +
+            '</a>';
+          }).join('');
       }
-      container.innerHTML = files
-        .filter((f) => !f.isDirectory)
-        .map((f) => {
-          const sizeKB = Math.round((f.sizeBytes || 0) / 1024);
-          const href = '/hall-workspace-files/' + encodeURIComponent(taskCardId) + '/' + encodeURIComponent(f.relativePath);
-          const isImage = /\.(png|jpe?g|webp|gif)$/i.test(f.relativePath);
-          return '<a class="hall-workspace-file-item" href="' + esc(href) + '" target="_blank" rel="noreferrer">' +
-            '<span class="hall-workspace-file-name">' + esc(f.relativePath) + '</span>' +
-            '<span class="hall-workspace-file-meta">' + sizeKB + ' KB</span>' +
-            (isImage ? '<img class="hall-workspace-file-thumb" src="' + esc(href) + '" loading="lazy" />' : '') +
-          '</a>';
-        }).join('');
     } catch {
       container.innerHTML = '<div class="hall-detail-meta">' + esc(${JSON.stringify(pickUiText(language, "Failed to load workspace files.", "加载工作区文件失败。"))}) + '</div>';
+    }
+    detail.style.minHeight = '';
+    if (contextPane && detailScrollTarget >= 0) {
+      contextPane.scrollTop = detailScrollTarget;
+      detailScrollTarget = -1;
     }
   };
 
@@ -3026,6 +3054,17 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       patchExecutionItemDraft(handoffToParticipantId, { handoffToParticipantId: target.value || '' });
     }
   };
+  const handleFilePathClick = (event) => {
+    const link = event.target.closest && event.target.closest('.hall-md-file-path');
+    if (!link) return;
+    event.preventDefault();
+    const filePath = link.getAttribute('data-file-path');
+    if (!filePath || !selectedTaskCardId) return;
+    const relativePath = filePath.replace(/^\\//, '');
+    const href = '/hall-workspace-files/' + encodeURIComponent(selectedTaskCardId) + '/' + encodeURIComponent(relativePath);
+    window.open(href, '_blank', 'noreferrer');
+  };
+  thread?.addEventListener('click', handleFilePathClick);
   decisionPanel?.addEventListener('click', handleDecisionInteraction);
   thread?.addEventListener('click', handleDecisionInteraction);
   decisionPanel?.addEventListener('input', handleDecisionInputs);

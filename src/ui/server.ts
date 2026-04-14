@@ -1014,7 +1014,7 @@ function resolveUiBindAddress(input: { explicitBindAddress?: string; publicUiUrl
   const explicit = input.explicitBindAddress?.trim();
   if (explicit) return explicit;
   const publicUrl = parsePublicUiUrl(input.publicUiUrl);
-  if (!publicUrl) return "127.0.0.1";
+  if (!publicUrl) return "0.0.0.0";
   return isLoopbackHostname(publicUrl.hostname) ? "127.0.0.1" : "0.0.0.0";
 }
 
