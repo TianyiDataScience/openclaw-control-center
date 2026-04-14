@@ -486,7 +486,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const codePlaceholderPattern = new RegExp('@@CODEBLOCK(\\\\d+)@@', 'g');
   const inlinePlaceholderPattern = new RegExp('@@INLINEBLOCK(\\\\d+)@@', 'g');
   const bareImageUrlPattern = new RegExp('(^|[\\\\s(>])((https?:\\\\/\\\\/[^\\\\s<)]+))', 'g');
-  const filePathPattern = new RegExp('(^|[\\\\s(>])((?:\\\\/)?(?:[\\\\w@.-]+\\\\/)+[\\\\w@.-]+\\\\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|py|go|rs|java|cpp|c|h|hpp|css|scss|html|yaml|yml|toml|sh|sql|vue|svelte|rb|php|swift|kt|dart|lua)(?::\\\\d+(?::\\\\d+)?)?)', 'g');
   const lineBreakTagPattern = new RegExp('<br\\\\s*\\\\/?>', 'gi');
   const hallStructuredPattern = new RegExp('<hall-structured>[\\\\s\\\\S]*?<\\\\/hall-structured>', 'gi');
   const mentionPattern = new RegExp('(^|[\\\\s(>\\\\[\\\\{<,.;:!?\"\\\'\u201c\u201d\u2018\u2019，。！？；：、）】」』》])@([A-Za-z0-9_\\\\-\\\\u4e00-\\\\u9fff]+)', 'g');
@@ -518,12 +517,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     html = html.replace(bareImageUrlPattern, (match, prefix, url) => (
       isRenderableImageUrl(url) ? prefix + storeInlineBlock(renderInlineImage(url, '')) : match
     ));
-    html = html.replace(filePathPattern, (_match, prefix, filePath) => {
-      const cleanPath = filePath.replace(/:\\d+(?::\\d+)?$/, '');
-      return prefix + storeInlineBlock(
-        '<a class="hall-md-file-path" data-file-path="' + cleanPath + '" title="' + filePath + '">' + filePath + '</a>'
-      );
-    });
     html = html.replace(inlineCodePattern, '<code>$1</code>');
     html = html.replace(markdownStrongPattern, '<strong>$1</strong>');
     html = html.replace(markdownEmphasisPattern, '$1<em>$2</em>');
@@ -532,6 +525,25 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     html = html.replace(mentionAfterBreakPattern, '$1<span class="hall-md-mention">@$2</span>');
     html = html.replace(inlinePlaceholderPattern, (_match, index) => inlineBlocks[Number(index)] || '');
     return html;
+  };
+  const fileNameExtRe = '\\\\.(?:json|yaml|yml|toml|html|scss|css|svelte|swift|vue|sdf|pdb|cif|mol2|tsx|mjs|cjs|jsx|cpp|hpp|sql|dart|conf|cfg|txt|xml|csv|log|ini|java|rust|svelte|rs|lua|sh|ts|js|py|go|rb|md|kt|c|h)';
+  const linkifyFilePathsInHtml = (html) => {
+    let out = html;
+    out = out.replace(new RegExp('<code>([\\\\w@.\\\\-]+' + fileNameExtRe + ')</code>', 'g'), (_match, fileName) => {
+      return '<a class=\"hall-md-file-path\" data-file-path=\"' + fileName + '\" title=\"' + fileName + '\">' + fileName + '</a>';
+    });
+    out = out.replace(new RegExp('(\\\\/[\\\\w.\\\\-]+\\\\/hall-workspaces\\\\/[\\\\w.\\\\-]+:[\\\\w.\\\\-]+\\\\/[\\\\w.\\\\\\/-]+' + fileNameExtRe + ')', 'g'), (_match, fullPath) => {
+      const colonIdx = fullPath.indexOf('hall-workspaces/');
+      const workspaceRelative = colonIdx >= 0 ? fullPath.slice(colonIdx + 'hall-workspaces/'.length) : fullPath;
+      const colonInRel = workspaceRelative.indexOf(':');
+      const filePart = colonInRel >= 0 ? workspaceRelative.slice(colonInRel + 1) : workspaceRelative;
+      return '<a class=\"hall-md-file-path\" data-file-path=\"' + filePart + '\" title=\"' + filePart + '\">' + fullPath + '</a>';
+    });
+    out = out.replace(new RegExp('(^|[\\\\s(>])((?:[\\\\w@.\\\\-]+\\\\/)+[\\\\w@.\\\\-]+' + fileNameExtRe + '(?::\\\\d+(?::\\\\d+)?)?)', 'g'), (_match, prefix, filePath) => {
+      const cleanPath = filePath.replace(/:\\d+(?::\\d+)?$/, '');
+      return prefix + '<a class=\"hall-md-file-path\" data-file-path=\"' + cleanPath + '\" title=\"' + filePath + '\">' + filePath + '</a>';
+    });
+    return out;
   };
   const renderMarkdownHtml = (value) => {
     const source = decodeLegacyHtmlEntities(value)
@@ -690,6 +702,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       const tooltip = detail ? ' title="' + esc(detail) + '"' : '';
       return '<span class="hall-tool-pill is-completed"' + tooltip + '>\\u2713 ' + esc(name) + '</span>';
     });
+    html = linkifyFilePathsInHtml(html);
     return html;
   };
   const renderArtifactFooterHtml = (artifactRefs, fileAttachments) => {
