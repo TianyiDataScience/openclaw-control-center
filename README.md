@@ -189,7 +189,7 @@ Notes:
 
 ## What `UI_TIMEZONE` is
 - `UI_TIMEZONE` controls how server-rendered absolute timestamps are displayed in the UI.
-- Default is `America/New_York` (US Eastern Time).
+- Default is `UTC`.
 - Examples: `Asia/Shanghai`, `Europe/Paris`, `America/Los_Angeles`.
 - Relative labels like `5m ago` are unchanged; this only affects absolute timestamps such as session activity, task updates, cron next-run times, approvals, and drilldown pages.
 

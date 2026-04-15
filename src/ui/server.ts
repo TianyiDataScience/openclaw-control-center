@@ -15846,7 +15846,9 @@ function renderNativeMotionScript(language: UiLanguage = "zh"): string {
   }
 
   document.addEventListener('click', (event) => {
-    const target = event.target;
+    if (event.defaultPrevented) return;
+    const rawTarget = event.target;
+    const target = rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement;
     if (!(target instanceof Element)) return;
     const anchor = target.closest('a[href]');
     if (!anchor) return;
@@ -16147,7 +16149,8 @@ function renderUsageRangeScript(language: UiLanguage = "zh"): string {
   };
 
   const onLinkClick = (event) => {
-    const target = event.target;
+    const rawTarget = event.target;
+    const target = rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement;
     if (!(target instanceof Element)) return;
     const link = target.closest('[data-usage-root] .usage-range-switch a.segment-item');
     if (!(link instanceof HTMLAnchorElement) || !link.href) return;

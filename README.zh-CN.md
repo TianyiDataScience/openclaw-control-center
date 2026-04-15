@@ -192,7 +192,7 @@ npm run dev:ui
 
 ## `UI_TIMEZONE` 是什么
 - `UI_TIMEZONE` 用来控制 UI 里“绝对时间”的展示时区。
-- 默认值是 `America/New_York`（美东时间）。
+- 默认值是 `UTC`。
 - 常见示例：`Asia/Shanghai`、`Europe/Paris`、`America/Los_Angeles`。
 - 它不会影响“5 分钟前”这类相对时间，只影响会话最近活动、任务更新时间、Cron 下次运行、审批时间、详情页这些绝对时间。
 

@@ -479,6 +479,14 @@ test("usage dashboard includes token type share and cron token share sections", 
   assert(source.includes("selectedUsageBreakdown.byCronAgent"));
 });
 
+test("usage range script normalizes text-node click targets before intercepting navigation", async () => {
+  const source = await readFile("src/ui/server.ts", "utf8");
+  assert(source.includes("const rawTarget = event.target;"));
+  assert(source.includes("rawTarget?.parentElement"));
+  assert(source.includes("const target = rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement;"));
+  assert(source.includes("if (event.defaultPrevented) return;"));
+});
+
 test("dashboard wires CLI insight cards into overview, usage, memory, and settings", async () => {
   const source = await readFile("src/ui/server.ts", "utf8");
   assert(source.includes('id="overview-connection-health"'));
