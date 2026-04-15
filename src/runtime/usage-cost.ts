@@ -1,6 +1,8 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { UI_TIMEZONE } from "../config";
+import { formatDateForTimeZone } from "./ui-timezone";
 import type { AgentRunState, ReadModelSnapshot } from "../types";
 
 const RUNTIME_DIR = join(process.cwd(), "runtime");
@@ -84,6 +86,39 @@ export interface UsagePeriodSummary {
   sourceStatus: ConnectionStatus;
 }
 
+export type UsageRangePreset =
+  | "today"
+  | "yesterday"
+  | "this_week"
+  | "last_week"
+  | "last_7d"
+  | "last_30d"
+  | "cumulative"
+  | "custom";
+
+export interface UsageRangeSelection {
+  preset: UsageRangePreset;
+  label: string;
+  detail: string;
+  startDate?: string;
+  endDate?: string;
+  isCustom: boolean;
+}
+
+export interface UsageSelectedSummary {
+  label: string;
+  detail: string;
+  startDate?: string;
+  endDate?: string;
+  tokens: number;
+  estimatedCost: number;
+  requestCount?: number;
+  requestCountStatus: ConnectionStatus;
+  statusSamples: number;
+  daysCovered: number;
+  sourceStatus: ConnectionStatus;
+}
+
 export interface SessionContextWindowSummary {
   sessionKey: string;
   sessionLabel: string;
@@ -162,15 +197,26 @@ export interface UsageSubscriptionStatus {
 export interface UsageCostSnapshot {
   generatedAt: string;
   periods: UsagePeriodSummary[];
+  selectedRange: UsageRangeSelection;
+  selectedSummary: UsageSelectedSummary;
   contextWindows: SessionContextWindowSummary[];
   breakdown: UsageBreakdownGroups;
   breakdownToday: UsageBreakdownGroups;
+  breakdownSelected: UsageBreakdownGroups;
   budget: UsageBudgetStatus;
   subscription: UsageSubscriptionStatus;
   connectors: UsageConnectorStatus;
 }
 
 export type UsageCostMode = "full" | "summary";
+
+export interface UsageCostBuildOptions {
+  range?: {
+    preset?: string;
+    startDate?: string;
+    endDate?: string;
+  };
+}
 
 interface UsageBreakdownGroups {
   byAgent: UsageBreakdownRow[];
@@ -388,13 +434,14 @@ async function loadCachedSubscriptionUsage(options: {
 export async function buildUsageCostSnapshot(
   snapshot: ReadModelSnapshot,
   mode: UsageCostMode = "full",
+  options: UsageCostBuildOptions = {},
 ): Promise<UsageCostSnapshot> {
   if (mode === "summary") {
     const [digests, subscriptionUsage] = await Promise.all([
       loadCachedUsageDigests(),
       loadCachedSubscriptionUsage({ includeCodexTelemetry: false }),
     ]);
-    return computeUsageCostSnapshot(snapshot, digests, [], undefined, subscriptionUsage, new Map());
+    return computeUsageCostSnapshot(snapshot, digests, [], undefined, subscriptionUsage, new Map(), options);
   }
 
   const [digests, modelCatalog, runtimeUsage, subscriptionUsage, cronJobNameMap] = await Promise.all([
@@ -404,7 +451,7 @@ export async function buildUsageCostSnapshot(
     loadCachedSubscriptionUsage(),
     loadCachedOpenclawCronJobNameMap(),
   ]);
-  return computeUsageCostSnapshot(snapshot, digests, modelCatalog, runtimeUsage, subscriptionUsage, cronJobNameMap);
+  return computeUsageCostSnapshot(snapshot, digests, modelCatalog, runtimeUsage, subscriptionUsage, cronJobNameMap, options);
 }
 
 export function computeUsageCostSnapshot(
@@ -414,10 +461,12 @@ export function computeUsageCostSnapshot(
   runtimeUsage?: RuntimeUsageData,
   subscriptionUsage?: UsageSubscriptionStatus,
   cronJobNameMap: Map<string, string> = new Map(),
+  options: UsageCostBuildOptions = {},
 ): UsageCostSnapshot {
   const generatedAt = new Date().toISOString();
   const now = Date.now();
-  const todayIso = new Date(now).toISOString().slice(0, 10);
+  const todayIso = formatDateForTimeZone(now, UI_TIMEZONE);
+  const selectedRange = resolveUsageRangeSelection(options.range, todayIso);
 
   const sessionByKey = new Map(snapshot.sessions.map((session) => [session.sessionKey, session]));
   const sessionProjectMap = buildSessionProjectMap(snapshot);
@@ -467,6 +516,10 @@ export function computeUsageCostSnapshot(
     runtime.sourceStatus === "not_connected" ? [] : runtimeEventsWithinWindow(runtime.events, todayIso, 30);
   const runtimeEventsToday =
     runtime.sourceStatus === "not_connected" ? [] : runtimeEventsWithinWindow(runtime.events, todayIso, 1);
+  const runtimeEventsSelected =
+    runtime.sourceStatus === "not_connected"
+      ? []
+      : runtimeEventsWithinRange(runtime.events, selectedRange.startDate, selectedRange.endDate);
 
   const byAgent =
     runtime.sourceStatus === "not_connected"
@@ -545,6 +598,16 @@ export function computeUsageCostSnapshot(
   const bySessionTypeToday = buildSessionTypeBreakdownFromRuntimeEvents(runtimeEventsToday, runtime.sourceStatus);
   const byCronJobToday = buildCronJobBreakdownFromRuntimeEvents(runtimeEventsToday, runtime.sourceStatus, cronJobNameMap);
   const byCronAgentToday = buildCronAgentBreakdownFromRuntimeEvents(runtimeEventsToday, runtime.sourceStatus);
+  const selectedSummary = buildSelectedUsageSummary(snapshot, digests, runtime, selectedRange);
+  const breakdownSelected = buildSelectedBreakdown(
+    snapshot,
+    runtime,
+    runtimeEventsSelected,
+    selectedRange,
+    sessionByKey,
+    sessionProjectMap,
+    cronJobNameMap,
+  );
 
   const budget = buildUsageBudgetStatus(snapshot, period30);
   const subscription = finalizeSubscriptionUsage(subscriptionUsage, period30, budget);
@@ -567,6 +630,8 @@ export function computeUsageCostSnapshot(
   return {
     generatedAt,
     periods,
+    selectedRange,
+    selectedSummary,
     contextWindows,
     breakdown: {
       byAgent,
@@ -588,6 +653,7 @@ export function computeUsageCostSnapshot(
       byCronJob: byCronJobToday,
       byCronAgent: byCronAgentToday,
     },
+    breakdownSelected,
     budget,
     subscription,
     connectors: connectorStatus,
@@ -868,7 +934,7 @@ async function loadRuntimeUsageEventsForAgent(
         const timestamp = new Date(timestampMs).toISOString();
         fileEvents.push({
           timestamp,
-          day: timestamp.slice(0, 10),
+          day: formatDateForTimeZone(timestampMs, UI_TIMEZONE),
           sessionId,
           sessionKey: context?.sessionKey,
           agentId: context?.agentId ?? agentId,
@@ -1038,6 +1104,276 @@ function buildUsagePeriods(
   });
 }
 
+function buildSelectedUsageSummary(
+  snapshot: ReadModelSnapshot,
+  digests: UsageDigest[],
+  runtime: RuntimeUsageResolved,
+  range: UsageRangeSelection,
+): UsageSelectedSummary {
+  if (runtime.sourceStatus !== "not_connected") {
+    const within = runtimeEventsWithinRange(runtime.events, range.startDate, range.endDate);
+    const aggregate = aggregateRuntimeUsageWindow(within);
+    return {
+      label: range.label,
+      detail: range.detail,
+      startDate: range.startDate,
+      endDate: range.endDate,
+      tokens: aggregate.tokens,
+      estimatedCost: aggregate.cost,
+      requestCount: aggregate.requests,
+      requestCountStatus: runtime.sourceStatus,
+      statusSamples: aggregate.requests,
+      daysCovered: aggregate.daysCovered,
+      sourceStatus: runtime.sourceStatus,
+    };
+  }
+
+  const within = digestsWithinRange(digests, range.startDate, range.endDate);
+  const aggregate = within.reduce(
+    (acc, item) => {
+      acc.tokens += item.usage.totalTokensIn + item.usage.totalTokensOut;
+      acc.cost += item.usage.totalCost;
+      acc.statuses += item.usage.statuses;
+      return acc;
+    },
+    { tokens: 0, cost: 0, statuses: 0 },
+  );
+
+  if (range.preset === "today" && within.length === 0) {
+    aggregate.tokens = snapshot.statuses.reduce((sum, status) => sum + (status.tokensIn ?? 0) + (status.tokensOut ?? 0), 0);
+    aggregate.cost = snapshot.statuses.reduce((sum, status) => sum + (status.cost ?? 0), 0);
+    aggregate.statuses = snapshot.statuses.length;
+  }
+
+  const sourceStatus =
+    within.length > 0
+      ? "connected"
+      : range.preset === "today" && snapshot.statuses.length > 0
+        ? "partial"
+        : "not_connected";
+
+  return {
+    label: range.label,
+    detail: range.detail,
+    startDate: range.startDate,
+    endDate: range.endDate,
+    tokens: aggregate.tokens,
+    estimatedCost: aggregate.cost,
+    requestCount: undefined,
+    requestCountStatus: "not_connected",
+    statusSamples: aggregate.statuses,
+    daysCovered:
+      within.length > 0
+        ? countCoveredDays(range.startDate, range.endDate, within.map((item) => item.date))
+        : range.preset === "today"
+          ? 1
+          : 0,
+    sourceStatus,
+  };
+}
+
+function buildSelectedBreakdown(
+  snapshot: ReadModelSnapshot,
+  runtime: RuntimeUsageResolved,
+  runtimeEventsSelected: RuntimeUsageEvent[],
+  range: UsageRangeSelection,
+  sessionByKey: Map<string, ReadModelSnapshot["sessions"][number]>,
+  sessionProjectMap: Map<string, string>,
+  cronJobNameMap: Map<string, string>,
+): UsageBreakdownGroups {
+  if (runtime.sourceStatus === "not_connected") {
+    if (range.preset !== "today") {
+      return emptyUsageBreakdown();
+    }
+    return {
+      byAgent: aggregateBreakdownFromStatuses(snapshot.statuses, (status) => sessionByKey.get(status.sessionKey)?.agentId ?? "Unassigned"),
+      byProject: aggregateBreakdownFromStatuses(snapshot.statuses, (status) => sessionProjectMap.get(status.sessionKey) ?? "Unmapped project"),
+      byTask: [],
+      byModel: aggregateBreakdownFromStatuses(snapshot.statuses, (status) => status.model?.trim() || "Model not reported"),
+      byProvider: aggregateBreakdownFromStatuses(snapshot.statuses, (status) => inferProvider(status.model)),
+      bySessionType: [],
+      byCronJob: [],
+      byCronAgent: [],
+    };
+  }
+
+  return {
+    byAgent: aggregateBreakdownFromRuntime(runtimeEventsSelected, runtime.sourceStatus, (event) => event.agentId || "Unassigned"),
+    byProject: aggregateBreakdownFromRuntime(runtimeEventsSelected, runtime.sourceStatus, (event) => event.projectId ?? "Unmapped project"),
+    byTask: buildTaskBreakdownFromRuntime(snapshot, runtimeEventsSelected, runtime.sourceStatus),
+    byModel: aggregateBreakdownFromRuntime(runtimeEventsSelected, runtime.sourceStatus, (event) => event.model?.trim() || "Model not reported"),
+    byProvider: aggregateBreakdownFromRuntime(
+      runtimeEventsSelected,
+      runtime.sourceStatus,
+      (event) => event.provider?.trim() || inferProvider(event.model),
+    ),
+    bySessionType: buildSessionTypeBreakdownFromRuntimeEvents(runtimeEventsSelected, runtime.sourceStatus),
+    byCronJob: buildCronJobBreakdownFromRuntimeEvents(runtimeEventsSelected, runtime.sourceStatus, cronJobNameMap),
+    byCronAgent: buildCronAgentBreakdownFromRuntimeEvents(runtimeEventsSelected, runtime.sourceStatus),
+  };
+}
+
+function emptyUsageBreakdown(): UsageBreakdownGroups {
+  return {
+    byAgent: [],
+    byProject: [],
+    byTask: [],
+    byModel: [],
+    byProvider: [],
+    bySessionType: [],
+    byCronJob: [],
+    byCronAgent: [],
+  };
+}
+
+function resolveUsageRangeSelection(
+  range: UsageCostBuildOptions["range"] | undefined,
+  todayIso: string,
+): UsageRangeSelection {
+  const preset = normalizeUsageRangePreset(range?.preset);
+  if (preset === "custom") {
+    const custom = normalizeCustomRange(range?.startDate, range?.endDate);
+    if (custom) {
+      return {
+        preset,
+        label: `Custom range (${custom.startDate} to ${custom.endDate})`,
+        detail: `Range: custom from ${custom.startDate} through ${custom.endDate}.`,
+        startDate: custom.startDate,
+        endDate: custom.endDate,
+        isCustom: true,
+      };
+    }
+    return usageRangeFromPreset("today", todayIso);
+  }
+  return usageRangeFromPreset(preset, todayIso);
+}
+
+function normalizeUsageRangePreset(value: string | undefined): UsageRangePreset {
+  const normalized = (value ?? "").trim().toLowerCase();
+  switch (normalized) {
+    case "today":
+    case "yesterday":
+    case "this_week":
+    case "last_week":
+    case "last_7d":
+    case "last_30d":
+    case "custom":
+      return normalized;
+    case "all":
+    case "cumulative":
+    default:
+      return "cumulative";
+  }
+}
+
+function usageRangeFromPreset(preset: Exclude<UsageRangePreset, "custom">, todayIso: string): UsageRangeSelection {
+  if (preset === "today") {
+    return {
+      preset,
+      label: "Today",
+      detail: `Range: today from ${todayIso} 00:00 through now.`,
+      startDate: todayIso,
+      endDate: todayIso,
+      isCustom: false,
+    };
+  }
+  if (preset === "yesterday") {
+    const day = addDaysIso(todayIso, -1);
+    return {
+      preset,
+      label: "Yesterday",
+      detail: `Range: yesterday (${day}).`,
+      startDate: day,
+      endDate: day,
+      isCustom: false,
+    };
+  }
+  if (preset === "this_week") {
+    const startDate = startOfWeekIso(todayIso);
+    return {
+      preset,
+      label: "This week",
+      detail: `Range: this week from ${startDate} through ${todayIso}.`,
+      startDate,
+      endDate: todayIso,
+      isCustom: false,
+    };
+  }
+  if (preset === "last_week") {
+    const thisWeekStart = startOfWeekIso(todayIso);
+    const endDate = addDaysIso(thisWeekStart, -1);
+    const startDate = addDaysIso(thisWeekStart, -7);
+    return {
+      preset,
+      label: "Last week",
+      detail: `Range: last week from ${startDate} through ${endDate}.`,
+      startDate,
+      endDate,
+      isCustom: false,
+    };
+  }
+  if (preset === "last_7d") {
+    const startDate = addDaysIso(todayIso, -6);
+    return {
+      preset,
+      label: "Last 7 days",
+      detail: `Range: last 7 days from ${startDate} through ${todayIso}.`,
+      startDate,
+      endDate: todayIso,
+      isCustom: false,
+    };
+  }
+  if (preset === "last_30d") {
+    const startDate = addDaysIso(todayIso, -29);
+    return {
+      preset,
+      label: "Last 30 days",
+      detail: `Range: last 30 days from ${startDate} through ${todayIso}.`,
+      startDate,
+      endDate: todayIso,
+      isCustom: false,
+    };
+  }
+  return {
+    preset: "cumulative",
+    label: "Cumulative",
+    detail: "Range: cumulative history through now.",
+    isCustom: false,
+  };
+}
+
+function normalizeCustomRange(
+  startDate: string | undefined,
+  endDate: string | undefined,
+): { startDate: string; endDate: string } | undefined {
+  const start = normalizeIsoDate(startDate);
+  const end = normalizeIsoDate(endDate);
+  if (!start || !end) return undefined;
+  return start <= end ? { startDate: start, endDate: end } : { startDate: end, endDate: start };
+}
+
+function normalizeIsoDate(value: string | undefined): string | undefined {
+  const trimmed = (value ?? "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : undefined;
+}
+
+function addDaysIso(value: string, days: number): string {
+  const dayMs = toDayMs(value);
+  return Number.isFinite(dayMs) ? dayMsToIso(dayMs + days * DAY_MS) : value;
+}
+
+function startOfWeekIso(value: string): string {
+  const dayMs = toDayMs(value);
+  if (!Number.isFinite(dayMs)) return value;
+  const weekday = new Date(dayMs).getUTCDay();
+  const mondayOffset = weekday === 0 ? -6 : 1 - weekday;
+  return dayMsToIso(dayMs + mondayOffset * DAY_MS);
+}
+
+function dayMsToIso(dayMs: number): string {
+  return new Date(dayMs).toISOString().slice(0, 10);
+}
+
 function runtimeEventsWithinWindow(
   events: RuntimeUsageEvent[],
   todayIso: string,
@@ -1050,6 +1386,19 @@ function runtimeEventsWithinWindow(
   return events.filter((event) => {
     const dayMs = toDayMs(event.day);
     return Number.isFinite(dayMs) && dayMs >= lowerBound && dayMs <= todayMs;
+  });
+}
+
+function runtimeEventsWithinRange(
+  events: RuntimeUsageEvent[],
+  startDate: string | undefined,
+  endDate: string | undefined,
+): RuntimeUsageEvent[] {
+  const startMs = startDate ? toDayMs(startDate) : Number.NEGATIVE_INFINITY;
+  const endMs = endDate ? toDayMs(endDate) : Number.POSITIVE_INFINITY;
+  return events.filter((event) => {
+    const dayMs = toDayMs(event.day);
+    return Number.isFinite(dayMs) && dayMs >= startMs && dayMs <= endMs;
   });
 }
 
@@ -1123,7 +1472,7 @@ function previousWindowAverageCostFromDailyMap(
   let total = 0;
 
   for (let dayMs = previousLower; dayMs <= previousUpper; dayMs += DAY_MS) {
-    const day = new Date(dayMs).toISOString().slice(0, 10);
+    const day = dayMsToIso(dayMs);
     const value = dailyCostByDay.get(day);
     if (value !== undefined) {
       hasBaselineSignal = true;
@@ -1158,6 +1507,29 @@ function previousWindowAverageCost(digests: UsageDigest[], todayIso: string, day
   if (previous.length === 0) return undefined;
   const total = previous.reduce((sum, digest) => sum + digest.usage.totalCost, 0);
   return total / Math.max(1, days);
+}
+
+function digestsWithinRange(
+  digests: UsageDigest[],
+  startDate: string | undefined,
+  endDate: string | undefined,
+): UsageDigest[] {
+  const startMs = startDate ? toDayMs(startDate) : Number.NEGATIVE_INFINITY;
+  const endMs = endDate ? toDayMs(endDate) : Number.POSITIVE_INFINITY;
+  return digests.filter((digest) => {
+    const dayMs = toDayMs(digest.date);
+    return Number.isFinite(dayMs) && dayMs >= startMs && dayMs <= endMs;
+  });
+}
+
+function countCoveredDays(
+  startDate: string | undefined,
+  endDate: string | undefined,
+  days: string[],
+): number {
+  if (!startDate || !endDate) return new Set(days).size;
+  const unique = new Set(days.filter((day) => day >= startDate && day <= endDate));
+  return unique.size;
 }
 
 function classifyPace(
@@ -1999,8 +2371,8 @@ function finalizeSubscriptionUsage(
     budget && typeof budget.limitCost30d === "number" && Number.isFinite(budget.limitCost30d) && budget.limitCost30d > 0
       ? budget.limitCost30d
       : undefined;
-  const todayIso = new Date().toISOString().slice(0, 10);
-  const cycleStartIso = new Date(Date.now() - 29 * DAY_MS).toISOString().slice(0, 10);
+  const todayIso = formatDateForTimeZone(Date.now(), UI_TIMEZONE);
+  const cycleStartIso = addDaysIso(todayIso, -29);
 
   if (!subscriptionUsage || subscriptionUsage.status === "not_connected") {
     if (runtimeConsumed === undefined) return subscriptionUsage ?? defaultSubscriptionUsage();

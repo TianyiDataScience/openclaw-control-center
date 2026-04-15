@@ -474,13 +474,15 @@ interface DashboardSearchResult {
   rows: string;
 }
 
-type UsageView = "cumulative" | "today";
+type UsageView = "today" | "yesterday" | "this_week" | "last_week" | "last_7d" | "last_30d" | "cumulative" | "custom";
 
 interface DashboardOptions {
   section: DashboardSection;
   language: UiLanguage;
   compactStatusStrip: boolean;
   usageView: UsageView;
+  usageStartDate?: string;
+  usageEndDate?: string;
   preferencesPath: string;
   search: DashboardSearchQuery;
   selectedRoomId?: string;
@@ -1099,6 +1101,8 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         const language: UiLanguage = hasExplicitLanguage ? resolvedLanguage : "zh";
         const compactStatusStrip = resolveCompactStatusStrip(url.searchParams, prefs.preferences.compactStatusStrip);
         const usageView = resolveUsageView(url.searchParams);
+        const usageStartDate = resolveUsageDateQuery(url.searchParams.get("usage_start"));
+        const usageEndDate = resolveUsageDateQuery(url.searchParams.get("usage_end"));
         const search = resolveDashboardSearchQuery(url.searchParams);
         const selectedRoomId = normalizeQueryString(url.searchParams.get("roomId"), "roomId", 160, true);
         const selectedTaskCardId = normalizeQueryString(url.searchParams.get("taskCardId"), "taskCardId", 180, true);
@@ -1109,11 +1113,11 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         }
 
         if (path !== "/") {
-          const target = `${buildHomeHref(filters, compactStatusStrip, section, language, usageView)}${legacyAnchor ? `#${legacyAnchor}` : ""}`;
+          const target = `${buildHomeHref(filters, compactStatusStrip, section, language, usageView, usageStartDate, usageEndDate)}${legacyAnchor ? `#${legacyAnchor}` : ""}`;
           return redirect(res, 302, target);
         }
 
-        if (hasAnyQueryKey(url.searchParams, ["quick", "status", "owner", "project", "compact", "lang", "usage_view"])) {
+        if (hasAnyQueryKey(url.searchParams, ["quick", "status", "owner", "project", "compact", "lang", "usage_view", "usage_start", "usage_end"])) {
           await saveUiPreferences({
             language,
             compactStatusStrip,
@@ -1132,6 +1136,8 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
           language,
           compactStatusStrip,
           usageView,
+          usageStartDate,
+          usageEndDate,
           preferencesPath: prefs.path,
           search,
           selectedRoomId,
@@ -1540,9 +1546,15 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
       }
 
       if (method === "GET" && path === "/api/usage-cost") {
-        assertAllowedQueryParams(url.searchParams, [], true);
+        assertAllowedQueryParams(url.searchParams, ["usage_view", "usage_start", "usage_end"], true);
         const snapshot = await readReadModelSnapshot();
-        const usage = await buildUsageCostSnapshot(snapshot);
+        const usage = await buildUsageCostSnapshot(snapshot, "full", {
+          range: {
+            preset: resolveUsageView(url.searchParams),
+            startDate: resolveUsageDateQuery(url.searchParams.get("usage_start")),
+            endDate: resolveUsageDateQuery(url.searchParams.get("usage_end")),
+          },
+        });
         return writeJson(res, 200, {
           ok: true,
           usage,
@@ -5577,7 +5589,13 @@ async function loadCachedCollaborationPreview(
   }
 }
 
-function buildUsageCostCacheKey(snapshot: ReadModelSnapshot, mode: UsageCostMode): string {
+function buildUsageCostCacheKey(
+  snapshot: ReadModelSnapshot,
+  mode: UsageCostMode,
+  usageView: UsageView,
+  usageStartDate?: string,
+  usageEndDate?: string,
+): string {
   // Content-based fingerprint – changes only when session/status data
   // actually changes, unlike generatedAt which changes every poll cycle.
   // Session state (running→idle etc.) affects the output (contextWindows
@@ -5590,7 +5608,7 @@ function buildUsageCostCacheKey(snapshot: ReadModelSnapshot, mode: UsageCostMode
     .map((s) => `${s.sessionKey}:${s.updatedAt}`)
     .sort()
     .join(";");
-  return `${mode}|${sessionFingerprint}|${statusFingerprint}`;
+  return `${mode}|${usageView}|${usageStartDate ?? ""}|${usageEndDate ?? ""}|${sessionFingerprint}|${statusFingerprint}`;
 }
 
 function buildConversationSnapshotKey(input: {
@@ -5628,8 +5646,11 @@ function buildConversationSnapshotKey(input: {
 async function loadCachedUsageCost(
   snapshot: ReadModelSnapshot,
   mode: UsageCostMode,
+  usageView: UsageView = "cumulative",
+  usageStartDate?: string,
+  usageEndDate?: string,
 ): Promise<UsageCostSnapshot> {
-  const snapshotKey = buildUsageCostCacheKey(snapshot, mode);
+  const snapshotKey = buildUsageCostCacheKey(snapshot, mode, usageView, usageStartDate, usageEndDate);
   const now = Date.now();
   const targetCache = mode === "full" ? renderUsageCostFullCache : renderUsageCostSummaryCache;
   const targetInFlight = mode === "full" ? renderUsageCostFullInFlight : renderUsageCostSummaryInFlight;
@@ -5642,7 +5663,9 @@ async function loadCachedUsageCost(
   }
   if (targetCache && targetCache.snapshotKey === snapshotKey) {
     if (!targetInFlight || targetInFlight.snapshotKey !== snapshotKey) {
-      const nextValue = buildUsageCostSnapshot(snapshot, mode);
+      const nextValue = buildUsageCostSnapshot(snapshot, mode, {
+        range: { preset: usageView, startDate: usageStartDate, endDate: usageEndDate },
+      });
       if (mode === "full") {
         renderUsageCostFullInFlight = {
           snapshotKey,
@@ -5683,7 +5706,9 @@ async function loadCachedUsageCost(
     return targetInFlight.value;
   }
 
-  const nextValue = buildUsageCostSnapshot(snapshot, mode);
+  const nextValue = buildUsageCostSnapshot(snapshot, mode, {
+    range: { preset: usageView, startDate: usageStartDate, endDate: usageEndDate },
+  });
   if (mode === "full") {
     renderUsageCostFullInFlight = {
       snapshotKey,
@@ -5920,7 +5945,7 @@ async function renderHtml(
     buildCronOverview(snapshot, POLLING_INTERVALS_MS.cron),
     loadOpenclawCronCatalog(options.language),
     needsReplayPreview ? loadCachedReplayPreview() : Promise.resolve(emptyReplayPreview()),
-    loadCachedUsageCost(snapshot, usageCostMode),
+    loadCachedUsageCost(snapshot, usageCostMode, options.usageView, options.usageStartDate, options.usageEndDate),
     loadBestEffortAgentRoster(),
     loadCachedOfficeSessionPresence(),
     needsAvatarPreferences
@@ -6540,7 +6565,15 @@ async function renderHtml(
   const staffOverviewCardsHtml = renderStaffOverviewCards(staffOverviewCards, avatarPreferences.preferences, options.language);
   const subscriptionStatusHtml = renderSubscriptionStatusCard(usageCost.subscription, options.language);
   const sectionNav = sectionLinks.map((item) => {
-    const href = buildHomeHref(filters, options.compactStatusStrip, item.key, options.language, options.usageView);
+    const href = buildHomeHref(
+      filters,
+      options.compactStatusStrip,
+      item.key,
+      options.language,
+      options.usageView,
+      options.usageStartDate,
+      options.usageEndDate,
+    );
     const activeClass = item.key === activeSection ? " active" : "";
     const current = item.key === activeSection ? ' aria-current="page"' : "";
     return `<a class="nav-link${activeClass}" href="${escapeHtml(href)}"${current}><span>${escapeHtml(item.label)}</span><small>${escapeHtml(item.blurb)}</small></a>`;
@@ -6553,19 +6586,63 @@ async function renderHtml(
           .map((item) => `<li><code>${escapeHtml(formatUiTimestamp(item.timestamp, options.language))}</code> ${escapeHtml(item.summary)}</li>`)
           .join("");
   const isTodayUsageView = options.usageView === "today";
-  const usagePeriodsForView = isTodayUsageView ? usageCost.periods.filter((item) => item.key === "today") : usageCost.periods;
-  const usagePeriodCards = renderUsagePeriodCards(usagePeriodsForView, options.language);
-  const usageViewTodayHref = buildHomeHref(filters, options.compactStatusStrip, "usage-cost", options.language, "today");
-  const usageViewCumulativeHref = buildHomeHref(filters, options.compactStatusStrip, "usage-cost", options.language, "cumulative");
-  const usageViewSwitchHtml = `<div class="segment-switch"><a class="segment-item${isTodayUsageView ? " active" : ""}" href="${escapeHtml(usageViewTodayHref)}">${escapeHtml(t("Today", "今天"))}</a><a class="segment-item${!isTodayUsageView ? " active" : ""}" href="${escapeHtml(usageViewCumulativeHref)}">${escapeHtml(t("Cumulative", "累计"))}</a></div>`;
-  const usageViewRangeText = isTodayUsageView
-    ? t("Range: today from 00:00 until now.", "统计范围：今日 00:00 至当前。")
-    : t("Range: cumulative history until now.", "统计范围：历史累计到当前。");
-  const usageViewRangeDetail = isTodayUsageView
-    ? t("Today view focuses on same-day consumption and live budget pressure.", "今天视图聚焦当日消耗，适合看实时预算压力。")
-    : t("Cumulative view shows overall composition and long-term trend.", "累计视图用于看整体结构占比和长期趋势。");
+  const usagePeriodCards = renderUsageSummaryCards(usageCost.selectedSummary, options.language);
+  const usageReferenceCards = renderUsagePeriodCards(usageCost.periods, options.language);
+  const usageRangeOptions: Array<{ key: UsageView; label: string }> = [
+    { key: "today", label: t("Today", "今天") },
+    { key: "yesterday", label: t("Yesterday", "昨天") },
+    { key: "this_week", label: t("This week", "本周") },
+    { key: "last_week", label: t("Last week", "上周") },
+    { key: "last_7d", label: t("Last 7 days", "近 7 天") },
+    { key: "last_30d", label: t("Last 30 days", "近 30 天") },
+    { key: "cumulative", label: t("Cumulative", "累计") },
+  ];
+  const usageViewSwitchHtml = `<div class="segment-switch usage-range-switch">${usageRangeOptions
+    .map((item) => {
+      const href = buildHomeHref(filters, options.compactStatusStrip, "usage-cost", options.language, item.key);
+      return `<a class="segment-item${options.usageView === item.key ? " active" : ""}" href="${escapeHtml(href)}">${escapeHtml(item.label)}</a>`;
+    })
+    .join("")}</div>`;
+  const usageCustomRangeAction = buildHomeHref(
+    filters,
+    options.compactStatusStrip,
+    "usage-cost",
+    options.language,
+    "custom",
+    options.usageStartDate,
+    options.usageEndDate,
+  );
+  const usageCustomRangeFormHtml = `
+    <form class="usage-range-form" data-usage-range-form method="GET" action="${escapeHtml(usageCustomRangeAction)}">
+      <input type="hidden" name="compact" value="${options.compactStatusStrip ? "1" : "0"}" />
+      <input type="hidden" name="section" value="usage-cost" />
+      <input type="hidden" name="lang" value="${escapeHtml(options.language)}" />
+      <input type="hidden" name="quick" value="${escapeHtml(filters.quick ?? "all")}" />
+      <input type="hidden" name="usage_view" value="custom" />
+      ${filters.status ? `<input type="hidden" name="status" value="${escapeHtml(filters.status)}" />` : ""}
+      ${filters.owner ? `<input type="hidden" name="owner" value="${escapeHtml(filters.owner)}" />` : ""}
+      ${filters.project ? `<input type="hidden" name="project" value="${escapeHtml(filters.project)}" />` : ""}
+      <div class="usage-range-form-grid">
+        <label class="usage-range-field">
+          <span>${escapeHtml(t("Start", "开始"))}</span>
+          <input class="usage-range-input" type="date" name="usage_start" value="${escapeHtml(options.usageStartDate ?? usageCost.selectedRange.startDate ?? "")}" />
+        </label>
+        <label class="usage-range-field">
+          <span>${escapeHtml(t("End", "结束"))}</span>
+          <input class="usage-range-input" type="date" name="usage_end" value="${escapeHtml(options.usageEndDate ?? usageCost.selectedRange.endDate ?? "")}" />
+        </label>
+        <button class="btn usage-range-submit" type="submit">${escapeHtml(t("Apply custom range", "应用自定义范围"))}</button>
+      </div>
+    </form>`;
+  const usageViewRangeText = options.language === "en"
+    ? usageCost.selectedRange.detail
+    : usageRangeDetailZh(usageCost.selectedRange);
+  const usageViewRangeDetail =
+    usageCost.selectedRange.preset === "custom"
+      ? t("Custom range uses inclusive calendar days in the configured UI timezone.", "自定义范围按当前配置时区的自然日闭区间统计。")
+      : t("All range presets use calendar-day boundaries in the configured UI timezone.", "所有预设范围都按当前配置时区的自然日边界统计。");
   const usageContextRows = renderUsageContextRows(usageCost.contextWindows, options.language);
-  const selectedUsageBreakdown = isTodayUsageView ? usageCost.breakdownToday : usageCost.breakdown;
+  const selectedUsageBreakdown = usageCost.breakdownSelected;
   const usageAgentRows = renderUsageBreakdownRows(selectedUsageBreakdown.byAgent, "agent", options.language);
   const usageProjectRows = renderUsageBreakdownRows(selectedUsageBreakdown.byProject, "project", options.language);
   const usageTaskBreakdownRows = selectedUsageBreakdown.byTask.filter(
@@ -6583,17 +6660,11 @@ async function renderHtml(
   const usageSourceAgentTotalTokens = selectedUsageBreakdown.byAgent.reduce((sum, item) => sum + item.tokens, 0);
   const usageSourceProjectTotalTokens = selectedUsageBreakdown.byProject.reduce((sum, item) => sum + item.tokens, 0);
   const runtimeTokenRangeLabel =
-    usageToday?.sourceStatus === "not_connected"
+    usageCost.selectedSummary.sourceStatus === "not_connected"
       ? t("Range: current snapshot (data source not connected).", "统计范围：当前快照（数据源未连接）。")
-      : isTodayUsageView
-        ? t("Range: today from 00:00 until now.", "统计范围：今日 00:00 至当前。")
-        : t("Range: cumulative until now.", "统计范围：累计至当前。");
-  const sessionTypeTokenRangeLabel = isTodayUsageView
-    ? t("Range: all sessions today (00:00 until now).", "统计范围：今日全部会话（00:00 至当前）。")
-    : t("Range: all sessions cumulative (through now).", "统计范围：全部会话累计（截至当前）。");
-  const cronTokenRangeLabel = isTodayUsageView
-    ? t("Range: timed-job sessions today (00:00 until now).", "统计范围：今日定时任务会话（00:00 至当前）。")
-    : t("Range: timed-job sessions cumulative (through now).", "统计范围：定时任务会话累计（截至当前）。");
+      : usageViewRangeText;
+  const sessionTypeTokenRangeLabel = runtimeTokenRangeLabel;
+  const cronTokenRangeLabel = runtimeTokenRangeLabel;
   const usageSourcePieHtml =
     selectedUsageBreakdown.byAgent.length === 0 && selectedUsageBreakdown.byProject.length === 0
       ? ""
@@ -7501,21 +7572,28 @@ async function renderHtml(
     ${workspaceWorkbench}
   ` : "";
   const usageSection = `
+    <div id="usage-cost-root" data-usage-root>
     <section class="card">
       <h2>${escapeHtml(t("Measurement scope", "统计口径"))}</h2>
       ${usageViewSwitchHtml}
+      ${usageCustomRangeFormHtml}
       <div class="meta">${usageViewRangeText}</div>
       <div class="meta">${usageViewRangeDetail}</div>
-      <div class="meta">${escapeHtml(t("Today: from 00:00 until now. Cumulative: full history until now.", "今日：当日 00:00 至当前。累计：历史全量到当前。"))}</div>
+      <div class="meta">${escapeHtml(t("The dashboard uses the configured UI timezone for all day-boundary calculations.", "仪表盘的所有按日统计都使用当前配置的 UI 时区。"))}</div>
     </section>
     <section class="card">
-      <h2>${escapeHtml(isTodayUsageView ? t("Today's usage snapshot", "今日用量快照") : t("Cost trend", "费用趋势"))}</h2>
-      <div class="meta">${isTodayUsageView ? escapeHtml(t("Range: today.", "统计范围：今日。")) : runtimeTokenRangeLabel}</div>
+      <h2>${escapeHtml(t("Selected range snapshot", "当前范围快照"))}</h2>
+      <div class="meta">${escapeHtml(runtimeTokenRangeLabel)}</div>
       ${
         hasUsageActivity
           ? usagePeriodCards
           : `<div class="empty-state">${escapeHtml(t("No usage data yet. It will be generated automatically after sessions start.", "暂无用量数据。开始会话后会自动生成。"))}</div>`
       }
+    </section>
+    <section class="card">
+      <h2>${escapeHtml(t("Reference windows", "参考窗口"))}</h2>
+      <div class="meta">${escapeHtml(t("Fixed windows help compare the selected range against today, 7 days, and 30 days.", "固定窗口用于把当前选择范围和今天、近 7 天、近 30 天做对照。"))}</div>
+      ${usageReferenceCards}
     </section>
     <section class="card">
       <h2>${escapeHtml(t("Subscription windows", "订阅窗口"))}</h2>
@@ -7579,6 +7657,7 @@ async function renderHtml(
         }</div>
       </div>
     </details>
+    </div>
   `;
   const officeSection = options.section === "office-space" ? `
     <section class="card">
@@ -7690,7 +7769,9 @@ async function renderHtml(
             <input type="hidden" name="lang" value="${escapeHtml(options.language)}" />
             <input type="hidden" name="quick" value="${escapeHtml(effectiveQuick)}" />
             <input type="hidden" name="compact" value="${options.compactStatusStrip ? "1" : "0"}" />
-            <input type="hidden" name="usage_view" value="${options.usageView === "today" ? "today" : "cumulative"}" />
+            <input type="hidden" name="usage_view" value="${escapeHtml(options.usageView)}" />
+            ${options.usageView === "custom" && options.usageStartDate ? `<input type="hidden" name="usage_start" value="${escapeHtml(options.usageStartDate)}" />` : ""}
+            ${options.usageView === "custom" && options.usageEndDate ? `<input type="hidden" name="usage_end" value="${escapeHtml(options.usageEndDate)}" />` : ""}
             <div>
               <label for="status">${escapeHtml(t("Status", "状态"))}</label>
               <select id="status" name="status">
@@ -7929,6 +8010,7 @@ async function renderHtml(
     options.section === "collaboration" ? renderCollaborationFilterScript(options.language) : "";
   const taskRoomWorkbenchScript = needsTaskRoomWorkbench ? renderTaskRoomClientScript(options.language) : "";
   const quotaResetScript = renderQuotaResetScript();
+  const usageRangeScript = options.section === "usage-cost" ? renderUsageRangeScript(options.language) : "";
   const headerControlsScript = renderHeaderControlsScript(options.language);
   const avatarEditorScript = renderAvatarEditorScript(options.language, IMPORT_MUTATION_ENABLED);
   const renderTotalMs = Math.round(performance.now() - renderStartedAt);
@@ -9896,6 +9978,81 @@ async function renderHtml(
       outline: none;
       box-shadow: var(--ring-soft), inset 0 0 0 1px rgba(0, 113, 227, 0.18);
     }
+    .usage-range-switch {
+      width: 100%;
+      justify-content: flex-start;
+    }
+    .usage-range-form {
+      margin-top: 12px;
+    }
+    .usage-range-form-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+      border: 1px solid rgba(17, 24, 39, 0.07);
+      border-radius: 20px;
+      padding: 12px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 255, 0.96)),
+        radial-gradient(circle at 100% 0%, rgba(217, 231, 255, 0.16), transparent 52%);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.84),
+        0 12px 24px rgba(17, 24, 39, 0.04);
+    }
+    .usage-range-field {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+    .usage-range-field span {
+      font-size: 11px;
+      line-height: 1.3;
+      color: #6e6e73;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .usage-range-input {
+      width: 100%;
+      min-height: 44px;
+      -webkit-appearance: none;
+      appearance: none;
+      border: 1px solid rgba(17, 24, 39, 0.1);
+      border-radius: 15px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(249, 251, 255, 0.97));
+      padding: 0 14px;
+      font-size: 14px;
+      font-family: inherit;
+      color: #1d1d1f;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    }
+    .usage-range-input:focus {
+      outline: none;
+      border-color: rgba(0, 113, 227, 0.24);
+      box-shadow: var(--ring-soft), inset 0 1px 0 rgba(255, 255, 255, 0.88);
+    }
+    .usage-range-submit {
+      min-height: 44px;
+      padding-left: 16px;
+      padding-right: 16px;
+      white-space: nowrap;
+      align-self: end;
+    }
+    .usage-summary-chip span:last-child {
+      text-transform: none;
+      letter-spacing: normal;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    @media (max-width: 760px) {
+      .usage-range-form-grid {
+        grid-template-columns: 1fr;
+      }
+      .usage-range-submit {
+        width: 100%;
+      }
+    }
     .cron-board { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
     .cron-owner-card {
       border: 1px solid rgba(17, 24, 39, 0.07);
@@ -10322,6 +10479,25 @@ async function renderHtml(
         linear-gradient(180deg, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.03)),
         radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.08), transparent 58%),
         linear-gradient(180deg, rgba(17, 18, 22, 0.62), rgba(8, 9, 12, 0.68));
+    }
+    html[data-theme="dark"] .usage-range-form-grid {
+      border-color: rgba(226, 232, 240, 0.12);
+      background:
+        linear-gradient(180deg, rgba(15, 18, 27, 0.82), rgba(11, 17, 28, 0.72)),
+        radial-gradient(circle at 100% 0%, rgba(96, 165, 250, 0.12), transparent 56%);
+      box-shadow: var(--shadow-soft);
+    }
+    html[data-theme="dark"] .usage-range-field span {
+      color: var(--muted);
+    }
+    html[data-theme="dark"] .usage-range-input {
+      border-color: rgba(226, 232, 240, 0.12);
+      background: rgba(12, 18, 29, 0.72);
+      color: var(--text);
+    }
+    html[data-theme="dark"] .usage-range-input::-webkit-calendar-picker-indicator {
+      filter: invert(0.9);
+      opacity: 0.72;
     }
     html[data-theme="dark"] .btn:hover,
     html[data-theme="dark"] .panel-toggle:hover,
@@ -11414,6 +11590,7 @@ async function renderHtml(
   ${collaborationFilterScript}
   ${taskRoomWorkbenchScript}
   ${quotaResetScript}
+  ${usageRangeScript}
   ${headerControlsScript}
   ${avatarEditorScript}
 </body>
@@ -11809,7 +11986,24 @@ function resolveCompactStatusStrip(searchParams: URLSearchParams, fallback: bool
 
 function resolveUsageView(searchParams: URLSearchParams): UsageView {
   const usageView = normalizeQueryString(searchParams.get("usage_view"), "usage_view", 16, false);
-  return usageView === "today" ? "today" : "cumulative";
+  switch (usageView) {
+    case "today":
+    case "yesterday":
+    case "this_week":
+    case "last_week":
+    case "last_7d":
+    case "last_30d":
+    case "custom":
+      return usageView;
+    default:
+      return "cumulative";
+  }
+}
+
+function resolveUsageDateQuery(value: string | null): string | undefined {
+  const normalized = normalizeQueryString(value, "usage date", 10, false);
+  if (!normalized) return undefined;
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : undefined;
 }
 
 function resolveUiLanguage(searchParams: URLSearchParams, fallback: UiLanguage): UiLanguage {
@@ -13091,8 +13285,10 @@ function buildHomeHref(
   section: DashboardSection = "overview",
   language: UiLanguage = "en",
   usageView: UsageView = "cumulative",
+  usageStartDate?: string,
+  usageEndDate?: string,
 ): string {
-  const query = buildHomeQuery(filters, compactStatusStrip, section, language, usageView);
+  const query = buildHomeQuery(filters, compactStatusStrip, section, language, usageView, usageStartDate, usageEndDate);
   return query ? `/?${query}` : "/";
 }
 
@@ -13102,12 +13298,18 @@ function buildHomeQuery(
   section: DashboardSection = "overview",
   language: UiLanguage = "en",
   usageView: UsageView = "cumulative",
+  usageStartDate?: string,
+  usageEndDate?: string,
 ): string {
   const params = new URLSearchParams();
   params.set("compact", compactStatusStrip ? "1" : "0");
   params.set("section", section);
   params.set("lang", language);
-  if (usageView === "today") params.set("usage_view", "today");
+  if (usageView !== "cumulative") params.set("usage_view", usageView);
+  if (usageView === "custom") {
+    if (usageStartDate) params.set("usage_start", usageStartDate);
+    if (usageEndDate) params.set("usage_end", usageEndDate);
+  }
   params.set("quick", filters.quick ?? "all");
   if (filters.status) params.set("status", filters.status);
   if (filters.owner) params.set("owner", filters.owner);
@@ -15892,6 +16094,101 @@ function renderQuotaResetScript(): string {
 </script>`;
 }
 
+function renderUsageRangeScript(language: UiLanguage = "zh"): string {
+  const labels = {
+    loading: pickUiText(language, "Updating usage…", "正在更新用量…"),
+    failed: pickUiText(language, "Unable to refresh usage right now.", "暂时无法刷新用量。"),
+  };
+  return `<script>
+(() => {
+  const LABELS = ${JSON.stringify(labels)};
+
+  const rootSelector = '#usage-cost-root';
+  const stackSelector = '.content-stack';
+
+  const setBusy = (root, busy) => {
+    if (!root) return;
+    root.setAttribute('aria-busy', busy ? 'true' : 'false');
+    root.style.opacity = busy ? '0.7' : '1';
+    root.style.pointerEvents = busy ? 'none' : '';
+  };
+
+  const replaceUsageContent = async (url, push) => {
+    const root = document.querySelector(rootSelector);
+    const stack = document.querySelector(stackSelector);
+    if (!root || !stack) return;
+    setBusy(root, true);
+    const panel = document.querySelector('.panel');
+    try {
+      const response = await fetch(url, { headers: { 'x-requested-with': 'usage-range-script' } });
+      if (!response.ok) throw new Error('http_' + response.status);
+      const html = await response.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const nextStack = doc.querySelector(stackSelector);
+      if (!nextStack) throw new Error('missing_usage_root');
+      stack.innerHTML = nextStack.innerHTML;
+      if (push) {
+        window.history.pushState({ usageRange: true }, '', url);
+      }
+      if (panel) {
+        panel.classList.add('is-reflowing');
+        window.setTimeout(() => panel.classList.remove('is-reflowing'), 240);
+      }
+      bindUsageRangeEnhancement();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (error) {
+      console.error(error);
+      window.alert(LABELS.failed);
+    } finally {
+      const nextRoot = document.querySelector(rootSelector);
+      setBusy(nextRoot, false);
+    }
+  };
+
+  const onLinkClick = (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const link = target.closest('[data-usage-root] .usage-range-switch a.segment-item');
+    if (!(link instanceof HTMLAnchorElement) || !link.href) return;
+    event.preventDefault();
+    void replaceUsageContent(link.href, true);
+  };
+
+  const onFormSubmit = (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLFormElement) || !target.matches('[data-usage-range-form]')) return;
+    event.preventDefault();
+    const action = target.getAttribute('action') || location.pathname;
+    const url = new URL(action, location.origin);
+    const formData = new FormData(target);
+    formData.forEach((value, key) => {
+      if (typeof value === 'string' && value) {
+        url.searchParams.set(key, value);
+      }
+    });
+    void replaceUsageContent(url.toString(), true);
+  };
+
+  function bindUsageRangeEnhancement() {
+    const root = document.querySelector(rootSelector);
+    if (!root || root.getAttribute('data-usage-enhanced') === '1') return;
+    root.setAttribute('data-usage-enhanced', '1');
+    root.addEventListener('click', onLinkClick);
+    root.addEventListener('submit', onFormSubmit);
+  }
+
+  window.addEventListener('popstate', () => {
+    if (location.search.includes('section=usage-cost')) {
+      void replaceUsageContent(location.href, false);
+    }
+  });
+
+  bindUsageRangeEnhancement();
+})();
+</script>`;
+}
+
 function renderHeaderControlsScript(language: UiLanguage = "zh"): string {
   const t = (en: string, zh: string): string => pickUiText(language, en, zh);
   return `<script>
@@ -18244,11 +18541,85 @@ function renderUsagePeriodCards(periods: UsageCostSnapshot["periods"], language:
   return `<div class="status-strip">${cards}</div>`;
 }
 
+function renderUsageSummaryCards(
+  period: UsageCostSnapshot["selectedSummary"],
+  language: UiLanguage = "zh",
+): string {
+  const tokenLabel =
+    period.sourceStatus === "not_connected"
+      ? pickUiText(language, "Not connected", "数据源未连接")
+      : formatInt(period.tokens);
+  const costLabel =
+    period.sourceStatus === "not_connected"
+      ? pickUiText(language, "Not connected", "数据源未连接")
+      : formatCurrency(period.estimatedCost);
+  const requestLabel =
+    period.requestCountStatus !== "not_connected" && typeof period.requestCount === "number"
+      ? String(period.requestCount)
+      : pickUiText(language, "Not connected", "数据源未连接");
+  return `<div class="status-strip"><div class="status-chip usage-chip usage-summary-chip"><span>${escapeHtml(usageSummaryLabel(period, language))}</span><strong>${escapeHtml(
+    pickUiText(language, "AI usage", "AI 用量"),
+  )}：${escapeHtml(tokenLabel)}</strong><span>${escapeHtml(pickUiText(language, "Estimated cost", "预估费用"))}：${escapeHtml(
+    costLabel,
+  )}</span><span>${escapeHtml(pickUiText(language, "Requests", "请求数"))}：${escapeHtml(requestLabel)}</span><span>${escapeHtml(
+    usageSummaryDetail(period, language),
+  )}</span></div></div>`;
+}
+
+function usageSummaryLabel(period: UsageCostSnapshot["selectedSummary"], language: UiLanguage): string {
+  if (!period.startDate && !period.endDate) return pickUiText(language, "Cumulative", "累计");
+  if (period.startDate && period.endDate && period.startDate === period.endDate) {
+    return language === "en" ? period.startDate : `${period.startDate}`;
+  }
+  if (period.startDate && period.endDate) {
+    return language === "en" ? `${period.startDate} to ${period.endDate}` : `${period.startDate} 至 ${period.endDate}`;
+  }
+  return language === "en" ? period.label : period.label;
+}
+
+function usageSummaryDetail(period: UsageCostSnapshot["selectedSummary"], language: UiLanguage): string {
+  if (!period.startDate && !period.endDate) {
+    return pickUiText(language, "Cumulative history through now.", "累计历史到当前。");
+  }
+  if (period.startDate && period.endDate && period.startDate === period.endDate) {
+    return pickUiText(language, `Calendar day ${period.startDate}.`, `自然日 ${period.startDate}。`);
+  }
+  if (period.startDate && period.endDate) {
+    return pickUiText(
+      language,
+      `Inclusive calendar days from ${period.startDate} through ${period.endDate}.`,
+      `按自然日闭区间统计：${period.startDate} 至 ${period.endDate}。`,
+    );
+  }
+  return language === "en" ? period.detail : period.detail;
+}
+
 function usagePeriodLabel(key: "today" | "7d" | "30d", fallback: string, language: UiLanguage = "zh"): string {
   if (key === "today") return pickUiText(language, "Today", "今天");
   if (key === "7d") return pickUiText(language, "Last 7 days", "近 7 天");
   if (key === "30d") return pickUiText(language, "Last 30 days", "近 30 天");
   return fallback;
+}
+
+function usageRangeDetailZh(range: UsageCostSnapshot["selectedRange"]): string {
+  switch (range.preset) {
+    case "today":
+      return "统计范围：今天 00:00 至当前。";
+    case "yesterday":
+      return `统计范围：昨天（${range.startDate ?? "-"}）。`;
+    case "this_week":
+      return `统计范围：本周（${range.startDate ?? "-"} 至 ${range.endDate ?? "-"}）。`;
+    case "last_week":
+      return `统计范围：上周（${range.startDate ?? "-"} 至 ${range.endDate ?? "-"}）。`;
+    case "last_7d":
+      return `统计范围：近 7 天（${range.startDate ?? "-"} 至 ${range.endDate ?? "-"}）。`;
+    case "last_30d":
+      return `统计范围：近 30 天（${range.startDate ?? "-"} 至 ${range.endDate ?? "-"}）。`;
+    case "custom":
+      return `统计范围：自定义（${range.startDate ?? "-"} 至 ${range.endDate ?? "-"}）。`;
+    default:
+      return "统计范围：累计历史到当前。";
+  }
 }
 
 function renderUsageContextRows(rows: UsageCostSnapshot["contextWindows"], language: UiLanguage): string {

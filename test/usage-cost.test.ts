@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { UI_TIMEZONE } from "../src/config";
 import type { ReadModelSnapshot } from "../src/types";
 
 test("usage-cost snapshot marks disconnected sources with explicit placeholders", async () => {
@@ -19,6 +20,7 @@ test("usage-cost snapshot marks disconnected sources with explicit placeholders"
 
 test("usage-cost snapshot computes context percent and burn-rate status when sources exist", async () => {
   const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
+  const { formatDateForTimeZone } = await import("../src/runtime/ui-timezone");
   const snapshot = buildSnapshotFixture({
     model: "gpt-4o",
     tokensIn: 64000,
@@ -26,7 +28,7 @@ test("usage-cost snapshot computes context percent and burn-rate status when sou
     cost: 30,
     costLimit: 100,
   });
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = formatDateForTimeZone(Date.now(), UI_TIMEZONE);
 
   const usage = computeUsageCostSnapshot(
     snapshot,
@@ -116,6 +118,87 @@ test("usage-cost snapshot uses runtime session events for real requests, trends,
   assert.equal(usage.connectors.requestCounts, "connected");
   assert(!usage.connectors.todos.some((item) => item.id === "request_counter"));
   assert(!usage.connectors.todos.some((item) => item.id === "context_catalog"));
+});
+
+test("usage-cost snapshot uses UI timezone day boundaries for runtime usage windows", async () => {
+  const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
+  const now = Date.parse("2026-04-03T03:30:00.000Z");
+  const usage = withFrozenNow(
+    now,
+    () =>
+      computeUsageCostSnapshot(
+        buildSnapshotFixture(),
+        [],
+        [],
+        {
+          sourceStatus: "connected",
+          sessionContexts: [
+            {
+              sessionKey: "s-1",
+              sessionId: "sid-1",
+              agentId: "pandas",
+            },
+          ],
+          events: [
+            runtimeEvent(Date.parse("2026-04-03T01:30:00.000Z"), 500, 1, "2026-04-02"),
+            runtimeEvent(Date.parse("2026-04-03T05:30:00.000Z"), 700, 2, "2026-04-03"),
+          ],
+        },
+        undefined,
+        new Map(),
+        { range: { preset: "today" } },
+      ),
+  );
+
+  assert.equal(usage.selectedRange.startDate, "2026-04-02");
+  assert.equal(usage.selectedSummary.tokens, 500);
+  assert.equal(usage.periods.find((item) => item.key === "today")?.tokens, 500);
+});
+
+test("usage-cost snapshot can filter usage by yesterday, week presets, and custom date ranges", async () => {
+  const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
+  const now = Date.parse("2026-04-15T15:00:00.000Z");
+  const runtimeUsage = {
+    sourceStatus: "connected" as const,
+    sessionContexts: [
+      {
+        sessionKey: "s-1",
+        sessionId: "sid-1",
+        agentId: "pandas",
+      },
+    ],
+    events: [
+      runtimeEvent(Date.parse("2026-04-07T12:00:00.000Z"), 110, 1, "2026-04-07"),
+      runtimeEvent(Date.parse("2026-04-08T12:00:00.000Z"), 120, 1, "2026-04-08"),
+      runtimeEvent(Date.parse("2026-04-14T12:00:00.000Z"), 130, 1, "2026-04-14"),
+      runtimeEvent(Date.parse("2026-04-15T12:00:00.000Z"), 140, 1, "2026-04-15"),
+    ],
+  };
+
+  const yesterday = withFrozenNow(
+    now,
+    () => computeUsageCostSnapshot(buildSnapshotFixture(), [], [], runtimeUsage, undefined, new Map(), { range: { preset: "yesterday" } }),
+  );
+  assert.equal(yesterday.selectedSummary.tokens, 130);
+  assert.equal(yesterday.breakdownSelected.byAgent[0]?.tokens, 130);
+
+  const lastWeek = withFrozenNow(
+    now,
+    () => computeUsageCostSnapshot(buildSnapshotFixture(), [], [], runtimeUsage, undefined, new Map(), { range: { preset: "last_week" } }),
+  );
+  assert.equal(lastWeek.selectedRange.startDate, "2026-04-06");
+  assert.equal(lastWeek.selectedRange.endDate, "2026-04-12");
+  assert.equal(lastWeek.selectedSummary.tokens, 230);
+
+  const custom = withFrozenNow(
+    now,
+    () =>
+      computeUsageCostSnapshot(buildSnapshotFixture(), [], [], runtimeUsage, undefined, new Map(), {
+        range: { preset: "custom", startDate: "2026-04-08", endDate: "2026-04-14" },
+      }),
+  );
+  assert.equal(custom.selectedSummary.tokens, 250);
+  assert.equal(custom.selectedRange.label, "Custom range (2026-04-08 to 2026-04-14)");
 });
 
 test("usage-cost snapshot prefers runtime event history for cumulative session-type breakdown", async () => {
@@ -638,11 +721,11 @@ function buildSnapshotFixture(overrides?: {
   };
 }
 
-function runtimeEvent(timestampMs: number, tokens: number, cost: number) {
+function runtimeEvent(timestampMs: number, tokens: number, cost: number, day?: string) {
   const timestamp = new Date(timestampMs).toISOString();
   return {
     timestamp,
-    day: timestamp.slice(0, 10),
+    day: day ?? timestamp.slice(0, 10),
     sessionId: "sid-1",
     sessionKey: "s-1",
     agentId: "pandas",
