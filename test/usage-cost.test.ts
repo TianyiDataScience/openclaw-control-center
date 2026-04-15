@@ -201,6 +201,40 @@ test("usage-cost snapshot can filter usage by yesterday, week presets, and custo
   assert.equal(custom.selectedRange.label, "Custom range (2026-04-08 to 2026-04-14)");
 });
 
+test("usage-cost snapshot backfills visible usage from runtime session summaries", async () => {
+  const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
+  const now = Date.parse("2026-04-13T12:00:00.000Z");
+
+  const usage = withFrozenNow(
+    now,
+    () =>
+      computeUsageCostSnapshot(buildSnapshotFixture(), [], [], {
+        sourceStatus: "connected",
+        sessionContexts: [
+          {
+            sessionKey: "s-1",
+            sessionId: "sid-1",
+            agentId: "pandas",
+            updatedAtMs: now,
+            model: "gpt-5.3-codex",
+            provider: "OpenAI",
+            totalTokens: 1234,
+          },
+        ],
+        events: [],
+      }),
+  );
+
+  const today = usage.periods.find((item) => item.key === "today");
+  assert(today, "Expected today usage period.");
+  assert.equal(today.tokens, 1234);
+  assert.equal(today.requestCount, 1);
+  assert.equal(today.requestCountStatus, "partial");
+  assert.equal(usage.breakdown.byAgent[0]?.label, "pandas");
+  assert.equal(usage.breakdown.byAgent[0]?.tokens, 1234);
+  assert.equal(usage.breakdownToday.bySessionType[0]?.label, "Main/内部会话");
+});
+
 test("usage-cost snapshot prefers runtime event history for cumulative session-type breakdown", async () => {
   const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
   const now = Date.parse("2026-04-02T12:00:00.000Z");

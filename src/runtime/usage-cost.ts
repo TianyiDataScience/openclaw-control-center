@@ -249,6 +249,7 @@ interface RuntimeSessionContext {
   sessionKey: string;
   sessionId?: string;
   agentId: string;
+  updatedAtMs?: number;
   model?: string;
   provider?: string;
   contextWindowTokens?: number;
@@ -821,6 +822,7 @@ async function loadRuntimeSessionContextsForAgent(
         sessionKey,
         sessionId: asString(obj.sessionId),
         agentId,
+        updatedAtMs: asPositiveNumber(obj.updatedAt),
         model: asString(obj.model),
         provider: asString(obj.modelProvider),
         contextWindowTokens: asPositiveNumber(obj.contextTokens),
@@ -986,7 +988,7 @@ function resolveRuntimeUsage(
     if (item.sessionId) sessionById.set(item.sessionId, item);
   }
 
-  const events = runtime.events
+  const usageEvents = runtime.events
     .map((event) => {
       const context = event.sessionKey
         ? sessionByKey.get(event.sessionKey)
@@ -1014,13 +1016,51 @@ function resolveRuntimeUsage(
       const timestampMs = Date.parse(event.timestamp);
       return Number.isFinite(timestampMs);
     });
+  const summaryEvents = backfillRuntimeSummaryEventsFromSessionContexts(runtime.sessionContexts, usageEvents);
 
   return {
-    sourceStatus: runtime.sourceStatus,
+    sourceStatus:
+      runtime.sourceStatus === "connected" && summaryEvents.length > 0 ? "partial" : runtime.sourceStatus,
     sessionByKey,
     sessionById,
-    events,
+    events: [...usageEvents, ...summaryEvents],
   };
+}
+
+function backfillRuntimeSummaryEventsFromSessionContexts(
+  contexts: RuntimeSessionContext[],
+  events: RuntimeUsageEvent[],
+): RuntimeUsageEvent[] {
+  if (contexts.length === 0) return [];
+
+  const seen = new Set<string>();
+  for (const event of events) {
+    if (event.sessionId) seen.add(`id:${event.sessionId}`);
+    if (event.sessionKey) seen.add(`key:${event.sessionKey}`);
+  }
+
+  const out: RuntimeUsageEvent[] = [];
+  for (const context of dedupeSessionContexts(contexts)) {
+    const tokens = context.totalTokens ?? 0;
+    const updatedAtMs = context.updatedAtMs ?? NaN;
+    if (tokens <= 0 || !Number.isFinite(updatedAtMs)) continue;
+    if ((context.sessionId && seen.has(`id:${context.sessionId}`)) || seen.has(`key:${context.sessionKey}`)) continue;
+
+    const timestamp = new Date(updatedAtMs).toISOString();
+    out.push({
+      timestamp,
+      day: timestamp.slice(0, 10),
+      sessionId: context.sessionId ?? context.sessionKey,
+      sessionKey: context.sessionKey,
+      agentId: context.agentId,
+      model: context.model,
+      provider: context.provider ?? inferProvider(context.model),
+      tokens,
+      cost: 0,
+    });
+  }
+
+  return out;
 }
 
 function buildUsagePeriods(
