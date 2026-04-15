@@ -155,6 +155,7 @@ const HTML_HEAVY_CACHE_TTL_MS = 3_000;
 const HTML_USAGE_CACHE_TTL_MS = 10_000;
 const HTML_SNAPSHOT_CACHE_TTL_MS = 10_000;
 const HTML_LIVE_SESSIONS_CACHE_TTL_MS = POLLING_INTERVALS_MS.sessionsList;
+const HTML_LIVE_SESSIONS_BLOCKING_TIMEOUT_MS = 250;
 const HTML_REPLAY_CACHE_TTL_MS = 10_000;
 const JSON_MAX_BYTES = 128 * 1024;
 const FORM_MAX_BYTES = 16 * 1024;
@@ -449,6 +450,12 @@ type EditableAgentScopeConfigStatus = "configured" | "config_missing" | "config_
 
 let renderSessionPreviewCache:
   | { snapshotAt: string; value: SessionConversationListResult; expiresAt: number }
+  | undefined;
+let renderSessionPreviewInFlight:
+  | {
+      snapshotAt: string;
+      value: Promise<SessionConversationListResult>;
+    }
   | undefined;
 let renderUsageCostSummaryCache:
   | { snapshotKey: string; value: UsageCostSnapshot; expiresAt: number }
@@ -1810,37 +1817,48 @@ async function loadCachedLiveSessions(
             expiresAt: Date.now() + HTML_LIVE_SESSIONS_CACHE_TTL_MS,
           };
         })
+        .catch((error) => {
+          console.warn("[mission-control] live sessions refresh failed", error);
+        })
         .finally(() => {
           renderLiveSessionsInFlight = undefined;
         });
     }
     return renderLiveSessionsCache.value;
   }
-  if (renderLiveSessionsInFlight) {
-    return renderLiveSessionsInFlight;
+  if (!renderLiveSessionsInFlight) {
+    const nextValue = toolClient.sessionsList();
+    renderLiveSessionsInFlight = nextValue;
+    void nextValue
+      .then((value) => {
+        renderLiveSessionsCache = {
+          value,
+          expiresAt: Date.now() + HTML_LIVE_SESSIONS_CACHE_TTL_MS,
+        };
+      })
+      .catch((error) => {
+        console.warn("[mission-control] live sessions initial load failed", error);
+      })
+      .finally(() => {
+        renderLiveSessionsInFlight = undefined;
+      });
   }
 
-  const nextValue = toolClient.sessionsList();
-  renderLiveSessionsInFlight = nextValue;
-  try {
-    const value = await nextValue;
-    renderLiveSessionsCache = {
-      value,
-      expiresAt: Date.now() + HTML_LIVE_SESSIONS_CACHE_TTL_MS,
-    };
-    return value;
-  } finally {
-    renderLiveSessionsInFlight = undefined;
-  }
+  return renderLiveSessionsCache?.value ?? { sessions: [] };
 }
 
 async function readReadModelSnapshotWithLiveSessions(toolClient: ToolClient): Promise<ReadModelSnapshot> {
-  const snapshotPromise = readReadModelSnapshot();
+  const snapshot = await readReadModelSnapshot();
   const livePromise = loadCachedLiveSessions(toolClient);
 
   try {
-    const [snapshot, live] = await Promise.all([snapshotPromise, livePromise]);
-    const sessions = mapSessionsListToSummaries(live);
+    const live = await Promise.race([
+      livePromise,
+      delay(HTML_LIVE_SESSIONS_BLOCKING_TIMEOUT_MS).then(
+        () => undefined as Awaited<ReturnType<ToolClient["sessionsList"]>> | undefined,
+      ),
+    ]);
+    const sessions = live ? mapSessionsListToSummaries(live) : [];
     if (sessions.length === 0) return snapshot;
 
     const liveStatuses: ReadModelSnapshot["statuses"] = [];
@@ -3953,20 +3971,75 @@ async function loadCachedSessionPreview(snapshot: ReadModelSnapshot, toolClient:
     return renderSessionPreviewCache.value;
   }
 
-  const value = await listSessionConversations({
-    snapshot,
-    client: toolClient,
-    filters: {},
+  const buildPreview = () =>
+    listSessionConversations({
+      snapshot,
+      client: toolClient,
+      filters: {},
+      page: 1,
+      pageSize: 12,
+      historyLimit: 10,
+    });
+
+  if (renderSessionPreviewCache && renderSessionPreviewCache.snapshotAt === snapshot.generatedAt) {
+    if (!renderSessionPreviewInFlight || renderSessionPreviewInFlight.snapshotAt !== snapshot.generatedAt) {
+      const nextValue = buildPreview();
+      renderSessionPreviewInFlight = {
+        snapshotAt: snapshot.generatedAt,
+        value: nextValue,
+      };
+      void nextValue
+        .then((value) => {
+          renderSessionPreviewCache = {
+            snapshotAt: snapshot.generatedAt,
+            value,
+            expiresAt: Date.now() + HTML_HEAVY_CACHE_TTL_MS,
+          };
+        })
+        .catch((error) => {
+          console.warn("[mission-control] session preview refresh failed", error);
+        })
+        .finally(() => {
+          if (renderSessionPreviewInFlight?.snapshotAt === snapshot.generatedAt) {
+            renderSessionPreviewInFlight = undefined;
+          }
+        });
+    }
+    return renderSessionPreviewCache.value;
+  }
+
+  if (!renderSessionPreviewInFlight || renderSessionPreviewInFlight.snapshotAt !== snapshot.generatedAt) {
+    const nextValue = buildPreview();
+    renderSessionPreviewInFlight = {
+      snapshotAt: snapshot.generatedAt,
+      value: nextValue,
+    };
+    void nextValue
+      .then((value) => {
+        renderSessionPreviewCache = {
+          snapshotAt: snapshot.generatedAt,
+          value,
+          expiresAt: Date.now() + HTML_HEAVY_CACHE_TTL_MS,
+        };
+      })
+      .catch((error) => {
+        console.warn("[mission-control] session preview initial load failed", error);
+      })
+      .finally(() => {
+        if (renderSessionPreviewInFlight?.snapshotAt === snapshot.generatedAt) {
+          renderSessionPreviewInFlight = undefined;
+        }
+      });
+  }
+
+  return renderSessionPreviewCache?.value ?? {
+    generatedAt: snapshot.generatedAt,
+    total: 0,
     page: 1,
     pageSize: 12,
-    historyLimit: 10,
-  });
-  renderSessionPreviewCache = {
-    snapshotAt: snapshot.generatedAt,
-    value,
-    expiresAt: now + HTML_HEAVY_CACHE_TTL_MS,
+    filters: {},
+    items: [],
   };
-  return value;
 }
 
 function buildUsageCostCacheKey(snapshot: ReadModelSnapshot, mode: UsageCostMode): string {
@@ -4312,6 +4385,10 @@ async function renderHtml(
   const runtimeSessionIssueCount = sessionBlockedCount + sessionErrorCount + sessionWaitingApprovalCount;
   const stalledRunningSessionCount = countStalledRunningSessions(snapshot.sessions, taskSignalItems, nowMs);
   const runtimeIssueCount = runtimeSessionIssueCount + stalledRunningSessionCount;
+  const recentToolCallsCount = taskSignalItems.reduce((sum, item) => {
+    if (typeof item.toolEventCount === "number") return sum + item.toolEventCount;
+    return sum + (item.latestKind === "tool_event" ? 1 : 0);
+  }, 0);
   const globalVisibilityModel = await buildGlobalVisibilityViewModel(snapshot, toolClient, options.language, {
     cronOverview,
     openclawCronJobs,
@@ -4319,6 +4396,7 @@ async function renderHtml(
     strongTaskEvidenceCount: taskCertaintyStrongCount,
     followupTaskEvidenceCount: taskCertaintyFollowupCount,
     weakTaskEvidenceCount: taskCertaintyWeakCount,
+    toolCallsCount: recentToolCallsCount,
   });
   const attentionCount = actionQueue.counts.unacked + runtimeIssueCount + nonOkBudgets.length;
   const replayMoments = replayPreview.timeline.entries.slice(0, 8);

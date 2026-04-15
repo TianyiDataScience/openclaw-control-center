@@ -59,17 +59,20 @@ async function start(): Promise<void> {
     return;
   }
 
-  await runMonitorOnce(adapter);
+  if (UI_MODE) {
+    startUiServer(UI_PORT, client);
+    void runMonitorOnce(adapter).catch((error) => {
+      console.error("[mission-control] initial monitor failed", error);
+    });
+  } else {
+    await runMonitorOnce(adapter);
+  }
 
   if (CONTINUOUS_MODE) {
     const intervalMs = monitorIntervalMs();
     setInterval(() => {
       void runMonitorOnce(adapter);
     }, intervalMs);
-  }
-
-  if (UI_MODE) {
-    startUiServer(UI_PORT, client);
   }
 }
 

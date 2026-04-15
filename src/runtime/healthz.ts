@@ -11,6 +11,7 @@ import { readMonitorLagSummary, type MonitorLagSummary } from "./monitor-health"
 
 const PACKAGE_JSON_PATH = join(process.cwd(), "package.json");
 const DIST_INDEX_PATH = join(process.cwd(), "dist", "index.js");
+const HEALTHZ_STARTUP_GRACE_MS = 60_000;
 
 type HealthStatus = "ok" | "warn" | "stale";
 
@@ -53,7 +54,10 @@ export async function buildHealthzPayload(
     computeSnapshotFreshness(snapshot, POLLING_INTERVALS_MS.sessionsList, now),
   ]);
 
-  const status = resolveOverallStatus(snapshotFreshness.status, monitor.status);
+  const inStartupGrace = process.uptime() * 1000 < HEALTHZ_STARTUP_GRACE_MS;
+  const effectiveSnapshotStatus = inStartupGrace && snapshotFreshness.status === "stale" ? "warn" : snapshotFreshness.status;
+  const effectiveMonitorStatus = inStartupGrace && monitor.status === "stale" ? "warn" : monitor.status;
+  const status = resolveOverallStatus(effectiveSnapshotStatus, effectiveMonitorStatus);
 
   return {
     generatedAt: now.toISOString(),
