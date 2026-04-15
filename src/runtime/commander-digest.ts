@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { UI_TIMEZONE } from "../config";
 import { commanderExceptions, commanderExceptionsFeed, type CommanderAlert } from "./commander";
+import { formatDateForTimeZone } from "./ui-timezone";
 import type { ReadModelSnapshot } from "../types";
 
 const RUNTIME_DIR = join(process.cwd(), "runtime");
@@ -97,7 +99,7 @@ export async function writeCommanderDigest(
 
 function buildCommanderDigest(snapshot: ReadModelSnapshot, alerts: CommanderAlert[]): CommanderDigest {
   const generatedAt = new Date().toISOString();
-  const date = generatedAt.slice(0, 10);
+  const date = formatDateForTimeZone(generatedAt, UI_TIMEZONE);
   const exceptions = commanderExceptions(snapshot);
   const feed = commanderExceptionsFeed(snapshot);
 

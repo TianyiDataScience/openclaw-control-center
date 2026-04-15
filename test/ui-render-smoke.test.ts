@@ -364,7 +364,7 @@ test("dashboard keeps global visibility as overview-only block", async () => {
   assert(!source.includes("${informationCertaintyCard}"));
   assert(!source.includes("${taskCertaintySection}"));
   assert(source.includes('const usageCostMode: UsageCostMode = "full";'));
-  assert(source.includes("loadCachedUsageCost(snapshot, usageCostMode)"));
+  assert(source.includes("loadCachedUsageCost(snapshot, usageCostMode, options.usageView"));
   assert(source.includes("loadCachedOfficeSessionPresence()"));
   assert(source.includes("loadCachedTaskEvidenceSessions("));
   assert(source.includes("const taskSignalItems = needsCollaborationThreads"));
@@ -376,7 +376,7 @@ test("dashboard keeps global visibility as overview-only block", async () => {
   assert(source.includes("const liveSessionCount = officePresence.totalActiveSessions;"));
   assert(source.includes("buildTaskDetailHref(task.taskId, input.language)"));
   assert(source.includes('const language = resolveUiLanguage(url.searchParams, "zh");'));
-  assert(source.includes('buildUsageCostSnapshot(snapshot, mode)'));
+  assert(source.includes("buildUsageCostSnapshot(snapshot, mode"));
   assert(source.includes('const needsSessionPreview ='));
   assert(source.includes('const needsSessionPreview = activeSection === "projects-tasks" || activeSection === "overview";'));
   assert(source.includes("const allApprovals = [...(snapshot.approvals ?? [])].sort(compareApprovals);"));
@@ -469,14 +469,22 @@ test("usage dashboard includes token type share and cron token share sections", 
   assert(source.includes("定时任务用量占比"));
   assert(source.includes("定时任务内各智能体占比"));
   assert(source.includes("usage_view"));
-  assert(source.includes("今天"));
-  assert(source.includes("累计"));
+  assert(source.includes("昨天"));
+  assert(source.includes("应用自定义范围"));
   assert(source.includes("定时任务、Discord、Telegram、飞书、微信、内部会话"));
   assert(source.includes("renderTokenShareRows("));
-  assert(source.includes("usageCost.breakdownToday"));
+  assert(source.includes("usageCost.breakdownSelected"));
   assert(source.includes("selectedUsageBreakdown.bySessionType"));
   assert(source.includes("selectedUsageBreakdown.byCronJob"));
   assert(source.includes("selectedUsageBreakdown.byCronAgent"));
+});
+
+test("usage range script normalizes text-node click targets before intercepting navigation", async () => {
+  const source = await readFile("src/ui/server.ts", "utf8");
+  assert(source.includes("const rawTarget = event.target;"));
+  assert(source.includes("rawTarget?.parentElement"));
+  assert(source.includes("const target = rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement;"));
+  assert(source.includes("if (event.defaultPrevented) return;"));
 });
 
 test("dashboard wires CLI insight cards into overview, usage, memory, and settings", async () => {
