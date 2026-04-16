@@ -678,25 +678,15 @@ async function loadRuntimeUsageData(): Promise<RuntimeUsageData> {
     events: [],
   };
 
-  const agentDirCandidates = [
-    OPENCLAW_AGENTS_DIR,
-    join(OPENCLAW_HOME, ".openclaw", "agents"),
-  ];
-  const seenAgentPaths = new Set<string>();
   let agentDirs: Array<{ name: string; path: string }> = [];
-  for (const candidateDir of agentDirCandidates) {
-    try {
-      const entries = await readdir(candidateDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        const agentPath = join(candidateDir, entry.name);
-        if (seenAgentPaths.has(agentPath)) continue;
-        seenAgentPaths.add(agentPath);
-        agentDirs.push({ name: entry.name, path: agentPath });
-      }
-    } catch {
-      // directory not found — skip
+  try {
+    const entries = await readdir(OPENCLAW_AGENTS_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      agentDirs.push({ name: entry.name, path: join(OPENCLAW_AGENTS_DIR, entry.name) });
     }
+  } catch {
+    // directory not found — skip
   }
   if (agentDirs.length === 0) return out;
 

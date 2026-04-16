@@ -2096,30 +2096,24 @@ function sliceMessagesAfterFingerprint(
 
 /**
  * Find the most recently modified session JSONL file for an agent.
- * Checks both standard and nested OpenClaw home paths.
  */
 async function findLatestAgentSessionFile(agentId: string): Promise<string | undefined> {
   const openclawHome = resolveOpenClawHomePath();
-  const candidatePaths = [
-    join(openclawHome, "agents", agentId, "sessions"),
-    join(openclawHome, ".openclaw", "agents", agentId, "sessions"),
-  ];
+  const sessionsDir = join(openclawHome, "agents", agentId, "sessions");
   let bestPath: string | undefined;
   let bestMtime = 0;
-  for (const sessionsDir of candidatePaths) {
-    try {
-      const entries = await readdir(sessionsDir);
-      for (const f of entries) {
-        if (!f.endsWith(".jsonl")) continue;
-        const fullPath = join(sessionsDir, f);
-        const st = await stat(fullPath).catch(() => null);
-        if (st && st.mtimeMs > bestMtime) {
-          bestMtime = st.mtimeMs;
-          bestPath = fullPath;
-        }
+  try {
+    const entries = await readdir(sessionsDir);
+    for (const f of entries) {
+      if (!f.endsWith(".jsonl")) continue;
+      const fullPath = join(sessionsDir, f);
+      const st = await stat(fullPath).catch(() => null);
+      if (st && st.mtimeMs > bestMtime) {
+        bestMtime = st.mtimeMs;
+        bestPath = fullPath;
       }
-    } catch { continue; }
-  }
+    }
+  } catch { /* directory not found */ }
   return bestPath;
 }
 

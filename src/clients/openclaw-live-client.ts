@@ -388,23 +388,18 @@ export class OpenClawLiveClient implements ToolClient {
 
   private async loadSessionsFromStores(): Promise<SessionsListResponse> {
     const openclawHome = resolveOpenClawHomePath();
-    const agentsPaths = [
-      join(openclawHome, "agents"),
-      join(openclawHome, ".openclaw", "agents"),
-    ];
+    const agentsPath = join(openclawHome, "agents");
     const configuredAgentKeys = await this.loadConfiguredAgentKeys();
     let agentDirs: Array<{ agentId: string; basePath: string }> = [];
-    for (const agentsPath of agentsPaths) {
-      try {
-        const entries = await readdir(agentsPath, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory()) {
-            agentDirs.push({ agentId: entry.name, basePath: agentsPath });
-          }
+    try {
+      const entries = await readdir(agentsPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          agentDirs.push({ agentId: entry.name, basePath: agentsPath });
         }
-      } catch {
-        // directory not found — skip
       }
+    } catch {
+      // directory not found — skip
     }
 
     if (configuredAgentKeys.size > 0) {
@@ -466,23 +461,18 @@ export class OpenClawLiveClient implements ToolClient {
     if (cached) return cached;
 
     const openclawHome = resolveOpenClawHomePath();
-    const agentsPaths = [
-      join(openclawHome, "agents"),
-      join(openclawHome, ".openclaw", "agents"),
-    ];
+    const agentsPath = join(openclawHome, "agents");
     const configuredAgentKeys = await this.loadConfiguredAgentKeys();
     if (!matchesConfiguredAgents(extractAgentIdFromSessionKey(sessionKey), configuredAgentKeys)) {
       return undefined;
     }
     let agentDirs: string[] = [];
-    for (const agentsPath of agentsPaths) {
-      try {
-        const entries = await readdir(agentsPath, { withFileTypes: true });
-        const dirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-        agentDirs.push(...dirs.map((d) => join(agentsPath, d)));
-      } catch {
-        continue;
-      }
+    try {
+      const entries = await readdir(agentsPath, { withFileTypes: true });
+      const dirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+      agentDirs.push(...dirs.map((d) => join(agentsPath, d)));
+    } catch {
+      // directory not found
     }
 
     if (configuredAgentKeys.size > 0) {
