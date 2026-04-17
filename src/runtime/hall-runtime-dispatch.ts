@@ -2096,9 +2096,38 @@ function sliceMessagesAfterFingerprint(
 
 /**
  * Find the most recently modified session JSONL file for an agent.
+ * First checks sessions.json (which stores the correct path even when openclaw
+ * writes to a double-nested directory), then falls back to glob scanning.
  */
 async function findLatestAgentSessionFile(agentId: string): Promise<string | undefined> {
   const openclawHome = resolveOpenClawHomePath();
+  const sessionsJsonPath = join(openclawHome, "agents", agentId, "sessions", "sessions.json");
+
+  // Prefer the path from sessions.json: openclaw records the exact sessionFile path
+  // there, which may differ from the glob base (e.g. double-nested .openclaw/.openclaw).
+  try {
+    const parsed = JSON.parse(await readFile(sessionsJsonPath, "utf8")) as unknown;
+    let bestPath: string | undefined;
+    let bestUpdatedAt = 0;
+    const root = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+    if (root) {
+      for (const value of Object.values(root)) {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+        const record = value as Record<string, unknown>;
+        const sessionFile = typeof record.sessionFile === "string" ? record.sessionFile : undefined;
+        const updatedAt = typeof record.updatedAt === "number" ? record.updatedAt : 0;
+        if (sessionFile && updatedAt > bestUpdatedAt) {
+          bestUpdatedAt = updatedAt;
+          bestPath = sessionFile;
+        }
+      }
+    }
+    if (bestPath) return bestPath;
+  } catch { /* ok — fall through to glob */ }
+
+  // Fallback: glob for JSONL files in the standard outer path
   const sessionsDir = join(openclawHome, "agents", agentId, "sessions");
   let bestPath: string | undefined;
   let bestMtime = 0;
