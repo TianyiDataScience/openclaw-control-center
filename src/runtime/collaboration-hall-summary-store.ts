@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { getRuntimeDir, resolveRuntimePath } from "./runtime-path";
+import { needsHumanReview } from "./hall-human-review";
 import type {
   CollaborationHall,
   CollaborationHallSummary,
@@ -91,9 +92,10 @@ export function buildCollaborationHallSummary(
 ): CollaborationHallSummary {
   const orderedMessages = [...messages].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   const lastMessage = orderedMessages.at(-1);
-  const activeTaskCount = taskCards.filter((card) => card.stage !== "completed" && card.stage !== "blocked").length;
-  const waitingReviewCount = taskCards.filter((card) => card.stage === "review").length;
-  const blockedTaskCount = taskCards.filter((card) => card.stage === "blocked").length;
+  const now = Date.now();
+  const activeTaskCount = taskCards.filter((card) => card.status !== "done").length;
+  const waitingReviewCount = messages.filter((message) => message.kind === "review").length;
+  const needsHumanReviewCount = taskCards.filter((card) => needsHumanReview(card, now)).length;
   const headline =
     lastMessage?.content ??
     (activeTaskCount > 0
@@ -105,7 +107,7 @@ export function buildCollaborationHallSummary(
     headline: headline.length > 220 ? `${headline.slice(0, 217)}...` : headline,
     activeTaskCount,
     waitingReviewCount,
-    blockedTaskCount,
+    needsHumanReviewCount,
     currentSpeakerLabel: lastMessage?.authorLabel,
     updatedAt: hall.updatedAt,
   };
@@ -123,20 +125,15 @@ export function buildHallTaskSummary(taskCard: HallTaskCard, messages: HallMessa
     lastSignal?.content ??
     taskCard.title;
 
-  const nextAction =
-    taskCard.stage === "discussion"
-      ? taskCard.plannedExecutionOrder.length > 0
-        ? `Finish discussion, then confirm whether the execution order should start with ${taskCard.plannedExecutionOrder[0]}.`
-        : "Finish discussion and let the manager close with a decision."
-      : taskCard.stage === "execution"
-        ? taskCard.plannedExecutionOrder.length > 0
-          ? `${taskCard.currentOwnerLabel ?? "Assigned owner"} should keep posting execution updates, then hand off to ${taskCard.plannedExecutionOrder[0]}.`
-          : `${taskCard.currentOwnerLabel ?? "Assigned owner"} should keep posting execution updates.`
-        : taskCard.stage === "review"
-          ? "Reviewer should approve or reject the current result."
-          : taskCard.stage === "blocked"
-            ? "Resolve the blockers or hand the task to a new owner."
-            : "Completed. Review the final evidence if needed.";
+  const nextAction = taskCard.currentOwnerParticipantId
+    ? taskCard.plannedExecutionOrder.length > 0
+      ? `${taskCard.currentOwnerLabel ?? "Current owner"} is driving this thread; next in queue: ${taskCard.plannedExecutionOrder[0]}.`
+      : `${taskCard.currentOwnerLabel ?? "Current owner"} is driving this thread.`
+    : taskCard.plannedExecutionOrder.length > 0
+      ? `Confirm whether the execution order should start with ${taskCard.plannedExecutionOrder[0]}.`
+      : needsHumanReview(taskCard, Date.now())
+        ? "No agent activity for a while — consider marking this thread as human-reviewed or nudging it forward."
+        : "Let the group chat drive this thread.";
 
   return {
     taskCardId: taskCard.taskCardId,
@@ -145,7 +142,6 @@ export function buildHallTaskSummary(taskCard: HallTaskCard, messages: HallMessa
     headline: headline.length > 220 ? `${headline.slice(0, 217)}...` : headline,
     currentOwnerLabel: taskCard.currentOwnerLabel,
     nextAction,
-    stage: taskCard.stage,
     blockerCount: taskCard.blockers.length,
     updatedAt: taskCard.updatedAt,
   };
@@ -172,12 +168,18 @@ function normalizeHallSummary(input: unknown): CollaborationHallSummary | undefi
   const headline = asNonEmptyString(root.headline);
   const updatedAt = normalizeIsoString(root.updatedAt);
   if (!hallId || !headline || !updatedAt) return undefined;
+  // Legacy persistence files may have `blockedTaskCount`; tolerate by reading it
+  // as a fallback for `needsHumanReviewCount`.
+  const needsHumanReviewCount =
+    asFiniteNumber(root.needsHumanReviewCount)
+    ?? asFiniteNumber(root.blockedTaskCount)
+    ?? 0;
   return {
     hallId,
     headline,
     activeTaskCount: asFiniteNumber(root.activeTaskCount) ?? 0,
     waitingReviewCount: asFiniteNumber(root.waitingReviewCount) ?? 0,
-    blockedTaskCount: asFiniteNumber(root.blockedTaskCount) ?? 0,
+    needsHumanReviewCount,
     currentSpeakerLabel: asNonEmptyString(root.currentSpeakerLabel),
     updatedAt,
   };
@@ -190,16 +192,8 @@ function normalizeTaskSummary(input: unknown): HallTaskSummary | undefined {
   const projectId = asNonEmptyString(root.projectId);
   const taskId = asNonEmptyString(root.taskId);
   const headline = asNonEmptyString(root.headline);
-  const stage = root.stage;
   const updatedAt = normalizeIsoString(root.updatedAt);
-  if (
-    !taskCardId ||
-    !projectId ||
-    !taskId ||
-    !headline ||
-    (stage !== "discussion" && stage !== "execution" && stage !== "review" && stage !== "blocked" && stage !== "completed") ||
-    !updatedAt
-  ) {
+  if (!taskCardId || !projectId || !taskId || !headline || !updatedAt) {
     return undefined;
   }
   return {
@@ -209,7 +203,6 @@ function normalizeTaskSummary(input: unknown): HallTaskSummary | undefined {
     headline,
     currentOwnerLabel: asNonEmptyString(root.currentOwnerLabel),
     nextAction: asNonEmptyString(root.nextAction) ?? "Open the task card and inspect the latest state.",
-    stage,
     blockerCount: asFiniteNumber(root.blockerCount) ?? 0,
     updatedAt,
   };

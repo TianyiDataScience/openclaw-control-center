@@ -60,7 +60,7 @@ interface ToolClientWithAgentRun extends ToolClient {
   }>;
 }
 
-export type HallRuntimeNextAction = "continue" | "review" | "blocked" | "handoff" | "done" | "parallel_dispatch";
+export type HallRuntimeNextAction = "continue" | "review" | "handoff" | "done" | "parallel_dispatch";
 
 export interface HallParallelTaskTarget {
   executor: string;
@@ -1235,8 +1235,7 @@ function buildHallRuntimeResult(input: {
     visibleContent = markers + "\n" + visibleContent;
   }
   let kind = resolveHallRuntimeMessageKind(dispatch, directResponseIntent);
-  const payload: HallMessage["payload"] = {
-    taskStage: dispatch.taskCard.stage,
+  const payload: NonNullable<HallMessage["payload"]> = {
     taskStatus: dispatch.taskCard.status,
     sessionKey,
   };
@@ -1448,9 +1447,6 @@ export function enforceConcreteDeliverableReply(
   }
   const requiresConcreteDeliverable = strictDirectAsk || requiresConcreteDeliverableForStep(currentTask);
   if (!requiresConcreteDeliverable) {
-    return { content: visibleContent, nextAction };
-  }
-  if (nextAction === "blocked" || looksLikeBlockedExecutionUpdate(visibleContent)) {
     return { content: visibleContent, nextAction };
   }
   const deliverableKind = resolveConcreteDeliverableKind(currentTask, operatorIntent);
@@ -1755,8 +1751,6 @@ function normalizeImplicitHallExecutionNextAction(
     return nextParticipant && nextParticipant.participantId !== dispatch.participant.participantId ? "handoff" : "review";
   }
   if (structured.nextAction) return structured.nextAction;
-  if ((structured.blockers?.length ?? 0) > 0) return "blocked";
-  if (looksLikeBlockedExecutionUpdate(content)) return "blocked";
   if (dispatch.mode === "handoff" && nextParticipant && nextParticipant.participantId !== dispatch.participant.participantId) {
     if (looksLikeNeedsAnotherPass(content)) return "continue";
     return "handoff";
@@ -1778,10 +1772,9 @@ function shouldPreferVisibleDeliverableCompletion(
   nextParticipant: HallParticipant | undefined,
 ): boolean {
   if (dispatch.mode === "discussion") return false;
-  if (looksLikeBlockedExecutionUpdate(content) || looksLikeNeedsAnotherPass(content)) return false;
+  if (looksLikeNeedsAnotherPass(content)) return false;
   const hiddenBlockSignal =
-    structured.nextAction === "blocked"
-    || structured.nextAction === "continue"
+    structured.nextAction === "continue"
     || (structured.blockers?.length ?? 0) > 0
     || (structured.requiresInputFrom?.length ?? 0) > 0;
   if (!hiddenBlockSignal) return false;
@@ -1797,7 +1790,6 @@ function shouldPreferVisibleDeliverableCompletion(
 function looksLikeCompletedExecutionUpdate(content: string): boolean {
   const normalized = content.replace(/\s+/g, " ").trim();
   if (!normalized) return false;
-  if (looksLikeBlockedExecutionUpdate(normalized)) return false;
   return /(这一步.*(完成|做完|够了|成立|可以交给|收住)|已经(完成|补完|锁定|收住|够了)|可直接交给|下一步.*(交给|给)|交给\s*@?[A-Za-z0-9_\-\u4e00-\u9fa5]+|现在请\s*@?[A-Za-z0-9_\-\u4e00-\u9fa5]+|就可以\s*@?[A-Za-z0-9_\-\u4e00-\u9fa5]+|继续交给\s*@?[A-Za-z0-9_\-\u4e00-\u9fa5]+|ready for review|ready to hand off|handoff|hand off|hand it to|pass(?: it)? to|turn it over to|the next step is|can go to|send this to|ship this to)/i.test(normalized);
 }
 
@@ -1905,22 +1897,12 @@ function looksLikeMetaExecutionDiscussion(content: string): boolean {
   return /(第一版里|最好|更适合|这样|不然|价值|观众|画面|样本|约束|风险|方向|更像|说明|证明|优先|建议|适合|最稳|关键不是|缺的角度|最该|这版.*(更|会)|不会被.*带跑|一眼读完|人工|协调成本)/i.test(normalized);
 }
 
-function looksLikeBlockedExecutionUpdate(content: string): boolean {
-  const normalized = sanitizeHallVisibleRuntimeText(content)
-    .replace(/<br\s*\/?>/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) return false;
-  return /(这一步.*卡住|先卡住了|当前.*卡住|被卡住|卡在|阻塞|缺的是|缺少|缺失|拿不到|没有.*(上下文|代码|文件|权限|信息)|无法继续|不能继续(?:这一棒|往下|执行)|still need|still missing|blocked on|blocked by|can't continue|cannot continue|need more context|need the repo|need the file)/i.test(normalized);
-}
-
 function looksLikeNeedsAnotherPass(content: string): boolean {
   const normalized = sanitizeHallVisibleRuntimeText(content)
     .replace(/<br\s*\/?>/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!normalized) return false;
-  if (looksLikeBlockedExecutionUpdate(normalized)) return false;
   return /(我先再|我还要再|我再补一轮|我再改一轮|我先继续改|我先补完|需要我再|我继续把这一步|one more pass|another pass|i will revise|i'll revise|i will keep refining|i'll keep refining|i need one more pass|let me tighten this)/i.test(normalized);
 }
 
@@ -2394,7 +2376,6 @@ function asOptionalNextAction(value: unknown): HallRuntimeNextAction | undefined
   switch (value.trim().toLowerCase()) {
     case "continue":
     case "review":
-    case "blocked":
     case "handoff":
     case "done":
     case "parallel_dispatch":
@@ -2450,12 +2431,11 @@ function normalizeRuntimeArtifactRef(value: unknown): TaskArtifact | undefined {
 function resolveHallRuntimeArtifactRefs(
   dispatch: HallRuntimeDispatchInput,
   structured: ParsedStructuredBlock,
-  visibleContent: string,
+  _visibleContent: string,
 ): TaskArtifact[] {
   return mergeArtifactRefs(
     dispatch.mode === "handoff" ? dispatch.handoff?.artifactRefs : undefined,
     structured.artifactRefs,
-    extractArtifactRefsFromVisibleContent(visibleContent),
   );
 }
 
@@ -2471,40 +2451,6 @@ function mergeArtifactRefs(...groups: Array<TaskArtifact[] | undefined>): TaskAr
     }
   }
   return [...merged.values()];
-}
-
-function extractArtifactRefsFromVisibleContent(content: string): TaskArtifact[] {
-  const refs: TaskArtifact[] = [];
-  const seen = new Set<string>();
-  const pushRef = (location: string, label?: string): void => {
-    const normalizedLocation = location.trim();
-    if (!normalizedLocation) return;
-    const key = normalizeLookup(normalizedLocation);
-    if (seen.has(key)) return;
-    seen.add(key);
-    refs.push({
-      artifactId: buildRuntimeArtifactId(normalizedLocation),
-      type: inferArtifactTypeFromLocation(normalizedLocation),
-      label: label?.trim() || inferArtifactLabelFromLocation(normalizedLocation),
-      location: normalizedLocation,
-    });
-  };
-
-  const markdownImagePattern = /!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/gi;
-  const markdownLinkPattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
-  const urlPattern = /https?:\/\/[^\s<)]+/gi;
-
-  for (const match of content.matchAll(markdownImagePattern)) {
-    pushRef(match[2] ?? "", match[1] ?? "");
-  }
-  for (const match of content.matchAll(markdownLinkPattern)) {
-    pushRef(match[2] ?? "", match[1] ?? "");
-  }
-  for (const match of content.matchAll(urlPattern)) {
-    pushRef(match[0] ?? "");
-  }
-
-  return refs;
 }
 
 function buildRuntimeArtifactId(seed: string): string {

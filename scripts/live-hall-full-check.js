@@ -176,7 +176,7 @@ async function main() {
       .allTextContents()
       .then((items) => items.join(" "))
       .catch(() => "");
-    executionSettled = foundPaths && !/阶段：\s*(执行中|卡住)|\bstage:\s*(execution|blocked)\b/i.test(consoleText);
+    executionSettled = foundPaths && !/需要人类审核|needs human review|执行中|in progress/i.test(consoleText);
     if (executionSettled) break;
   }
 

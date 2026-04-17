@@ -112,6 +112,7 @@ import {
   archiveHallTaskThread,
   createHallTaskFromOperatorRequest,
   deleteHallTaskThread,
+  markHallTaskHumanReviewed,
   postHallMessage,
   readCollaborationHall,
   readCollaborationHallTaskDetail,
@@ -1975,10 +1976,12 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
       }
 
       if (method === "GET" && path === "/api/hall/tasks") {
-        assertAllowedQueryParams(url.searchParams, ["stage"], true);
+        // The `stage` filter was removed along with the 5-state HallTaskStage
+        // machine. The endpoint now returns all visible task cards; the client
+        // can filter by status or "needs human review" as needed.
+        assertAllowedQueryParams(url.searchParams, [], true);
         const hall = await readCollaborationHall();
-        const stage = normalizeHallTaskStageQuery(url.searchParams.get("stage"));
-        const taskCards = hall.taskCards.filter((card) => !stage || card.stage === stage);
+        const taskCards = hall.taskCards;
         return writeJson(res, 200, {
           ok: true,
           hall: hall.hall,
@@ -2009,7 +2012,7 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         });
       }
 
-      if (method === "GET" && path.startsWith("/api/hall/tasks/") && !path.endsWith("/assign") && !path.endsWith("/review") && !path.endsWith("/handoff") && !path.endsWith("/execution-order") && !path.endsWith("/stop") && !path.endsWith("/archive") && !path.endsWith("/delete") && !path.endsWith("/evidence")) {
+      if (method === "GET" && path.startsWith("/api/hall/tasks/") && !path.endsWith("/assign") && !path.endsWith("/review") && !path.endsWith("/handoff") && !path.endsWith("/execution-order") && !path.endsWith("/stop") && !path.endsWith("/archive") && !path.endsWith("/delete") && !path.endsWith("/evidence") && !path.endsWith("/mark-human-reviewed")) {
         const taskId = decodeRouteParam(path, /^\/api\/hall\/tasks\/([^/]+)$/, "taskId");
         assertAllowedQueryParams(url.searchParams, ["projectId", "taskCardId"], true);
         const taskCardId = normalizeQueryString(url.searchParams.get("taskCardId"), "taskCardId", 180, true);
@@ -2219,6 +2222,27 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         });
         const result = await deleteHallTaskThread({
           taskCardId: taskCard.taskCardId,
+        });
+        return writeJson(res, 200, { ok: true, ...result });
+      }
+
+      if (method === "POST" && path.startsWith("/api/hall/tasks/") && path.endsWith("/mark-human-reviewed")) {
+        assertCollaborationMutationAuthorized(req, "/api/hall/tasks/:taskId/mark-human-reviewed");
+        assertJsonContentType(req);
+        const taskId = decodeRouteParam(path, /^\/api\/hall\/tasks\/([^/]+)\/mark-human-reviewed$/, "taskId");
+        const payload = expectObject(await readJsonBody(req), "hall mark-human-reviewed payload");
+        const projectId = optionalBoundedString(payload.projectId, "projectId", 120);
+        const taskCardId = optionalBoundedString(payload.taskCardId, "taskCardId", 180);
+        const taskCardStore = await loadCollaborationTaskCardStore();
+        const taskCard = resolveHallTaskCardRequest(taskCardStore, {
+          taskId,
+          projectId,
+          taskCardId,
+        });
+        const result = await markHallTaskHumanReviewed({
+          taskCardId: taskCard.taskCardId,
+          reviewedByParticipantId: optionalBoundedString(payload.reviewedByParticipantId, "reviewedByParticipantId", 160),
+          reviewedByLabel: optionalBoundedString(payload.reviewedByLabel, "reviewedByLabel", 120),
         });
         return writeJson(res, 200, { ok: true, ...result });
       }
@@ -7510,7 +7534,7 @@ async function renderHtml(
           <strong>${collaborationHandoffCount}</strong>
         </div>
         <div class="status-chip">
-          <span>${escapeHtml(t("Blocked", "卡住"))}</span>
+          <span>${escapeHtml(t("Needs human review", "需要人类审核"))}</span>
           <strong>${collaborationBlockedCount}</strong>
         </div>
         <div class="status-chip">
@@ -7543,7 +7567,7 @@ async function renderHtml(
       <div class="segment-switch collaboration-filter-bar" role="tablist" aria-label="${escapeHtml(t("Collaboration filters", "协作筛选"))}">
         <button class="segment-item active" type="button" data-collab-filter="all">${escapeHtml(t("All", "全部"))}</button>
         <button class="segment-item" type="button" data-collab-filter="active">${escapeHtml(t("In progress", "进行中"))}</button>
-        <button class="segment-item" type="button" data-collab-filter="blocked">${escapeHtml(t("Blocked", "卡住"))}</button>
+        <button class="segment-item" type="button" data-collab-filter="blocked">${escapeHtml(t("Needs human review", "需要人类审核"))}</button>
         <button class="segment-item" type="button" data-collab-filter="completed">${escapeHtml(t("Completed", "已完成"))}</button>
         <button class="segment-item" type="button" data-collab-filter="multi-agent">${escapeHtml(t("Multi-agent only", "只看多智能体"))}</button>
         <button class="segment-item" type="button" data-collab-filter="main-dispatched">${escapeHtml(t("Main dispatched", "只看 Main 派发"))}</button>
@@ -15264,7 +15288,7 @@ function collaborationThreadStatusLabel(
 ): string {
   if (status === "active") return pickUiText(language, "In progress", "进行中");
   if (status === "handoff") return pickUiText(language, "Waiting handoff", "等待交接");
-  if (status === "blocked") return pickUiText(language, "Blocked", "卡住");
+  if (status === "blocked") return pickUiText(language, "Needs human review", "需要人类审核");
   return pickUiText(language, "Completed", "已完成");
 }
 
@@ -15301,8 +15325,8 @@ function collaborationThreadSummary(input: {
     }
     return pickUiText(
       input.language,
-      `${childLabel} is blocked and needs follow-up before the thread can move again.`,
-      `${childLabel} 当前卡住了，需要先跟进处理，这条协作线程才能继续。`,
+      `${childLabel} needs human review before the thread can move again.`,
+      `${childLabel} 当前需要人类审核，处理后这条协作线程才能继续。`,
     );
   }
   if (input.status === "active") {
@@ -15895,7 +15919,7 @@ function renderCollaborationFilterScript(language: UiLanguage = "zh"): string {
   const copy = {
     all: '${escapeHtml(pickUiText(language, "Showing all visible threads", "当前显示全部可见线程"))}',
     active: '${escapeHtml(pickUiText(language, "Showing in-progress collaboration", "当前显示进行中的协作"))}',
-    blocked: '${escapeHtml(pickUiText(language, "Showing blocked collaboration", "当前显示卡住的协作"))}',
+    blocked: '${escapeHtml(pickUiText(language, "Showing collaboration needing human review", "当前显示需要人类审核的协作"))}',
     completed: '${escapeHtml(pickUiText(language, "Showing completed collaboration", "当前显示已完成的协作"))}',
     multiAgent: '${escapeHtml(pickUiText(language, "Showing multi-agent collaboration only", "当前只看多智能体协作"))}',
     mainDispatched: '${escapeHtml(pickUiText(language, "Showing collaboration dispatched by Main", "当前只看 Main 派发的协作"))}',
@@ -19618,23 +19642,8 @@ function resolveHallTaskCardRequest(
   return matches[0];
 }
 
-function normalizeHallTaskStageQuery(value: string | null): "discussion" | "execution" | "review" | "blocked" | "completed" | undefined {
-  if (!value) return undefined;
-  const trimmed = value.trim();
-  if (
-    trimmed === "discussion" ||
-    trimmed === "execution" ||
-    trimmed === "review" ||
-    trimmed === "blocked" ||
-    trimmed === "completed"
-  ) {
-    return trimmed;
-  }
-  throw new RequestValidationError(
-    "stage must be one of: discussion, execution, review, blocked, completed",
-    400,
-  );
-}
+// Removed normalizeHallTaskStageQuery: the /api/hall/tasks ?stage= filter was
+// retired with the HallTaskStage machine.
 
 function normalizeRoomStageQuery(value: string | null): RoomStage | undefined {
   if (!value) return undefined;

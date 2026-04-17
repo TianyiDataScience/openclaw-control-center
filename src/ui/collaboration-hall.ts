@@ -71,7 +71,6 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
       projectId: item.card.projectId,
       taskId: item.card.taskId,
       title: item.card.title,
-      stage: item.card.stage,
       status: item.card.status,
       currentOwnerLabel: item.card.currentOwnerLabel,
       roomId: item.card.roomId,
@@ -236,7 +235,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const textMultiTyping = ${JSON.stringify(pickUiText(language, "are typing…", "正在输入…"))};
   const textTypingNow = ${JSON.stringify(pickUiText(language, "Typing now", "正在输入"))};
   const textExecutingNow = ${JSON.stringify(pickUiText(language, "Executing", "执行中"))};
-  const textReviewingNow = ${JSON.stringify(pickUiText(language, "Reviewing", "审核中"))};
   const textQueuedNow = ${JSON.stringify(pickUiText(language, "Queued next", "排队中"))};
   const textIdleNow = ${JSON.stringify(pickUiText(language, "Ready", "待命"))};
   const textDiscussionResult = ${JSON.stringify(pickUiText(language, "Discussion result", "讨论结论"))};
@@ -246,14 +244,10 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const textSuggestedOrder = ${JSON.stringify(pickUiText(language, "Suggested order", "建议顺序"))};
   const textSuggestedFirstOwner = ${JSON.stringify(pickUiText(language, "Suggested first owner", "建议第一位执行者"))};
   const textCurrentOwner = ${JSON.stringify(pickUiText(language, "Current owner", "当前 owner"))};
-  const textStage = ${JSON.stringify(pickUiText(language, "Stage", "阶段"))};
   const textReadyToStart = ${JSON.stringify(pickUiText(language, "Ready to start", "待开始"))};
   const textStartExecutionPrefix = ${JSON.stringify(pickUiText(language, "Start execution with", "开始执行（"))};
   const textStartExecutionSuffix = ${JSON.stringify(pickUiText(language, ")", "）"))};
-  const textPlanExecutionOrder = ${JSON.stringify(pickUiText(language, "Plan execution order", "安排后续顺序"))};
-  const textAdjustExecutionOrder = ${JSON.stringify(pickUiText(language, "Adjust execution order", "调整执行顺序"))};
-  const textContinueDiscussion = ${JSON.stringify(pickUiText(language, "Continue discussion", "继续讨论"))};
-  const textContinueDiscussionSeed = ${JSON.stringify(pickUiText(language, "Let's keep this in discussion for a moment.", "我们先继续讨论这一步，不急着收口。"))};
+  const textSetExecutionOrder = ${JSON.stringify(pickUiText(language, "Set execution order", "设置执行顺序"))};
   const textNeedToken = ${JSON.stringify(pickUiText(language, "This action requires LOCAL_API_TOKEN.", "这个动作需要 LOCAL_API_TOKEN。"))};
   const textTokenPrompt = ${JSON.stringify(pickUiText(language, "Enter LOCAL_API_TOKEN to continue.", "请输入 LOCAL_API_TOKEN 以继续。"))};
   const textTokenRetryPrompt = ${JSON.stringify(pickUiText(language, "The local token was rejected. Enter LOCAL_API_TOKEN again to retry.", "本地令牌验证失败，请重新输入 LOCAL_API_TOKEN 以重试。"))};
@@ -288,14 +282,15 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const textShowDetails = ${JSON.stringify(pickUiText(language, "Show details", "展开详情"))};
   const textHideDetails = ${JSON.stringify(pickUiText(language, "Hide details", "收起详情"))};
   const textStopCurrent = ${JSON.stringify(pickUiText(language, "Stop current", "停止当前"))};
+  const textMarkHumanReviewed = ${JSON.stringify(pickUiText(language, "Mark as human-reviewed", "标记为已处理"))};
+  const textMarkedHumanReviewed = ${JSON.stringify(pickUiText(language, "Marked as human-reviewed.", "已标记为人类已处理。"))};
   const textArchiveThread = ${JSON.stringify(pickUiText(language, "Archive thread", "归档线程"))};
   const textDeleteThread = ${JSON.stringify(pickUiText(language, "Delete thread", "删除线程"))};
   const textArchiveConfirm = ${JSON.stringify(pickUiText(language, "Archive this thread and hide it from the left list?", "归档这个线程，并把它从左侧列表隐藏？"))};
   const textDeleteConfirm = ${JSON.stringify(pickUiText(language, "Delete this thread permanently? This will remove its hall history and linked room evidence.", "永久删除这个线程？这会移除它的大厅历史和关联房间证据。"))};
   const textArchived = ${JSON.stringify(pickUiText(language, "Thread archived.", "线程已归档。"))};
   const textDeleted = ${JSON.stringify(pickUiText(language, "Thread deleted.", "线程已删除。"))};
-  const textContinueDiscussionHint = ${JSON.stringify(pickUiText(language, "Continue the discussion in the composer below.", "继续在下方输入框里补充讨论。"))};
-  const textStopped = ${JSON.stringify(pickUiText(language, "Stopped the current chain and returned the thread to discussion.", "已停止当前链路，并把线程拉回讨论。"))};
+  const textStopped = ${JSON.stringify(pickUiText(language, "Stopped the current chain.", "已停止当前链路。"))};
   const textNewTaskDraft = ${JSON.stringify(pickUiText(language, "New task draft", "新任务草稿"))};
   const textNewTaskDraftHint = ${JSON.stringify(pickUiText(language, "Describe the request once here. When you press Enter, the hall will create a new thread and immediately start the discussion.", "把需求一次写在这里。你按 Enter 后，大厅会新建线程，并立即开始讨论。"))};
   const textThreadSwitched = ${JSON.stringify(pickUiText(language, "Switched to thread:", "已切换到线程："))};
@@ -731,13 +726,20 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       .join('');
   };
   const renderArtifactChips = (artifactRefs, fileAttachments) => renderArtifactFooterHtml(artifactRefs, fileAttachments);
-  const stageLabel = (stage) => ({
-    discussion: ${JSON.stringify(pickUiText(language, "Discussion", "讨论中"))},
-    execution: ${JSON.stringify(pickUiText(language, "Execution", "执行中"))},
-    review: ${JSON.stringify(pickUiText(language, "Review", "审核中"))},
-    blocked: ${JSON.stringify(pickUiText(language, "Blocked", "卡住"))},
-    completed: ${JSON.stringify(pickUiText(language, "Completed", "已完成"))},
-  }[stage] || stage || '');
+  const needsHumanReview = (taskCard) => {
+    if (!taskCard || taskCard.archivedAt || taskCard.status === 'done' || taskCard.humanReviewedAt) return false;
+    const lastAgentAt = Date.parse(taskCard.lastAgentActivityAt || '') || 0;
+    if (!lastAgentAt) return false;
+    return (Date.now() - lastAgentAt) > 10 * 60 * 1000;
+  };
+  const activityLabel = (taskCard) => {
+    if (!taskCard) return '';
+    if (taskCard.status === 'done') return ${JSON.stringify(pickUiText(language, "Completed", "已完成"))};
+    if (taskCard.archivedAt) return ${JSON.stringify(pickUiText(language, "Archived", "已归档"))};
+    if (needsHumanReview(taskCard)) return ${JSON.stringify(pickUiText(language, "Needs human review", "需要人类审核"))};
+    if (taskCard.executionLock && !taskCard.executionLock.releasedAt) return ${JSON.stringify(pickUiText(language, "In progress", "进行中"))};
+    return ${JSON.stringify(pickUiText(language, "Active", "活跃"))};
+  };
   const kindLabel = (kind) => ({
     task: ${JSON.stringify(pickUiText(language, "Task", "任务"))},
     proposal: ${JSON.stringify(pickUiText(language, "Proposal", "方案"))},
@@ -881,7 +883,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     executionPlannerOpen = false;
     textarea?.focus?.();
     textarea?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
-    setFlash(textContinueDiscussionHint);
     renderVisibleThread();
     return false;
   };
@@ -907,7 +908,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const syncStopButton = () => {
     if (!(stopButton instanceof HTMLButtonElement)) return;
     const taskCard = currentTaskCard();
-    stopButton.hidden = !taskCard || taskCard.stage === 'completed';
+    stopButton.hidden = !taskCard || taskCard.status === 'done';
     stopButton.title = textStopCurrent;
     stopButton.setAttribute('aria-label', textStopCurrent);
   };
@@ -1072,12 +1073,9 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     });
     return removed;
   };
-  const syntheticDiscussionDrafts = (taskCard) => {
-    if (!taskCard || taskCard.stage !== 'discussion') return [];
-    return [];
-  };
   const syntheticExecutionHandoffDraft = (taskCard, persistedThreadMessages) => {
-    if (!taskCard || taskCard.stage !== 'execution' || !taskCard.currentOwnerParticipantId) return [];
+    if (!taskCard || !taskCard.currentOwnerParticipantId) return [];
+    if (!(taskCard.executionLock && !taskCard.executionLock.releasedAt)) return [];
     const ownerParticipantId = String(taskCard.currentOwnerParticipantId || '').trim();
     if (!ownerParticipantId) return [];
     const updatedAt = Date.parse(taskCard.updatedAt || taskCard.createdAt || '') || 0;
@@ -1118,7 +1116,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     if (!selectedTaskCardId) return [];
     const taskCard = currentTaskCard();
     if (!taskCard) return [];
-    if (taskCard.stage === 'discussion') return syntheticDiscussionDrafts(taskCard);
     return syntheticExecutionHandoffDraft(taskCard, persistedThreadMessages);
   };
   const visibleDrafts = () => {
@@ -1180,9 +1177,10 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     }
     const taskCard = currentTaskCard();
     if (taskCard?.currentOwnerParticipantId === participantId) {
-      if (taskCard.stage === 'review') return { state: 'reviewing', label: textReviewingNow, rank: 1 };
-      if (taskCard.stage === 'execution') return { state: 'executing', label: textExecutingNow, rank: 1 };
-      return { state: 'active', label: stageLabel(taskCard.stage), rank: 2 };
+      if (taskCard.executionLock && !taskCard.executionLock.releasedAt) {
+        return { state: 'executing', label: textExecutingNow, rank: 1 };
+      }
+      return { state: 'active', label: activityLabel(taskCard), rank: 2 };
     }
     if ((taskCard?.plannedExecutionOrder || []).includes(participantId)) {
       return { state: 'queued', label: textQueuedNow, rank: 3 };
@@ -1218,8 +1216,8 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     if (taskCard?.currentOwnerLabel && hasLockedActiveExecution(taskCard)) {
       const currentTask = decisionCardStepMeta(taskCard).task;
       toolbarMetaNote.textContent = currentTask
-        ? (taskCard.currentOwnerLabel + ' ' + (taskCard.stage === 'review' ? textReviewingNow : textExecutingNow) + ' · ' + currentTask)
-        : (taskCard.currentOwnerLabel + ' ' + (taskCard.stage === 'review' ? textReviewingNow : textExecutingNow));
+        ? (taskCard.currentOwnerLabel + ' ' + textExecutingNow + ' · ' + currentTask)
+        : (taskCard.currentOwnerLabel + ' ' + textExecutingNow);
       return;
     }
     toolbarMetaNote.textContent = (bootstrap.participants || []).length + ' ' + ${JSON.stringify(pickUiText(language, "agents live in this hall.", "个 agent 正在大厅里。"))};
@@ -1284,7 +1282,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     });
   };
   const syncExecutionOrderDraft = (taskCard) => {
-    const currentExecutionParticipantId = (taskCard?.stage === 'execution' || taskCard?.stage === 'blocked')
+    const currentExecutionParticipantId = (taskCard?.executionLock && !taskCard.executionLock.releasedAt)
       ? String(taskCard.currentExecutionItem?.participantId || taskCard.currentOwnerParticipantId || '').trim()
       : '';
     const baseOrder = Array.isArray(taskCard?.plannedExecutionOrder) ? taskCard.plannedExecutionOrder.slice() : [];
@@ -1403,7 +1401,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     };
     renderHandoffPanel();
   };
-  const hasLockedActiveExecution = (taskCard) => Boolean(taskCard) && (taskCard.stage === 'execution' || taskCard.stage === 'blocked');
+  const hasLockedActiveExecution = (taskCard) => Boolean(taskCard && taskCard.executionLock && !taskCard.executionLock.releasedAt);
   const firstPlannedOwnerId = (taskCard) => {
     if (!taskCard) return '';
     return String(taskCard.plannedExecutionOrder?.[0] || taskCard.plannedExecutionItems?.[0]?.participantId || '').trim();
@@ -1414,7 +1412,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     return (taskCard.plannedExecutionItems || []).find((item) => item.participantId === participantId) || null;
   };
   const hasPendingStartablePlan = (taskCard) => Boolean(taskCard) && !hasLockedActiveExecution(taskCard) && Boolean(firstPlannedOwnerId(taskCard));
-  const decisionCardStageText = (taskCard) => hasPendingStartablePlan(taskCard) ? textReadyToStart : stageLabel(taskCard.stage);
   const decisionCardOwnerMeta = (taskCard) => {
     if (!taskCard) return { heading: textCurrentOwner, label: '' };
     if (hasPendingStartablePlan(taskCard)) {
@@ -1456,10 +1453,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     return '';
   };
   const shouldShowDecisionPrimaryAction = (taskCard) => hasPendingStartablePlan(taskCard);
-  const decisionSecondaryOrderLabel = (taskCard) => {
-    if (!taskCard) return textPlanExecutionOrder;
-    return taskCard.stage === 'discussion' ? textPlanExecutionOrder : textAdjustExecutionOrder;
-  };
+  const decisionSecondaryOrderLabel = () => textSetExecutionOrder;
   const moveExecutionOrderDraft = (participantId, direction) => {
     const index = executionOrderDraft.indexOf(participantId);
     if (index < 0) return;
@@ -1549,8 +1543,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       || hasDiscussionOutcome
       || taskCard?.currentOwnerParticipantId
       || taskCard?.currentExecutionItem
-      || taskCard?.discussionCycle?.closedAt
-      || (taskCard && taskCard.stage !== 'discussion')
+      || (taskCard?.executionLock && !taskCard.executionLock.releasedAt)
       || hasExecutionPlan
     );
     const shouldHideWhileDiscussionContinues = activeDrafts.length > 0 && !hasExecutionEntryPoint;
@@ -1568,10 +1561,11 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     const compactSummaryText = taskCard.decision || taskCard.proposal || taskCard.latestSummary || taskCard.description || '';
     const isExpanded = decisionExpanded;
     const primaryButtonLabel = decisionPrimaryButtonLabel(taskCard);
-    const orderButtonLabel = decisionSecondaryOrderLabel(taskCard);
+    const orderButtonLabel = decisionSecondaryOrderLabel();
     const taskArtifacts = payload?.task?.artifacts || [];
+    const activityText = hasPendingStartablePlan(taskCard) ? textReadyToStart : activityLabel(taskCard);
     const summaryStats = [
-      textStage + '：' + decisionCardStageText(taskCard),
+      activityText,
       ownerMeta.label ? ownerMeta.heading + '：' + ownerMeta.label : '',
       stepMeta.task ? stepMeta.heading + '：' + stepMeta.task : '',
     ].filter(Boolean);
@@ -1694,13 +1688,15 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
                   ? '<button type="button" class="hall-button" data-hall-start-execution onclick="return window.__openclawHallAssignOwner ? window.__openclawHallAssignOwner() : false">' + esc(primaryButtonLabel) + '</button>'
                   : '') +
                 '<button type="button" class="hall-secondary-button hall-secondary-button--accent" data-hall-plan-order onclick="return window.__openclawHallSetExecutionOrder ? window.__openclawHallSetExecutionOrder() : false">' + esc(orderButtonLabel) + '</button>' +
-                '<button type="button" class="hall-secondary-button" data-hall-continue-discussion onclick="return window.__openclawHallContinueDiscussion ? window.__openclawHallContinueDiscussion() : false">' + esc(textContinueDiscussion) + '</button>' +
+                (needsHumanReview(taskCard)
+                  ? '<button type="button" class="hall-secondary-button" data-hall-mark-human-reviewed onclick="return window.__openclawHallMarkHumanReviewed ? window.__openclawHallMarkHumanReviewed() : false">' + esc(textMarkHumanReviewed) + '</button>'
+                  : '') +
               '</div>' +
-              '<div class="hall-decision-helper">' + esc((hasPendingStartablePlan(taskCard) || taskCard.stage === 'discussion')
-                ? (firstPlannedOwnerId(taskCard)
-                  ? textExecutionStartHint
-                  : textPlannerHint)
-                : textExecutionThreadHint) + '</div>' +
+              '<div class="hall-decision-helper">' + esc(hasPendingStartablePlan(taskCard)
+                ? (firstPlannedOwnerId(taskCard) ? textExecutionStartHint : textPlannerHint)
+                : ((taskCard.executionLock && !taskCard.executionLock.releasedAt)
+                  ? textExecutionThreadHint
+                  : textPlannerHint)) + '</div>' +
               plannerPanel +
             '</section>'
     );
@@ -2040,11 +2036,11 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     const stepMeta = decisionCardStepMeta(taskCard);
     const currentTaskValue = String(stepMeta.task || '-').trim() || '-';
     const plannedQueueLabels = (taskCard.plannedExecutionOrder || []).map((participantId) => participantLabel(participantId)).join(' → ') || '-';
-    const executionFeedHint = (hasPendingStartablePlan(taskCard) || taskCard.stage === 'discussion')
-      ? (firstPlannedOwnerId(taskCard)
-        ? textExecutionStartHint
-        : textPlannerHint)
-      : textExecutionThreadHint;
+    const executionFeedHint = hasPendingStartablePlan(taskCard)
+      ? (firstPlannedOwnerId(taskCard) ? textExecutionStartHint : textPlannerHint)
+      : ((taskCard.executionLock && !taskCard.executionLock.releasedAt)
+        ? textExecutionThreadHint
+        : textPlannerHint);
     const roomLink = taskCard.roomId
       ? '<a class="hall-thread-link" href="?section=collaboration&roomId=' + encodeURIComponent(taskCard.roomId) + '">' + esc(textOpenDetailThread) + '</a>'
       : '';
@@ -2321,8 +2317,8 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     activeThreadPollTimer = window.setInterval(() => {
       if (document.hidden) return;
       if (!selectedTaskCardId) return;
-      const stage = String(currentTaskCard()?.stage || '');
-      if (!stage || !['discussion', 'execution', 'blocked', 'review'].includes(stage)) return;
+      const taskCard = currentTaskCard();
+      if (!taskCard || taskCard.status === 'done' || taskCard.archivedAt) return;
       if (hallReloadInFlight) return;
       if (isExecutionPlannerEditing()) return;
       void loadHall(true).catch(() => {});
@@ -2668,7 +2664,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     const chosenParticipantId = String(
       participantIdOverride
       || (
-        taskCard && taskCard.stage !== 'execution'
+        taskCard && !(taskCard.executionLock && !taskCard.executionLock.releasedAt)
           ? (taskCard.plannedExecutionOrder?.[0] || taskCard.currentOwnerParticipantId || executionOrderDraft[0] || '')
           : ''
       )
@@ -2691,7 +2687,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         participantId: participant.participantId,
       }),
     });
-    if (taskCard?.stage === 'discussion' && executionOrderDraft.length > 0 && executionOrderDraft[0] !== participant.participantId) {
+    if (taskCard && !(taskCard.executionLock && !taskCard.executionLock.releasedAt) && executionOrderDraft.length > 0 && executionOrderDraft[0] !== participant.participantId) {
       const reordered = [participant.participantId, ...executionOrderDraft.filter((id) => id !== participant.participantId)];
       executionOrderDraft = reordered;
       executionItemsDraft = buildExecutionItemsDraft(taskCard, reordered, executionItemsDraft);
@@ -2744,8 +2740,9 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     const refreshedTaskCard = currentTaskCard();
     const plannedOwnerId = refreshedTaskCard?.plannedExecutionOrder?.[0];
     const plannedOwnerLabel = plannedOwnerId ? participantLabel(plannedOwnerId) : '';
+    const lockActive = Boolean(refreshedTaskCard?.executionLock && !refreshedTaskCard.executionLock.releasedAt);
     setFlash(
-      refreshedTaskCard?.stage !== 'execution' && plannedOwnerLabel
+      !lockActive && plannedOwnerLabel
         ? ('顺序排好了。下一步点"开始执行（' + plannedOwnerLabel + '）"。')
         : ${JSON.stringify(pickUiText(language, "The queue is updated. Let the current owner finish this pass first.", "后续顺序已更新，先让当前 owner 把这一棒走完。"))},
     );
@@ -2830,50 +2827,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     return false;
   };
   window.__openclawHallFocusComposer = () => focusComposer();
-  window.__openclawHallContinueDiscussion = () => {
-    syncSelectedTaskRefs();
-    const taskCard = selectedTaskDetailPayload?.taskCard;
-    if (!(textarea instanceof HTMLTextAreaElement)) {
-      focusComposer();
-      return false;
-    }
-    if (!taskCard || taskCard.stage === 'discussion') {
-      if (!textarea.value.trim()) {
-        textarea.value = textContinueDiscussionSeed;
-        autoResizeComposer();
-      }
-      focusComposer();
-      return false;
-    }
-    const reopen = async () => {
-      if (taskCard.stage === 'execution' || taskCard.stage === 'blocked') {
-        await callMutationJson('/api/hall/tasks/' + encodeURIComponent(selectedTaskId) + '/stop', {
-          method: 'POST',
-          body: JSON.stringify({
-            taskCardId: selectedTaskCardId,
-            projectId: selectedTaskProjectId,
-            note: textContinueDiscussionSeed,
-          }),
-        });
-        await loadHall(true);
-      } else {
-        await callMutationJson('/api/hall/messages', {
-          method: 'POST',
-          body: JSON.stringify({
-            taskCardId: selectedTaskCardId || undefined,
-            content: textContinueDiscussionSeed,
-          }),
-        });
-        await loadHall();
-      }
-      textarea.value = '';
-      autoResizeComposer();
-      focusComposer();
-      setFlash('已切回讨论，可以继续追问。');
-    };
-    void reopen().catch((error) => setFlash(error instanceof Error ? error.message : String(error)));
-    return false;
-  };
   window.__openclawHallToggleDecisionDetails = () => {
     decisionExpanded = !decisionExpanded;
     renderVisibleThread();
@@ -2918,6 +2871,26 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     });
     setFlash(textStopped);
     await loadHall();
+  };
+  const markHumanReviewed = async () => {
+    syncSelectedTaskRefs();
+    if (!selectedTaskId || !selectedTaskCardId) {
+      setFlash(${JSON.stringify(pickUiText(language, "Select a task thread first.", "先选中一个任务线程。"))});
+      return;
+    }
+    await callMutationJson('/api/hall/tasks/' + encodeURIComponent(selectedTaskId) + '/mark-human-reviewed', {
+      method: 'POST',
+      body: JSON.stringify({
+        taskCardId: selectedTaskCardId,
+        projectId: selectedTaskProjectId,
+      }),
+    });
+    setFlash(textMarkedHumanReviewed);
+    await loadHall(true);
+  };
+  window.__openclawHallMarkHumanReviewed = () => {
+    void markHumanReviewed().catch((error) => setFlash(error instanceof Error ? error.message : String(error)));
+    return false;
   };
   const archiveCurrentThread = async () => {
     syncSelectedTaskRefs();
@@ -3185,7 +3158,6 @@ export function renderCollaborationHallForSmoke(language: UiLanguage = "zh"): st
     roomId: "collaboration-hall:demo-task",
     title: "Build the public collaboration hall",
     description: "Replace the task-room-first collaboration UI with one shared hall timeline.",
-    stage: "discussion",
     status: "todo",
     createdByParticipantId: "operator",
     currentOwnerParticipantId: "builder",
@@ -3224,7 +3196,7 @@ export function renderCollaborationHallForSmoke(language: UiLanguage = "zh"): st
       headline: "Turing aligned the first build slice and is about to assign execution.",
       activeTaskCount: 1,
       waitingReviewCount: 0,
-      blockedTaskCount: 0,
+      needsHumanReviewCount: 0,
       currentSpeakerLabel: "Turing",
       updatedAt: hall.updatedAt,
     },
@@ -3238,7 +3210,6 @@ export function renderCollaborationHallForSmoke(language: UiLanguage = "zh"): st
           headline: "Use a shared hall timeline and a linked evidence thread.",
           currentOwnerLabel: "Linus",
           nextAction: "Assign the first execution owner.",
-          stage: taskCard.stage,
           blockerCount: 0,
           updatedAt: taskCard.updatedAt,
         },
@@ -3266,7 +3237,6 @@ export function renderCollaborationHallForSmoke(language: UiLanguage = "zh"): st
       headline: "Lead aligned the first build slice and is about to assign execution.",
       currentOwnerLabel: "Linus",
       nextAction: "Assign the first execution owner.",
-      stage: taskCard.stage,
       blockerCount: 0,
       updatedAt: taskCard.updatedAt,
     },
@@ -3486,7 +3456,7 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
 
 function hasLockedHallExecution(taskCard: HallTaskCard | undefined): boolean {
   if (!taskCard) return false;
-  return taskCard.stage === "execution" || taskCard.stage === "blocked";
+  return Boolean(taskCard.executionLock && !taskCard.executionLock.releasedAt);
 }
 
 function firstPlannedHallOwnerId(taskCard: HallTaskCard | undefined): string | undefined {
@@ -3532,12 +3502,34 @@ function describeHallDecisionCardState(
   const currentOwnerId = String(taskCard.currentOwnerParticipantId || "").trim();
   return {
     hasPendingStartablePlan,
-    stageText: stageLabel(taskCard.stage, language),
+    stageText: resolveHallActivityLabel(taskCard, language),
     ownerHeading: pickUiText(language, "Current owner", "当前 OWNER"),
     ownerLabel: taskCard.currentOwnerLabel || (currentOwnerId ? participantLabel(currentOwnerId) : ""),
     stepHeading: pickUiText(language, "Current step", "当前步骤"),
     stepText: String(taskCard.currentExecutionItem?.task || "").trim(),
   };
+}
+
+// Lightweight replacement for the old stageLabel(). Without an explicit stage
+// machine, we derive an activity label from the task status, execution lock,
+// and "needs human review" detector. Used only for server-rendered summaries.
+function resolveHallActivityLabel(taskCard: HallTaskCard, language: UiLanguage): string {
+  if (taskCard.status === "done") return pickUiText(language, "Completed", "已完成");
+  if (taskCard.archivedAt) return pickUiText(language, "Archived", "已归档");
+  if (hallTaskNeedsHumanReview(taskCard)) return pickUiText(language, "Needs human review", "需要人类审核");
+  if (taskCard.executionLock && !taskCard.executionLock.releasedAt) return pickUiText(language, "In progress", "进行中");
+  return pickUiText(language, "Active", "活跃");
+}
+
+// Duplicate of runtime needsHumanReview to avoid a runtime→UI dep cycle.
+// Kept in sync with HUMAN_REVIEW_IDLE_WINDOW_MS.
+function hallTaskNeedsHumanReview(card: HallTaskCard, nowMs: number = Date.now()): boolean {
+  if (card.archivedAt) return false;
+  if (card.status === "done") return false;
+  if (card.humanReviewedAt) return false;
+  const lastAgentAt = Date.parse(card.lastAgentActivityAt ?? "") || 0;
+  if (!lastAgentAt) return false;
+  return (nowMs - lastAgentAt) > 10 * 60 * 1000;
 }
 
 function renderServerParallelGroupsSection(
@@ -3677,13 +3669,10 @@ function renderParticipantRoster(participants: HallParticipant[], language: UiLa
 }
 
 
-function stageLabel(stage: HallTaskCard["stage"], language: UiLanguage): string {
-  if (stage === "discussion") return pickUiText(language, "Discussion", "讨论中");
-  if (stage === "execution") return pickUiText(language, "Execution", "执行中");
-  if (stage === "review") return pickUiText(language, "Review", "审核中");
-  if (stage === "blocked") return pickUiText(language, "Blocked", "卡住");
-  return pickUiText(language, "Completed", "已完成");
-}
+// Removed stageLabel(stage, language): the 5-state HallTaskStage machine is
+// gone. Server and client now derive the label from status + executionLock
+// + needs-human-review (resolveHallActivityLabel on the server, activityLabel
+// in the embedded script).
 
 function messageKindLabel(kind: HallMessage["kind"], language: UiLanguage): string {
   if (kind === "task") return pickUiText(language, "Task", "任务");

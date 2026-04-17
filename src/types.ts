@@ -44,7 +44,6 @@ export type RoomStage = "intake" | "discussion" | "assigned" | "executing" | "re
 export type MessageKind = "chat" | "proposal" | "decision" | "handoff" | "status" | "result";
 export type RoomParticipantRole = "human" | "planner" | "coder" | "reviewer" | "manager";
 export type HallSemanticRole = "planner" | "coder" | "reviewer" | "manager" | "observer" | "generalist";
-export type HallTaskStage = "discussion" | "execution" | "review" | "blocked" | "completed";
 export type HallMessageKind =
   | "chat"
   | "task"
@@ -235,15 +234,6 @@ export interface HallParticipant {
   isHuman?: boolean;
 }
 
-export interface TaskDiscussionCycle {
-  cycleId: string;
-  openedAt: string;
-  openedByParticipantId: string;
-  expectedParticipantIds: string[];
-  completedParticipantIds: string[];
-  closedAt?: string;
-}
-
 export interface HallMessagePayload {
   projectId?: string;
   taskId?: string;
@@ -257,7 +247,6 @@ export interface HallMessagePayload {
   nextOwnerParticipantId?: string;
   reviewOutcome?: "approved" | "rejected";
   taskStatus?: TaskState;
-  taskStage?: HallTaskStage;
   status?: string;
   handoff?: StructuredHandoffPacket;
   artifactRefs?: TaskArtifact[];
@@ -294,7 +283,6 @@ export interface HallTaskCard {
   roomId?: string;
   title: string;
   description: string;
-  stage: HallTaskStage;
   status: TaskState;
   createdByParticipantId: string;
   currentOwnerParticipantId?: string;
@@ -310,9 +298,14 @@ export interface HallTaskCard {
   plannedExecutionItems: HallExecutionItem[];
   currentExecutionItem?: HallExecutionItem;
   sessionKeys: string[];
-  discussionCycle?: TaskDiscussionCycle;
   executionLock?: ExecutionLock;
   parallelGroups?: HallParallelGroup[];
+  // Last time any agent posted to this thread. Used to compute "needs human review"
+  // (thread idle for > HUMAN_REVIEW_IDLE_WINDOW_MS with no pending dispatch).
+  lastAgentActivityAt?: string;
+  // Set when an operator marks the thread as human-reviewed; cleared when a new
+  // agent message lands. Suppresses the "needs human review" signal.
+  humanReviewedAt?: string;
   archivedAt?: string;
   archivedByParticipantId?: string;
   archivedByLabel?: string;
@@ -369,7 +362,10 @@ export interface CollaborationHallSummary {
   headline: string;
   activeTaskCount: number;
   waitingReviewCount: number;
-  blockedTaskCount: number;
+  // Threads that have been idle past the review window and are not marked
+  // as human-reviewed. Replaces the old `blockedTaskCount` which was driven
+  // by regex heuristics on agent text.
+  needsHumanReviewCount: number;
   currentSpeakerLabel?: string;
   updatedAt: string;
 }
@@ -381,7 +377,6 @@ export interface HallTaskSummary {
   headline: string;
   currentOwnerLabel?: string;
   nextAction: string;
-  stage: HallTaskStage;
   blockerCount: number;
   updatedAt: string;
 }
