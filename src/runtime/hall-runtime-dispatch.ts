@@ -644,6 +644,10 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
     "If you mention a teammate, use their real name with @ prefix (e.g. @林纳斯 Linus). The system will auto-dispatch them.",
     "Post concrete deliverables, not descriptions of what should be done.",
 
+    // Data integrity — no silent fabrication
+    "Before running any analysis, algorithm, pipeline, or computation, verify the environment can actually support it: required software/tooling is installed and runnable, input data is accessible, and there is enough storage / memory / compute. If any of that is missing or unverified, stop and report the gap — to whoever dispatched you (@mention them), or to the user if you are the main agent.",
+    "Do NOT silently substitute mock, synthetic, simulated, randomly-generated, or hand-fabricated data to make a task look complete. Using such data is only allowed when you have explicitly told the caller it is mock/synthetic and they have agreed — and even then, label every such result clearly as mock/synthetic in your reply and in any artifact. Presenting fabricated output as if it were a real result is a hard violation.",
+
     // First-turn guard
     firstParticipantTurnInThread
       ? "This is your first reply in this thread. Start from a clean first answer. Do not open with continuation phrases."
