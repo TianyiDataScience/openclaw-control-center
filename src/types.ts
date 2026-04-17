@@ -255,6 +255,7 @@ export interface HallMessagePayload {
   sessionKey?: string;
   sourceSessionKey?: string;
   sourceTool?: string;
+  model?: string;
 }
 
 export interface HallMessage {
@@ -300,6 +301,15 @@ export interface HallTaskCard {
   sessionKeys: string[];
   executionLock?: ExecutionLock;
   parallelGroups?: HallParallelGroup[];
+  // First human or main-agent who assigned work on this card. Agents finishing
+  // a sub-task are prompted to @-report here instead of the peer who just
+  // messaged them, which breaks A→B→A ping-pong.
+  originalAssignerParticipantId?: string;
+  // Auto-chain / observer dispatch counts per agent within the current
+  // human-initiated round. Reset when an operator posts. When a count hits
+  // AUTO_ROUND_BLOCK_THRESHOLD, the card auto-pauses into "blocked" status and
+  // needs human review before any further auto-dispatch.
+  autoRoundsByAgent?: Record<string, number>;
   // Last time any agent posted to this thread. Used to compute "needs human review"
   // (thread idle for > HUMAN_REVIEW_IDLE_WINDOW_MS with no pending dispatch).
   lastAgentActivityAt?: string;

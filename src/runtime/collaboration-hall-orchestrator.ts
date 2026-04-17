@@ -810,6 +810,11 @@ export async function postHallMessage(
 // ---------------------------------------------------------------------------
 
 const MAX_AUTO_CHAIN_DEPTH = 5;
+// When a single (taskCardId, agentId) pair gets dispatched this many times
+// within one human-initiated round (no operator message in between), the card
+// is auto-paused and marked blocked for human review. 6 = 1 initial assignment
+// + 5 rounds of back-and-forth before we force a human into the loop.
+const AUTO_ROUND_BLOCK_THRESHOLD = 6;
 
 interface RouteAndDispatchInput {
   hall: CollaborationHall;
@@ -840,7 +845,31 @@ function scheduleRouteAndDispatch(input: RouteAndDispatchInput): void {
 }
 
 async function routeAndDispatchHallMessage(input: RouteAndDispatchInput): Promise<void> {
-  const { hall, taskCard, triggerMessage, mentionRouting, toolClient } = input;
+  const { hall, triggerMessage, mentionRouting, toolClient } = input;
+  let taskCard = input.taskCard;
+
+  // A1 + A2: on every human-initiated dispatch, seed originalAssigner (once) and
+  // reset per-agent auto-round counters so a fresh human turn starts clean.
+  // scheduleRouteAndDispatch is only called for operator posts, so we can treat
+  // triggerMessage.authorParticipantId as the human here.
+  const assignerPatch: Parameters<typeof updateHallTaskCard>[0] = { taskCardId: taskCard.taskCardId };
+  let needsAssignerWrite = false;
+  if (!taskCard.originalAssignerParticipantId && triggerMessage.authorParticipantId) {
+    assignerPatch.originalAssignerParticipantId = triggerMessage.authorParticipantId;
+    needsAssignerWrite = true;
+  }
+  if (taskCard.autoRoundsByAgent && Object.keys(taskCard.autoRoundsByAgent).length > 0) {
+    assignerPatch.autoRoundsByAgent = {};
+    needsAssignerWrite = true;
+  }
+  if (needsAssignerWrite) {
+    try {
+      const result = await updateHallTaskCard(assignerPatch);
+      taskCard = result.taskCard;
+    } catch {
+      // Non-fatal: even if this patch fails we still want to route the message.
+    }
+  }
 
   // Determine target agents
   let targetParticipants: HallParticipant[];
@@ -959,16 +988,23 @@ async function dispatchMainObserver(input: {
     payload: result.payload,
   });
 
-  // If observer @mentioned someone, auto-chain
+  // If observer @mentioned someone, auto-chain.
+  // A3: also exclude the author of the latest agent message — the message the
+  // observer is reacting to — so the observer can't immediately re-dispatch
+  // whoever just wrote and turn observation into ping-pong.
+  const updatedMessages = await loadRecentHallThreadMessages(taskCard);
+  const lastMessage = updatedMessages[updatedMessages.length - 1];
+  const triggerAuthorId = lastMessage?.authorParticipantId;
   const observerMentions = resolveHallMentionTargets(result.content, hall.participants);
   const chainTargets = observerMentions.targets
     .map((t) => findParticipant(hall.participants, t.participantId))
     .filter((p): p is HallParticipant =>
-      p != null && p.active && p.participantId !== mainParticipant.participantId,
+      p != null
+      && p.active
+      && p.participantId !== mainParticipant.participantId
+      && p.participantId !== triggerAuthorId,
     );
   if (chainTargets.length > 0) {
-    const updatedMessages = await loadRecentHallThreadMessages(taskCard);
-    const lastMessage = updatedMessages[updatedMessages.length - 1];
     await Promise.allSettled(
       chainTargets.map((target) =>
         dispatchHallAgentReply({
@@ -994,10 +1030,33 @@ async function dispatchHallAgentReply(input: {
   toolClient: ToolClient;
   chainDepth: number;
 }): Promise<void> {
-  const { hall, taskCard, participant, triggerMessage, recentThreadMessages, toolClient, chainDepth } = input;
+  const { hall, participant, triggerMessage, recentThreadMessages, toolClient, chainDepth } = input;
+  let taskCard = input.taskCard;
 
   const canDispatch = canDispatchHallToRuntime(toolClient, participant);
   if (!canDispatch) return;
+
+  // A2: increment per-(card, agent) auto-round counter and stop if we hit the
+  // block threshold. Counters reset whenever an operator posts (see
+  // routeAndDispatchHallMessage above).
+  const agentKey = (participant.agentId ?? participant.participantId).trim();
+  if (agentKey) {
+    const rounds = { ...(taskCard.autoRoundsByAgent ?? {}) };
+    rounds[agentKey] = (rounds[agentKey] ?? 0) + 1;
+    try {
+      const patched = await updateHallTaskCard({
+        taskCardId: taskCard.taskCardId,
+        autoRoundsByAgent: rounds,
+      });
+      taskCard = patched.taskCard;
+    } catch {
+      // Non-fatal: counter state is best-effort.
+    }
+    if ((rounds[agentKey] ?? 0) >= AUTO_ROUND_BLOCK_THRESHOLD) {
+      await handleAutoRoundBlockedThreshold({ hall, taskCard, participant, rounds });
+      return;
+    }
+  }
 
   // Dispatch the agent
   let result: HallRuntimeDispatchResult;
@@ -1018,6 +1077,17 @@ async function dispatchHallAgentReply(input: {
   }
 
   if (result.canceled) return;
+
+  // A4: treat OBSERVE_SILENT from any agent (not just the observer path) as
+  // "nothing to add" — do not persist, do not trigger downstream wake / chain.
+  const trimmedReply = result.content.trim();
+  if (
+    !trimmedReply
+    || trimmedReply === OBSERVE_SILENT_MARKER
+    || trimmedReply.startsWith(OBSERVE_SILENT_MARKER)
+  ) {
+    return;
+  }
 
   // Persist the agent's reply
   const replyMessage = await appendPersistedHallMessage({
@@ -1048,10 +1118,18 @@ async function dispatchHallAgentReply(input: {
   // Auto-chain: if agent @mentioned other agents, dispatch them (up to depth limit)
   if (chainDepth < MAX_AUTO_CHAIN_DEPTH) {
     const replyMentions = resolveHallMentionTargets(result.content, hall.participants);
+    const triggerAuthorId = triggerMessage.authorParticipantId;
     const chainTargets = replyMentions.targets
       .map((t) => findParticipant(hall.participants, t.participantId))
+      // A3: also exclude the participant who triggered us (triggerMessage author)
+      // to break A→B→A ping-pong. The trigger author is presumed to already know
+      // what's happening in the thread; if they genuinely need more info they
+      // can post a new message as a human or via the dispatcher/PM path.
       .filter((p): p is HallParticipant =>
-        p != null && p.active && p.participantId !== participant.participantId,
+        p != null
+        && p.active
+        && p.participantId !== participant.participantId
+        && p.participantId !== triggerAuthorId,
       );
 
     if (chainTargets.length > 0) {
@@ -1082,6 +1160,48 @@ async function dispatchHallAgentReply(input: {
         });
       }
     }
+  }
+}
+
+async function handleAutoRoundBlockedThreshold(input: {
+  hall: CollaborationHall;
+  taskCard: HallTaskCard;
+  participant: HallParticipant;
+  rounds: Record<string, number>;
+}): Promise<void> {
+  const { hall, taskCard, participant, rounds } = input;
+  const agentKey = (participant.agentId ?? participant.participantId).trim();
+  const count = rounds[agentKey] ?? AUTO_ROUND_BLOCK_THRESHOLD;
+
+  // Mark the card blocked + add a blockers reason so the UI surfaces the
+  // "needs human review" state we already support (commit 21f9403). Tolerate
+  // the update failing: the system message below is the user-visible signal.
+  const blockerReason =
+    `auto-paused: 与 @${participant.displayName} 的对话轮次达 ${count}，请人工审核后继续`;
+  const mergedBlockers = Array.from(
+    new Set([...(taskCard.blockers ?? []), blockerReason]),
+  );
+  try {
+    await updateHallTaskCard({
+      taskCardId: taskCard.taskCardId,
+      status: "blocked",
+      blockers: mergedBlockers,
+    });
+  } catch {
+    // Non-fatal: surface the block via the system message even if update fails.
+  }
+
+  try {
+    await appendHallSystemMessage({
+      hallId: hall.hallId,
+      content: `[系统] 与 @${participant.displayName} 的对话轮次已达 ${count}，已暂停并标记为需要人类审核，请人工点击审批后继续。`,
+      projectId: taskCard.projectId,
+      taskId: taskCard.taskId,
+      taskCardId: taskCard.taskCardId,
+      roomId: taskCard.roomId,
+    });
+  } catch {
+    // Best-effort.
   }
 }
 

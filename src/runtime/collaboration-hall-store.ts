@@ -107,6 +107,8 @@ export interface UpdateHallTaskCardInput {
   executionLock?: HallTaskCard["executionLock"] | null;
   sessionKeys?: string[];
   parallelGroups?: HallTaskCard["parallelGroups"] | null;
+  originalAssignerParticipantId?: string | null;
+  autoRoundsByAgent?: Record<string, number> | null;
   humanReviewedAt?: string | null;
   lastAgentActivityAt?: string | null;
   archivedAt?: string | null;
@@ -409,6 +411,12 @@ async function updateHallTaskCardUnsafe(input: UpdateHallTaskCardInput): Promise
   if (payload.humanReviewedAt !== undefined) taskCard.humanReviewedAt = payload.humanReviewedAt ?? undefined;
   if (payload.lastAgentActivityAt !== undefined) taskCard.lastAgentActivityAt = payload.lastAgentActivityAt ?? undefined;
   if (payload.sessionKeys !== undefined) taskCard.sessionKeys = payload.sessionKeys;
+  if (payload.originalAssignerParticipantId !== undefined) {
+    taskCard.originalAssignerParticipantId = payload.originalAssignerParticipantId ?? undefined;
+  }
+  if (payload.autoRoundsByAgent !== undefined) {
+    taskCard.autoRoundsByAgent = payload.autoRoundsByAgent ?? undefined;
+  }
   if (payload.archivedAt !== undefined) taskCard.archivedAt = payload.archivedAt ?? undefined;
   if (payload.archivedByParticipantId !== undefined) {
     taskCard.archivedByParticipantId = payload.archivedByParticipantId ?? undefined;
@@ -751,6 +759,18 @@ function validateUpdateHallTaskCardInput(input: UpdateHallTaskCardInput): Update
         : optionalString(input.archivedByLabel, "archivedByLabel", 120, issues);
   const sessionKeys =
     input.sessionKeys === undefined ? undefined : optionalStringArray(input.sessionKeys, "sessionKeys", 240, issues);
+  const originalAssignerParticipantId =
+    input.originalAssignerParticipantId === undefined
+      ? undefined
+      : input.originalAssignerParticipantId === null
+        ? null
+        : optionalString(input.originalAssignerParticipantId, "originalAssignerParticipantId", 160, issues);
+  const autoRoundsByAgent =
+    input.autoRoundsByAgent === undefined
+      ? undefined
+      : input.autoRoundsByAgent === null
+        ? null
+        : validateAutoRoundsByAgent(input.autoRoundsByAgent, issues);
 
   if (issues.length > 0) {
     throw new CollaborationHallStoreValidationError("Invalid hall task card patch payload.", issues);
@@ -779,7 +799,33 @@ function validateUpdateHallTaskCardInput(input: UpdateHallTaskCardInput): Update
     archivedByParticipantId,
     archivedByLabel,
     sessionKeys,
+    originalAssignerParticipantId,
+    autoRoundsByAgent,
   };
+}
+
+function validateAutoRoundsByAgent(
+  input: unknown,
+  issues: string[],
+): Record<string, number> | undefined {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    issues.push("autoRoundsByAgent");
+    return undefined;
+  }
+  const result: Record<string, number> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    const trimmedKey = String(key || "").trim();
+    if (!trimmedKey || trimmedKey.length > 160) {
+      issues.push("autoRoundsByAgent");
+      return undefined;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1_000_000) {
+      issues.push("autoRoundsByAgent");
+      return undefined;
+    }
+    result[trimmedKey] = Math.floor(value);
+  }
+  return result;
 }
 
 function validateArchiveHallTaskCardInput(input: ArchiveHallTaskCardInput): ArchiveHallTaskCardInput {
@@ -963,6 +1009,8 @@ function normalizeTaskCard(input: unknown): HallTaskCard | undefined {
     currentExecutionItem: normalizeExecutionItem(root.currentExecutionItem),
     sessionKeys: toStringArray(root.sessionKeys, 240),
     executionLock: normalizeExecutionLock(root.executionLock),
+    originalAssignerParticipantId: asNonEmptyString(root.originalAssignerParticipantId),
+    autoRoundsByAgent: normalizeAutoRoundsByAgent(root.autoRoundsByAgent),
     lastAgentActivityAt: normalizeIsoString(root.lastAgentActivityAt),
     humanReviewedAt: normalizeIsoString(root.humanReviewedAt),
     archivedAt: normalizeIsoString(root.archivedAt),
@@ -1001,6 +1049,18 @@ function normalizeHallMessage(input: unknown): HallMessage | undefined {
     payload: asObject(root.payload) as HallMessage["payload"] | undefined,
     createdAt,
   };
+}
+
+function normalizeAutoRoundsByAgent(input: unknown): Record<string, number> | undefined {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return undefined;
+  const result: Record<string, number> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    const trimmedKey = String(key || "").trim();
+    if (!trimmedKey || trimmedKey.length > 160) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) continue;
+    result[trimmedKey] = Math.floor(value);
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function normalizeExecutionItems(input: unknown): HallTaskCard["plannedExecutionItems"] {
