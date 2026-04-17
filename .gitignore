@@ -38,3 +38,5 @@ docs/assets/_usage-*.png
 alexfinn-gap-checklist.md
 i18n-missing-list.md
 .playwright-mcp/
+.playwright/
+.playwright-mcp/
