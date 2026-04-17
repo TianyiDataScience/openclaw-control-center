@@ -468,6 +468,8 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   };
   const markdownLinkPattern = new RegExp('\\\\[([^\\\\]]+)\\\\]\\\\((https?:\\\\/\\\\/[^\\\\s)]+)\\\\)', 'g');
   const markdownImagePattern = new RegExp('!\\\\[([^\\\\]]*)\\\\]\\\\((https?:\\\\/\\\\/[^\\\\s)]+)\\\\)', 'g');
+  const autolinkPattern = new RegExp('&lt;(https?:\\\\/\\\\/[^\\\\s]+?)&gt;', 'gi');
+  const bareUrlPattern = new RegExp('(^|[\\\\s(>])(https?:\\\\/\\\\/[^\\\\s<>)\"\\']+)', 'g');
   const markdownStrongPattern = new RegExp('\\\\*\\\\*([^*]+)\\\\*\\\\*', 'g');
   const markdownEmphasisPattern = new RegExp('(^|\\\\s)\\\\*([^*]+)\\\\*(?=\\\\s|$)', 'g');
   const inlineCodePattern = new RegExp('\\x60([^\\x60]+)\\x60', 'g');
@@ -509,9 +511,22 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     html = html.replace(markdownLinkPattern, (_match, label, url) => (
       storeInlineBlock('<a href="' + url + '" target="_blank" rel="noreferrer">' + label + '</a>')
     ));
+    html = html.replace(autolinkPattern, (_match, url) => (
+      storeInlineBlock('<a href="' + url + '" target="_blank" rel="noreferrer">' + url + '</a>')
+    ));
     html = html.replace(bareImageUrlPattern, (match, prefix, url) => (
       isRenderableImageUrl(url) ? prefix + storeInlineBlock(renderInlineImage(url, '')) : match
     ));
+    html = html.replace(bareUrlPattern, (match, prefix, url) => {
+      let trimmed = url;
+      let tail = '';
+      while (trimmed.length > 0 && /[.,;:!?]$/.test(trimmed)) {
+        tail = trimmed.slice(-1) + tail;
+        trimmed = trimmed.slice(0, -1);
+      }
+      if (!trimmed) return match;
+      return prefix + storeInlineBlock('<a href="' + trimmed + '" target="_blank" rel="noreferrer">' + trimmed + '</a>') + tail;
+    });
     html = html.replace(inlineCodePattern, '<code>$1</code>');
     html = html.replace(markdownStrongPattern, '<strong>$1</strong>');
     html = html.replace(markdownEmphasisPattern, '$1<em>$2</em>');
@@ -1796,28 +1811,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       if (message.isDraft) {
         footer.push('<span class="hall-kind-pill">' + esc(textStreaming) + '</span>');
       }
-      let toolStripHtml = '';
-      const toolCallsSource = (message.isDraft && Array.isArray(message.toolCalls) && message.toolCalls.length > 0)
-        ? message.toolCalls
-        : (message.payload && Array.isArray(message.payload.toolCalls) && message.payload.toolCalls.length > 0)
-          ? message.payload.toolCalls
-          : null;
-      if (toolCallsSource) {
-        const grouped = new Map();
-        toolCallsSource.forEach((tc) => {
-          const key = tc.toolName + ':' + (tc.toolStatus || 'running');
-          const existing = grouped.get(key);
-          if (existing) { existing.count += 1; }
-          else { grouped.set(key, { toolName: tc.toolName, toolStatus: tc.toolStatus || 'running', count: 1 }); }
-        });
-        const pills = Array.from(grouped.values()).map((tc) => {
-          const statusClass = tc.toolStatus === 'completed' ? 'is-completed' : tc.toolStatus === 'error' ? 'is-error' : 'is-running';
-          const icon = tc.toolStatus === 'completed' ? '\\u2713' : tc.toolStatus === 'error' ? '\\u2717' : '\\u2699';
-          const label = tc.count > 1 ? tc.toolName + ' \\u00d7' + tc.count : tc.toolName;
-          return '<span class="hall-tool-pill ' + statusClass + '">' + icon + ' ' + esc(label) + '</span>';
-        });
-        toolStripHtml = '<div class="hall-tool-strip">' + pills.join('') + '</div>';
-      }
       const messageMarkup = '<article class="hall-message" data-kind="' + esc(message.kind) + '" data-author-type="' + esc(authorType) + '">' +
         '<div class="hall-message-row">' +
           hallAvatarMarkup(message.authorLabel || 'Agent', 'hall-message-avatar') +
@@ -1827,7 +1820,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
               '<div class="hall-message-meta">' + esc(message.createdAt || '') + '</div>' +
             '</div>' +
             '<div class="hall-message-body">' + renderMarkdownHtml(message.content) + '</div>' +
-            toolStripHtml +
             (footer.length > 0 ? '<div class="hall-message-footer">' + footer.join('') + '</div>' : '') +
           '</div>' +
         '</div>' +
@@ -3414,23 +3406,6 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
       if (message.payload?.artifactRefs?.length) {
         chips.push(renderArtifactChips(message.payload.artifactRefs, message.payload.fileAttachments));
       }
-      let toolStripHtml = "";
-      if (message.payload?.toolCalls?.length) {
-        const grouped = new Map<string, { toolName: string; toolStatus: string; count: number }>();
-        for (const tc of message.payload.toolCalls) {
-          const key = `${tc.toolName}:${tc.toolStatus}`;
-          const existing = grouped.get(key);
-          if (existing) existing.count += 1;
-          else grouped.set(key, { toolName: tc.toolName, toolStatus: tc.toolStatus, count: 1 });
-        }
-        const pills = Array.from(grouped.values()).map((tc) => {
-          const statusClass = tc.toolStatus === "completed" ? "is-completed" : tc.toolStatus === "error" ? "is-error" : "is-running";
-          const icon = tc.toolStatus === "completed" ? "\u2713" : tc.toolStatus === "error" ? "\u2717" : "\u2699";
-          const label = tc.count > 1 ? `${tc.toolName} \u00d7${tc.count}` : tc.toolName;
-          return `<span class="hall-tool-pill ${statusClass}">${icon} ${escapeHtml(label)}</span>`;
-        });
-        toolStripHtml = `<div class="hall-tool-strip">${pills.join("")}</div>`;
-      }
       return `
         <article class="hall-message" data-kind="${escapeHtml(message.kind)}" data-author-type="${escapeHtml(authorType)}">
           <div class="hall-message-row">
@@ -3444,7 +3419,6 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
                 <div class="hall-message-meta">${escapeHtml(message.createdAt)}</div>
               </div>
               <div class="hall-message-body">${renderMarkdown(message.content)}</div>
-              ${toolStripHtml}
               ${chips.length > 0 ? `<div class="hall-message-footer">${chips.join("")}</div>` : ""}
             </div>
           </div>

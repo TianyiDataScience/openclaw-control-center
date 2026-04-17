@@ -911,15 +911,13 @@ test("hall detail pane includes workspace files section", () => {
   assert(script.includes("hall-workspace-file-item"));
 });
 
-test("client script handles draft_tool_update events and renders tool pills", () => {
+test("client script handles draft_tool_update events and renders inline tool pills", () => {
   const script = renderCollaborationHallClientScript("en");
   assert(script.includes("draft_tool_update"));
   assert(script.includes("toolCalls"));
-  assert(script.includes("hall-tool-strip"));
   assert(script.includes("hall-tool-pill"));
-  assert(script.includes("is-running"));
   assert(script.includes("is-completed"));
-  assert(script.includes("is-error"));
   assert(script.includes("toolName"));
   assert(script.includes("toolStatus"));
+  assert(!script.includes("hall-tool-strip"));
 });
