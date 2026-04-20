@@ -375,6 +375,11 @@ export class OpenClawLiveClient implements ToolClient {
     const resolvedSessionId = sessionId
       || (sessionKey ? await this.resolveSessionIdByKey(sessionKey) : undefined)
       || latestBeforeRun?.sessionId;
+    let model = sessionKey ? this.sessionCache.get(sessionKey)?.model : undefined;
+    if (!model && sessionKey) {
+      await this.sessionsList().catch(() => undefined);
+      model = this.sessionCache.get(sessionKey)?.model;
+    }
 
     return {
       ok: true,
@@ -383,6 +388,7 @@ export class OpenClawLiveClient implements ToolClient {
       rawText: stdout,
       sessionId: resolvedSessionId,
       sessionKey,
+      model,
     };
   }
 

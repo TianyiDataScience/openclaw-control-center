@@ -85,6 +85,24 @@ export function renderCollaborationHallTheme(): string {
       line-height: 1;
       white-space: nowrap;
     }
+    .hall-model-pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 9px;
+      border: 1px solid rgba(80, 116, 181, 0.22);
+      background: rgba(235, 243, 255, 0.85);
+      color: #3a5478;
+      font-size: 10px;
+      font-weight: 500;
+      line-height: 1;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+      max-width: 240px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
     .hall-toolbar-headline {
       font-size: 13px;
       line-height: 1.55;

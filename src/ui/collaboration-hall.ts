@@ -1811,12 +1811,16 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       if (message.isDraft) {
         footer.push('<span class="hall-kind-pill">' + esc(textStreaming) + '</span>');
       }
+      const modelLabelRaw = message && message.payload && typeof message.payload.model === 'string' ? message.payload.model.trim() : '';
+      const modelPillMarkup = modelLabelRaw
+        ? '<span class="hall-model-pill" title="' + esc(modelLabelRaw) + '">' + esc(modelLabelRaw) + '</span>'
+        : '';
       const messageMarkup = '<article class="hall-message" data-kind="' + esc(message.kind) + '" data-author-type="' + esc(authorType) + '">' +
         '<div class="hall-message-row">' +
           hallAvatarMarkup(message.authorLabel || 'Agent', 'hall-message-avatar') +
           '<div class="hall-message-bubble">' +
             '<div class="hall-message-head">' +
-              '<div class="hall-message-author"><strong>' + esc(message.authorLabel) + '</strong><span class="hall-kind-pill">' + esc(kindLabel(message.kind)) + '</span></div>' +
+              '<div class="hall-message-author"><strong>' + esc(message.authorLabel) + '</strong><span class="hall-kind-pill">' + esc(kindLabel(message.kind)) + '</span>' + modelPillMarkup + '</div>' +
               '<div class="hall-message-meta">' + esc(message.createdAt || '') + '</div>' +
             '</div>' +
             '<div class="hall-message-body">' + renderMarkdownHtml(message.content) + '</div>' +
@@ -3406,6 +3410,10 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
       if (message.payload?.artifactRefs?.length) {
         chips.push(renderArtifactChips(message.payload.artifactRefs, message.payload.fileAttachments));
       }
+      const modelLabel = message.payload?.model?.trim();
+      const modelPill = modelLabel
+        ? `<span class="hall-model-pill" title="${escapeHtml(modelLabel)}">${escapeHtml(modelLabel)}</span>`
+        : "";
       return `
         <article class="hall-message" data-kind="${escapeHtml(message.kind)}" data-author-type="${escapeHtml(authorType)}">
           <div class="hall-message-row">
@@ -3415,6 +3423,7 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
                 <div class="hall-message-author">
                   <strong>${escapeHtml(message.authorLabel)}</strong>
                   <span class="hall-kind-pill">${escapeHtml(messageKindLabel(message.kind, language))}</span>
+                  ${modelPill}
                 </div>
                 <div class="hall-message-meta">${escapeHtml(message.createdAt)}</div>
               </div>
