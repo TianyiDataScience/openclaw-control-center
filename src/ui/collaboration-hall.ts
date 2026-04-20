@@ -11,6 +11,7 @@ import type {
   ProjectTask,
   TaskArtifact,
 } from "../types";
+import { UI_TIMEZONE } from "../config";
 import { renderCollaborationHallTheme } from "./collaboration-hall-theme";
 
 interface HallTaskCardViewModel {
@@ -1821,7 +1822,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
           '<div class="hall-message-bubble">' +
             '<div class="hall-message-head">' +
               '<div class="hall-message-author"><strong>' + esc(message.authorLabel) + '</strong><span class="hall-kind-pill">' + esc(kindLabel(message.kind)) + '</span>' + modelPillMarkup + '</div>' +
-              '<div class="hall-message-meta">' + esc(message.createdAt || '') + '</div>' +
+              '<div class="hall-message-meta" title="' + esc(message.createdAt || '') + '">' + esc(compactTimestamp(message.createdAt)) + '</div>' +
             '</div>' +
             '<div class="hall-message-body">' + renderMarkdownHtml(message.content) + '</div>' +
             (footer.length > 0 ? '<div class="hall-message-footer">' + footer.join('') + '</div>' : '') +
@@ -3425,7 +3426,7 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
                   <span class="hall-kind-pill">${escapeHtml(messageKindLabel(message.kind, language))}</span>
                   ${modelPill}
                 </div>
-                <div class="hall-message-meta">${escapeHtml(message.createdAt)}</div>
+                <div class="hall-message-meta" title="${escapeHtml(message.createdAt)}">${escapeHtml(formatCompactTimestamp(message.createdAt, language))}</div>
               </div>
               <div class="hall-message-body">${renderMarkdown(message.content)}</div>
               ${chips.length > 0 ? `<div class="hall-message-footer">${chips.join("")}</div>` : ""}
@@ -3731,18 +3732,24 @@ function formatCompactTimestamp(value: string | undefined, language: UiLanguage)
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  const now = new Date();
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
+  const locale = language === "zh" ? "zh-CN" : "en-US";
+  const dayKey = (input: Date) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: UI_TIMEZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(input);
+  const sameDay = dayKey(date) === dayKey(new Date());
   if (sameDay) {
-    return date.toLocaleTimeString(language === "zh" ? "zh-CN" : "en-US", {
+    return date.toLocaleTimeString(locale, {
+      timeZone: UI_TIMEZONE,
       hour: "2-digit",
       minute: "2-digit",
     });
   }
-  return date.toLocaleDateString(language === "zh" ? "zh-CN" : "en-US", {
+  return date.toLocaleDateString(locale, {
+    timeZone: UI_TIMEZONE,
     month: "short",
     day: "numeric",
   });

@@ -380,6 +380,9 @@ export class OpenClawLiveClient implements ToolClient {
       await this.sessionsList().catch(() => undefined);
       model = this.sessionCache.get(sessionKey)?.model;
     }
+    if (!model && agentId) {
+      model = await this.resolveLatestModelForAgent(agentId);
+    }
 
     return {
       ok: true,
@@ -531,6 +534,29 @@ export class OpenClawLiveClient implements ToolClient {
       sessionId: match.sessionId,
       updatedAtMs: match.updatedAtMs,
     };
+  }
+
+  private async resolveLatestModelForAgent(agentId: string): Promise<string | undefined> {
+    const normalizedAgentId = agentId.trim();
+    if (!normalizedAgentId) return undefined;
+    const sessionsPath = join(resolveOpenClawHomePath(), "agents", normalizedAgentId, "sessions", "sessions.json");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(sessionsPath, "utf8"));
+    } catch {
+      return undefined;
+    }
+    const records = extractSessionRecords(parsed);
+    let best: { model?: string; updatedAtMs: number } | undefined;
+    for (const record of records) {
+      const model = asString(record.model);
+      if (!model) continue;
+      const updatedAtMs = readUpdatedAtMs(record);
+      if (!best || (Number.isFinite(updatedAtMs) && updatedAtMs > best.updatedAtMs)) {
+        best = { model, updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : 0 };
+      }
+    }
+    return best?.model;
   }
 
   private async resolveSessionKeyAfterRun(input: {
