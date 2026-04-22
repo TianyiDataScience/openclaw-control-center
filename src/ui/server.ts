@@ -11319,6 +11319,24 @@ async function renderHtml(
       .file-editor-panel { grid-template-rows: auto minmax(280px, 1fr) auto; }
       .file-editor-textarea { min-height: 360px; }
     }
+    /* ========== 局部页面加载过渡效果 ========== */
+    main.panel,
+    aside.inspector-sidebar {
+      transition: opacity 0.12s ease-out, transform 0.12s ease-out;
+    }
+    /* 淡出状态 */
+    main.panel.partial-fade-out,
+    aside.inspector-sidebar.partial-fade-out {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    /* 淡入状态 */
+    main.panel.partial-fade-in,
+    aside.inspector-sidebar.partial-fade-in {
+      opacity: 1;
+      transform: translateY(0);
+      transition: opacity 0.15s ease-out, transform 0.15s ease-out;
+    }
     @media (prefers-reduced-motion: reduce) {
       * {
         animation-duration: 0.01ms !important;
@@ -15652,6 +15670,8 @@ function renderNativeMotionScript(language: UiLanguage = "zh"): string {
     const href = anchor.getAttribute('href');
     if (!href || href.startsWith('http') || href.startsWith('mailto:') || href.startsWith('#')) return;
     if (href.startsWith('/api/')) return;
+    // 如果是导航链接，让后续的局部加载逻辑处理
+    if (anchor.classList.contains('nav-link')) return;
     event.preventDefault();
     window.location.href = href;
   });
@@ -16026,6 +16046,143 @@ function renderHeaderControlsScript(language: UiLanguage = "zh"): string {
     document.addEventListener('DOMContentLoaded', bootRestore, { once: true });
   } else {
     bootRestore();
+  }
+
+  // ========== 局部页面加载优化 ==========
+  let isNavigating = false;
+
+  const setupPartialNavigation = () => {
+    // 拦截导航链接点击
+    document.addEventListener('click', async (e) => {
+      const link = e.target.closest('a.nav-link');
+      if (!link) return;
+
+      const href = link.getAttribute('href');
+      // 只处理本站内的链接（以/或?开头）
+      if (!href || (!href.startsWith('/') && !href.startsWith('?'))) return;
+
+      // 如果是当前激活的链接，不做任何处理
+      if (link.classList.contains('active')) {
+        e.preventDefault();
+        return;
+      }
+
+      // 阻止默认导航行为
+      e.preventDefault();
+
+      if (isNavigating) return;
+      isNavigating = true;
+
+      const currentMain = document.querySelector('main.panel');
+      const currentInspector = document.querySelector('aside.inspector-sidebar');
+
+      // 淡出当前内容
+      if (currentMain) currentMain.classList.add('partial-fade-out');
+      if (currentInspector) currentInspector.classList.add('partial-fade-out');
+
+      try {
+        // 获取新页面内容
+        const response = await fetch(href, {
+          headers: { 'Accept': 'text/html' },
+          credentials: 'same-origin'
+        });
+
+        if (!response.ok) {
+          throw new Error('Navigation failed: ' + response.status);
+        }
+
+        const html = await response.text();
+
+        // 解析新页面
+        const parser = new DOMParser();
+        const newDoc = parser.parseFromString(html, 'text/html');
+
+        // 等待淡出动画完成
+        await new Promise(r => setTimeout(r, 120));
+
+        // 更新主内容区
+        const newMain = newDoc.querySelector('main.panel');
+        if (newMain && currentMain) {
+          currentMain.innerHTML = newMain.innerHTML;
+        }
+
+        // 更新右侧边栏
+        const newInspector = newDoc.querySelector('aside.inspector-sidebar');
+        if (newInspector && currentInspector) {
+          currentInspector.innerHTML = newInspector.innerHTML;
+        }
+
+        // 更新导航状态
+        const newNavLinks = newDoc.querySelectorAll('nav.nav-links a.nav-link');
+        const currentNavLinks = document.querySelectorAll('nav.nav-links a.nav-link');
+        newNavLinks.forEach((newLink, i) => {
+          if (currentNavLinks[i]) {
+            currentNavLinks[i].className = newLink.className;
+            const ariaCurrent = newLink.getAttribute('aria-current');
+            if (ariaCurrent) {
+              currentNavLinks[i].setAttribute('aria-current', ariaCurrent);
+            } else {
+              currentNavLinks[i].removeAttribute('aria-current');
+            }
+          }
+        });
+
+        // 更新浏览器URL
+        window.history.pushState({ partial: true }, '', href);
+
+        // 滚动到顶部
+        window.scrollTo({ top: 0, behavior: 'instant' });
+
+        // 移除淡出类，触发淡入
+        if (currentMain) {
+          currentMain.classList.remove('partial-fade-out');
+          currentMain.classList.add('partial-fade-in');
+        }
+        if (currentInspector) {
+          currentInspector.classList.remove('partial-fade-out');
+          currentInspector.classList.add('partial-fade-in');
+        }
+
+        // 重新初始化页面脚本
+        reinitPageScripts();
+
+        // 淡入完成后清理类
+        setTimeout(() => {
+          if (currentMain) currentMain.classList.remove('partial-fade-in');
+          if (currentInspector) currentInspector.classList.remove('partial-fade-in');
+        }, 150);
+
+      } catch (err) {
+        console.error('[partial-nav] failed:', err);
+        // 回退到完整页面导航
+        window.location.href = href;
+      } finally {
+        isNavigating = false;
+      }
+    });
+
+    // 处理浏览器后退/前进
+    window.addEventListener('popstate', (e) => {
+      // 完整刷新以确保状态正确
+      window.location.reload();
+    });
+  };
+
+  const reinitPageScripts = () => {
+    // 触发自定义事件，让其他脚本知道内容已更新
+    document.dispatchEvent(new CustomEvent('partial-navigation-complete'));
+
+    // 重新绑定details折叠状态等
+    document.querySelectorAll('details').forEach((el) => {
+      el.removeAttribute('data-initialized');
+    });
+  };
+
+  // 确保在DOM加载完成后设置局部导航
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupPartialNavigation);
+  } else {
+    setupPartialNavigation();
   }
 })();
 </script>`;
@@ -17619,7 +17776,39 @@ function renderAgentVisualEnhancerScript(): string {
     });
   });
 
-  if (motionActors.length === 0) return;
+  const initAvatars = (avatarEls) => {
+    avatarEls.forEach((avatar, index) => {
+      const canvas = avatar.querySelector('.agent-pixel-canvas');
+      if (!canvas) return;
+      if (motionActors.some((a) => a.canvas === canvas)) return;
+      const accent = getComputedStyle(avatar).getPropertyValue('--agent-accent').trim() || '#4e79a7';
+      const animal = (avatar.dataset.animal || 'default').trim().toLowerCase();
+      motionActors.push({
+        canvas,
+        accent,
+        animal,
+        seed: hashSeed(animal + ':' + accent + ':' + String(motionActors.length + 1)),
+        disabled: false,
+      });
+      // 立即渲染一帧
+      render(canvas, animal, accent, { bob: 0, sway: 0, blink: 0 });
+    });
+  };
+
+  if (motionActors.length === 0) {
+    // 即使没有头像也要监听局部导航事件，因为新页面可能有头像
+    document.addEventListener('partial-navigation-complete', () => {
+      const newAvatars = Array.from(document.querySelectorAll('.agent-avatar, .staff-avatar'));
+      initAvatars(newAvatars);
+    });
+    return;
+  }
+
+  // 监听局部导航完成事件，重新初始化新的头像
+  document.addEventListener('partial-navigation-complete', () => {
+    const newAvatars = Array.from(document.querySelectorAll('.agent-avatar, .staff-avatar'));
+    initAvatars(newAvatars);
+  });
 
   if (prefersReducedMotion) {
     motionActors.forEach((actor) => {
