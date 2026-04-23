@@ -238,6 +238,11 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
   let finished = false;
   let processedStdoutToolCount = 0;
   let processedHistoryToolCount = 0;
+  // Wall-clock snapshot used to tell "this run's tool calls" apart from earlier
+  // tool calls that share the same session file (hall sessions accumulate turns).
+  // findLatestAgentSessionFile(agentId) is fuzzy and may initially resolve to an
+  // unrelated hall card's session, so a count-based baseline is unreliable.
+  const runStartMs = Date.now();
 
   const TOOL_LINE_PATTERN = /\[tool\]\s+(.+?)\s+\((\w+)\)/g;
 
@@ -473,15 +478,34 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
     await pollSessionFileToolCalls().catch(() => {});
 
     const parsed = extractStructuredBlock(response.text);
-    const visibleContent = sanitizeHallVisibleRuntimeText(lastHistoryDraftText)
-      || sanitizeHallVisibleRuntimeText(parsed.visibleText);
+    // Prefer response.text (the agent RPC's authoritative final synthesis) over
+    // lastHistoryDraftText. History reads can race with the gateway's session-file
+    // flush: the WS agent RPC resolves before the final assistant message lands
+    // on disk, so renderRuntimeDraftText sometimes only sees the pre-tool
+    // thinking block and buries the real answer under a "will do" preamble.
+    const visibleContent = sanitizeHallVisibleRuntimeText(parsed.visibleText)
+      || sanitizeHallVisibleRuntimeText(lastHistoryDraftText);
     const structured = parsed.structured;
-    // Collect ONLY new tool calls (after baseline) for persisted message payload
+    // Prefer the session file derived from response.sessionId — definitive and
+    // robust against findLatestAgentSessionFile's fuzzy agent-wide scan which
+    // can initially lock onto an unrelated hall card's jsonl.
+    if (response.sessionId) {
+      const definitivePath = join(
+        resolveOpenClawHomePath(),
+        "agents",
+        participantAgentId,
+        "sessions",
+        `${response.sessionId}.jsonl`,
+      );
+      resolvedSessionFilePath = definitivePath;
+    }
+    // Collect ONLY this run's tool calls (entries written after runStartMs) for
+    // the persisted message payload. Timestamp filtering is reliable even when
+    // the session file is shared across turns of the same hall thread.
     const collectedToolCalls: Array<{ toolName: string; toolStatus: string; detail?: string }> = [];
     if (resolvedSessionFilePath) {
       try {
         const raw = await readFile(resolvedSessionFilePath, "utf8");
-        let count = 0;
         const callArgs = new Map<string, string>();
         for (const line of raw.split("\n")) {
           if (!line.trim()) continue;
@@ -500,8 +524,11 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
               }
             }
             if (typeof msg.role === "string" && msg.role.toLowerCase().includes("tool")) {
-              count++;
-              if (count > baselineSessionFileToolCount) {
+              const tsValue = typeof msg.timestamp === "number"
+                ? msg.timestamp
+                : (typeof msg.timestamp === "string" ? Date.parse(msg.timestamp) : NaN);
+              const entryMs = Number.isFinite(tsValue) ? (tsValue as number) : NaN;
+              if (!Number.isFinite(entryMs) || entryMs >= runStartMs) {
                 collectedToolCalls.push({
                   toolName: msg.toolName || msg.name || "tool",
                   toolStatus: "completed",
