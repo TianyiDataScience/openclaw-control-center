@@ -8,6 +8,8 @@ if (existsSync(DOTENV_PATH)) {
 }
 
 export const GATEWAY_URL = readStringEnv(process.env.GATEWAY_URL, "ws://127.0.0.1:18789");
+export const GATEWAY_TOKEN = readOptionalStringEnv(process.env.GATEWAY_TOKEN);
+export const HALL_USE_GATEWAY_WS = process.env.HALL_USE_GATEWAY_WS !== "false";
 export const OPENCLAW_CONTROL_UI_URL = readOptionalStringEnv(process.env.OPENCLAW_CONTROL_UI_URL);
 export const UI_TIMEZONE = readTimeZoneEnv(process.env.UI_TIMEZONE, "UTC");
 export const TASK_ROOM_BRIDGE_ENABLED = process.env.TASK_ROOM_BRIDGE_ENABLED === "true";

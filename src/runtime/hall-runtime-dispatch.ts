@@ -194,16 +194,18 @@ export function canDispatchHallToRuntime(client: ToolClient | undefined, partici
 }
 
 // ---------------------------------------------------------------------------
-// Per-agent dispatch serialization — prevents session file lock contention
-// when multiple threads dispatch to the same agent concurrently.
+// Per-sessionKey dispatch serialization — same hall thread cannot have two turns
+// in flight simultaneously. Cross-thread concurrency is arbitrated by OpenClaw's
+// per-workspace lock on the gateway side.
 // ---------------------------------------------------------------------------
-const agentDispatchChains = new Map<string, Promise<unknown>>();
+const dispatchChains = new Map<string, Promise<unknown>>();
 
 export function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): Promise<HallRuntimeDispatchResult> {
   const agentId = (input.participant.agentId ?? input.participant.participantId).trim();
-  const prev = agentDispatchChains.get(agentId) ?? Promise.resolve();
+  const sessionKey = pickExpectedSessionKey(input.taskCard, agentId) ?? `agent:${agentId}`;
+  const prev = dispatchChains.get(sessionKey) ?? Promise.resolve();
   const result: Promise<HallRuntimeDispatchResult> = prev.then(() => dispatchHallRuntimeTurnUnsafe(input));
-  agentDispatchChains.set(agentId, result.catch(() => undefined));
+  dispatchChains.set(sessionKey, result.catch(() => undefined));
   return result;
 }
 

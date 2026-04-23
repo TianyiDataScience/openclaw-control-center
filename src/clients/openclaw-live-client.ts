@@ -18,10 +18,14 @@ import type {
   SessionsHistoryResponse,
   SessionsListResponse,
 } from "../contracts/openclaw-tools";
-import { APPROVAL_ACTIONS_ENABLED } from "../config";
+import { APPROVAL_ACTIONS_ENABLED, HALL_USE_GATEWAY_WS } from "../config";
 import { loadCurrentAgentCatalog, resolveOpenClawHomePath } from "../runtime/current-agent-catalog";
 import { buildOpenClawCommandCandidates, buildOpenClawCommandEnv } from "../runtime/openclaw-cli-insights";
 import type { ToolClient } from "./tool-client";
+import {
+  getSharedGatewayWsClient,
+  type OpenClawGatewayWsClient,
+} from "./openclaw-gateway-ws";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -323,6 +327,72 @@ export class OpenClawLiveClient implements ToolClient {
     return response;
   }
 
+  private gatewayWsClient?: OpenClawGatewayWsClient;
+
+  setGatewayWsClientForTest(client: OpenClawGatewayWsClient | undefined): void {
+    this.gatewayWsClient = client;
+  }
+
+  private resolveGatewayWsClient(): OpenClawGatewayWsClient {
+    if (this.gatewayWsClient) return this.gatewayWsClient;
+    return getSharedGatewayWsClient();
+  }
+
+  private shouldUseGatewayWs(request: AgentRunRequest): boolean {
+    if (!HALL_USE_GATEWAY_WS) return false;
+    const key = request.sessionKey?.trim();
+    return Boolean(key && /^agent:[^:]+:hall:/.test(key));
+  }
+
+  private async agentRunStreamViaGateway(
+    request: AgentRunRequest,
+    handlers: AgentRunStreamHandlers,
+  ): Promise<AgentRunResponse> {
+    const client = this.resolveGatewayWsClient();
+    let lastCumulative = "";
+    const response = await client.agent(
+      {
+        agentId: request.agentId?.trim() || undefined,
+        sessionKey: request.sessionKey?.trim() || undefined,
+        sessionId: request.sessionId?.trim() || undefined,
+        message: request.message,
+        thinking: normalizeThinkingLevel(request.thinking),
+        timeoutSeconds: request.timeoutSeconds,
+        deliver: request.deliver,
+      },
+      {
+        onTextDelta: (delta, cumulative) => {
+          lastCumulative = cumulative;
+          handlers.onStdoutChunk?.(delta);
+        },
+        onToolEvent: (evt) => {
+          handlers.onStdoutChunk?.(`\n[tool] ${evt.toolName} (${evt.toolStatus})\n`);
+        },
+      },
+    );
+    const finalText = response.text || lastCumulative;
+    const sessionKey = response.sessionKey ?? request.sessionKey?.trim() ?? undefined;
+    if (sessionKey && response.sessionId) {
+      const cached = this.sessionCache.get(sessionKey) ?? {};
+      this.sessionCache.set(sessionKey, {
+        ...cached,
+        model: response.model ?? cached.model,
+      });
+    }
+    return {
+      ok: response.ok,
+      status: response.status,
+      text: finalText,
+      rawText: response.rawText,
+      sessionId: response.sessionId,
+      sessionKey,
+      model: response.model,
+      provider: response.provider,
+      runId: response.runId,
+      summary: response.summary,
+    };
+  }
+
   async agentRunStream(
     request: AgentRunRequest,
     handlers: AgentRunStreamHandlers = {},
@@ -330,6 +400,10 @@ export class OpenClawLiveClient implements ToolClient {
     const message = request.message.trim();
     if (!message) {
       throw new Error("agentRunStream requires a non-empty message.");
+    }
+
+    if (this.shouldUseGatewayWs(request)) {
+      return this.agentRunStreamViaGateway(request, handlers);
     }
 
     const args = ["agent"];
