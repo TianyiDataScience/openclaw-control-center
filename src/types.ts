@@ -251,7 +251,14 @@ export interface HallMessagePayload {
   handoff?: StructuredHandoffPacket;
   artifactRefs?: TaskArtifact[];
   fileAttachments?: HallFileAttachment[];
-  toolCalls?: Array<{ toolName: string; toolStatus: string; detail?: string }>;
+  toolCalls?: Array<{
+    toolName: string;
+    toolStatus: string;
+    detail?: string;
+    input?: string;
+    output?: string;
+    isError?: boolean;
+  }>;
   sessionKey?: string;
   sourceSessionKey?: string;
   sourceTool?: string;

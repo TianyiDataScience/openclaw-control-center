@@ -453,6 +453,22 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   });
 
   const esc = (value) => String(value || '').replace(/[&<>"']/g, (ch) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'": '&#39;' }[ch]));
+  const decodeToolPillPayload = (encoded) => {
+    if (!encoded) return null;
+    try {
+      const bin = atob(String(encoded));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      const json = new TextDecoder('utf-8').decode(bytes);
+      const parsed = JSON.parse(json);
+      if (!parsed || typeof parsed !== 'object') return null;
+      const out = {};
+      if (typeof parsed.i === 'string') out.i = parsed.i;
+      if (typeof parsed.o === 'string') out.o = parsed.o;
+      if (typeof parsed.e === 'number') out.e = parsed.e;
+      return out;
+    } catch (_e) { return null; }
+  };
   const decodeLegacyHtmlEntities = (value) => {
     let normalized = String(value || '');
     for (let pass = 0; pass < 2; pass += 1) {
@@ -709,9 +725,19 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     flushQuote();
     let html = parts.join('');
     html = html.replace(codePlaceholderPattern, (_match, index) => codeBlocks[Number(index)] || '');
-    html = html.replace(/\\[\\[tool:([^\\]|]+)(?:\\|([^\\]]*))?\\.?\\]\\]/g, (_match, name, detail) => {
+    html = html.replace(/\\[\\[tool:([^\\]|]+)(?:\\|([^\\]|]*))?(?:\\|~([A-Za-z0-9+/=]*))?\\]\\]/g, (_match, name, detail, encoded) => {
+      const parsed = decodeToolPillPayload(encoded);
+      const isError = parsed && parsed.e === 1;
+      const statusClass = isError ? 'is-error' : 'is-completed';
+      const mark = isError ? '\\u26a0' : '\\u2713';
       const tooltip = detail ? ' title="' + esc(detail) + '"' : '';
-      return '<span class="hall-tool-pill is-completed"' + tooltip + '>\\u2713 ' + esc(name) + '</span>';
+      const dataParts = [];
+      if (parsed && parsed.i) dataParts.push(' data-tool-input="' + esc(parsed.i) + '"');
+      if (parsed && parsed.o) dataParts.push(' data-tool-output="' + esc(parsed.o) + '"');
+      if (parsed && (parsed.i || parsed.o)) dataParts.push(' data-tool-name="' + esc(name) + '"');
+      if (isError) dataParts.push(' data-tool-error="1"');
+      if (parsed && (parsed.i || parsed.o)) dataParts.push(' data-tool-expandable="1"');
+      return '<span class="hall-tool-pill ' + statusClass + '"' + tooltip + dataParts.join('') + '>' + mark + ' ' + esc(name) + '</span>';
     });
     html = linkifyFilePathsInHtml(html);
     return html;
@@ -3048,6 +3074,127 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     window.open(href, '_blank', 'noreferrer');
   };
   thread?.addEventListener('click', handleFilePathClick);
+
+  // --- Tool pill expand/collapse popover ---------------------------------
+  let activeToolPopover = null;
+  let activeToolPill = null;
+  const closeToolPopover = () => {
+    if (activeToolPopover && activeToolPopover.parentNode) {
+      activeToolPopover.parentNode.removeChild(activeToolPopover);
+    }
+    if (activeToolPill) {
+      activeToolPill.classList.remove('is-open');
+    }
+    activeToolPopover = null;
+    activeToolPill = null;
+  };
+  const positionToolPopover = (pill, popover) => {
+    const rect = pill.getBoundingClientRect();
+    const popRect = popover.getBoundingClientRect();
+    const scrollX = window.pageXOffset || document.documentElement.scrollLeft || 0;
+    const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
+    let left = rect.left + scrollX;
+    const right = left + popRect.width;
+    const viewportRight = scrollX + document.documentElement.clientWidth - 16;
+    if (right > viewportRight) left = Math.max(scrollX + 12, viewportRight - popRect.width);
+    let top = rect.bottom + scrollY + 6;
+    const viewportBottom = scrollY + document.documentElement.clientHeight - 16;
+    if (top + popRect.height > viewportBottom) {
+      const aboveTop = rect.top + scrollY - popRect.height - 6;
+      if (aboveTop > scrollY + 12) top = aboveTop;
+    }
+    popover.style.left = left + 'px';
+    popover.style.top = top + 'px';
+  };
+  const buildToolPopover = (pill) => {
+    const input = pill.getAttribute('data-tool-input') || '';
+    const output = pill.getAttribute('data-tool-output') || '';
+    const name = pill.getAttribute('data-tool-name') || pill.textContent.replace(/^[▸✓⚠\s]+/, '');
+    const isError = pill.getAttribute('data-tool-error') === '1';
+    const popover = document.createElement('div');
+    popover.className = 'hall-tool-popover';
+    const sections = [];
+    const escLocal = (v) => String(v || '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    const inputLabel = ${JSON.stringify(pickUiText(language, "Input", "传入参数"))};
+    const outputLabel = ${JSON.stringify(pickUiText(language, "Output", "执行结果"))};
+    const copyLabel = ${JSON.stringify(pickUiText(language, "Copy", "复制"))};
+    const copiedLabel = ${JSON.stringify(pickUiText(language, "Copied", "已复制"))};
+    const emptyLabel = ${JSON.stringify(pickUiText(language, "(empty)", "(空)"))};
+    const mkSection = (labelText, value, errorClass) => {
+      if (!value) {
+        return '<div class="hall-tool-popover-section"><div class="hall-tool-popover-label">'
+          + escLocal(labelText) + '</div><div class="hall-tool-popover-empty">'
+          + escLocal(emptyLabel) + '</div></div>';
+      }
+      return '<div class="hall-tool-popover-section"><div class="hall-tool-popover-label">'
+        + escLocal(labelText)
+        + '<button type="button" class="hall-tool-popover-copy" data-tool-copy>'
+        + escLocal(copyLabel) + '</button></div>'
+        + '<pre class="hall-tool-popover-pre' + (errorClass ? ' is-error' : '') + '">'
+        + escLocal(value) + '</pre></div>';
+    };
+    popover.innerHTML = mkSection(inputLabel, input, false) + mkSection(outputLabel, output, isError);
+    popover.addEventListener('click', (e) => {
+      const target = e.target;
+      if (target && target.matches && target.matches('[data-tool-copy]')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const pre = target.closest('.hall-tool-popover-section')?.querySelector('.hall-tool-popover-pre');
+        const text = pre ? pre.textContent : '';
+        if (text && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => {
+            const original = target.textContent;
+            target.textContent = copiedLabel;
+            setTimeout(() => { target.textContent = original; }, 1200);
+          }).catch(() => {});
+        }
+      } else {
+        e.stopPropagation();
+      }
+    });
+    return popover;
+  };
+  const handleToolPillClick = (event) => {
+    const target = event.target;
+    if (!target || !target.closest) return;
+    const pill = target.closest('.hall-tool-pill[data-tool-expandable="1"]');
+    if (!pill) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (pill === activeToolPill) {
+      closeToolPopover();
+      return;
+    }
+    closeToolPopover();
+    const popover = buildToolPopover(pill);
+    document.body.appendChild(popover);
+    activeToolPopover = popover;
+    activeToolPill = pill;
+    pill.classList.add('is-open');
+    positionToolPopover(pill, popover);
+  };
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (activeToolPopover && target && target.closest && target.closest('.hall-tool-popover')) return;
+    if (target && target.closest && target.closest('.hall-tool-pill[data-tool-expandable="1"]')) {
+      handleToolPillClick(event);
+      return;
+    }
+    closeToolPopover();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeToolPopover();
+  });
+  window.addEventListener('resize', closeToolPopover);
+  window.addEventListener('scroll', (event) => {
+    if (!activeToolPopover) return;
+    const target = event.target;
+    // Ignore scrolls that originate inside the popover (its own body or nested <pre>).
+    if (target && target.nodeType === 1 && (target === activeToolPopover || activeToolPopover.contains(target))) return;
+    // Also ignore Document-level scroll events whose target is the document itself
+    // when the popover is using its own internal scroll (position:absolute sits with page).
+    closeToolPopover();
+  }, true);
   decisionPanel?.addEventListener('click', handleDecisionInteraction);
   thread?.addEventListener('click', handleDecisionInteraction);
   decisionPanel?.addEventListener('input', handleDecisionInputs);
@@ -3951,10 +4098,24 @@ function renderMarkdown(value: string): string {
   let html = parts.join("");
   html = html.replace(/@@CODEBLOCK(\d+)@@/g, (_match, index) => codeBlocks[Number(index)] || "");
   html = html.replace(inlinePlaceholderPattern, (_match, index) => inlineBlocks[Number(index)] || "");
-  html = html.replace(/\[\[tool:([^\]|]+)(?:\|([^\]]*))?\]]/g, (_match, name, detail) => {
-    const tooltip = detail ? ` title="${escapeHtml(detail)}"` : "";
-    return `<span class="hall-tool-pill is-completed"${tooltip}>\u2713 ${escapeHtml(name)}</span>`;
-  });
+  html = html.replace(
+    /\[\[tool:([^\]|]+)(?:\|([^\]|]*))?(?:\|~([A-Za-z0-9+/=]*))?\]\]/g,
+    (_match, name, detail, encoded) => {
+      const parsed = decodeToolPillPayload(encoded);
+      const isError = parsed?.e === 1;
+      const statusClass = isError ? "is-error" : "is-completed";
+      const mark = isError ? "\u26a0" : "\u2713";
+      const titleAttr = detail ? ` title="${escapeHtml(detail)}"` : "";
+      const dataAttrs: string[] = [];
+      if (parsed?.i) dataAttrs.push(`data-tool-input="${escapeHtml(parsed.i)}"`);
+      if (parsed?.o) dataAttrs.push(`data-tool-output="${escapeHtml(parsed.o)}"`);
+      if (parsed?.i || parsed?.o) dataAttrs.push(`data-tool-name="${escapeHtml(String(name))}"`);
+      if (isError) dataAttrs.push(`data-tool-error="1"`);
+      const expandable = parsed?.i || parsed?.o ? " data-tool-expandable=\"1\"" : "";
+      const attrs = (dataAttrs.length ? " " + dataAttrs.join(" ") : "") + expandable;
+      return `<span class="hall-tool-pill ${statusClass}"${titleAttr}${attrs}>${mark} ${escapeHtml(name)}</span>`;
+    },
+  );
   return html;
 }
 
@@ -3979,6 +4140,24 @@ function renderArtifactChips(artifactRefs: TaskArtifact[] | undefined, fileAttac
       return `<a class="hall-artifact-chip" href="${href}" target="_blank" rel="noreferrer"><span class="hall-artifact-chip-kind">${kind}</span><span class="hall-artifact-chip-label">${label}</span></a>`;
     })
     .join("");
+}
+
+function decodeToolPillPayload(
+  encoded: string | undefined,
+): { i?: string; o?: string; e?: number } | null {
+  if (!encoded) return null;
+  try {
+    const json = Buffer.from(encoded, "base64").toString("utf8");
+    const parsed = JSON.parse(json) as { i?: unknown; o?: unknown; e?: unknown };
+    if (!parsed || typeof parsed !== "object") return null;
+    const out: { i?: string; o?: string; e?: number } = {};
+    if (typeof parsed.i === "string") out.i = parsed.i;
+    if (typeof parsed.o === "string") out.o = parsed.o;
+    if (typeof parsed.e === "number") out.e = parsed.e;
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 function escapeHtml(value: string): string {

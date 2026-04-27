@@ -200,6 +200,50 @@ export function canDispatchHallToRuntime(client: ToolClient | undefined, partici
 // ---------------------------------------------------------------------------
 const dispatchChains = new Map<string, Promise<unknown>>();
 
+// Tool pill markers: `[[tool:name]]` or `[[tool:name|detail]]` (legacy), plus
+// an optional third segment `|~<base64>` carrying base64-encoded JSON
+// `{i?: input, o?: output, e?: 1}` so the renderer can show full input/output
+// on click without mutating the current CLI-style hover tooltip.
+const TOOL_PILL_INPUT_OUTPUT_CAP = 2000;
+
+function truncateForPill(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  const s = typeof value === "string" ? value : JSON.stringify(value);
+  if (!s) return "";
+  return s.length > TOOL_PILL_INPUT_OUTPUT_CAP
+    ? s.slice(0, TOOL_PILL_INPUT_OUTPUT_CAP) + "\n…(truncated)"
+    : s;
+}
+
+function encodeToolPillPayload(entry: {
+  input?: string;
+  output?: string;
+  isError?: boolean;
+}): string | null {
+  if (!entry.input && !entry.output && !entry.isError) return null;
+  const obj: { i?: string; o?: string; e?: number } = {};
+  if (entry.input) obj.i = entry.input;
+  if (entry.output) obj.o = entry.output;
+  if (entry.isError) obj.e = 1;
+  return Buffer.from(JSON.stringify(obj), "utf8").toString("base64");
+}
+
+function buildToolPillMarker(entry: {
+  toolName: string;
+  detail?: string;
+  input?: string;
+  output?: string;
+  isError?: boolean;
+}): string {
+  const encoded = encodeToolPillPayload(entry);
+  if (encoded) {
+    return `[[tool:${entry.toolName}|${entry.detail ?? ""}|~${encoded}]]`;
+  }
+  return entry.detail
+    ? `[[tool:${entry.toolName}|${entry.detail}]]`
+    : `[[tool:${entry.toolName}]]`;
+}
+
 export function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): Promise<HallRuntimeDispatchResult> {
   const agentId = (input.participant.agentId ?? input.participant.participantId).trim();
   const sessionKey = pickExpectedSessionKey(input.taskCard, agentId) ?? `agent:${agentId}`;
@@ -377,9 +421,15 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
       try {
         const raw = await readFile(resolvedSessionFilePath, "utf8");
         let currentCount = 0;
-        // Collect toolCall arguments by callId for hover detail
-        const toolCallArgs = new Map<string, string>();
-        const newTools: Array<{ name: string; detail: string }> = [];
+        // Collect toolCall arguments by callId for hover detail + full input
+        const toolCallArgs = new Map<string, { preview: string; full: string }>();
+        const newTools: Array<{
+          name: string;
+          detail: string;
+          input?: string;
+          output?: string;
+          isError?: boolean;
+        }> = [];
         for (const line of raw.split("\n")) {
           if (!line.trim()) continue;
           try {
@@ -392,10 +442,11 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
               for (const block of content) {
                 if (block && block.type === "toolCall" && block.id && block.arguments) {
                   const args = block.arguments;
-                  const summary = typeof args === "object"
+                  const preview = typeof args === "object"
                     ? Object.values(args).map((v) => String(v)).join(", ").slice(0, 120)
                     : String(args).slice(0, 120);
-                  toolCallArgs.set(block.id, summary);
+                  const full = truncateForPill(args);
+                  toolCallArgs.set(block.id, { preview, full });
                 }
               }
             }
@@ -406,9 +457,21 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
               if (currentCount > sessionFileToolCount) {
                 const toolName = msg.toolName || msg.name || "tool";
                 const callId = msg.toolCallId || "";
-                const detail = toolCallArgs.get(callId) || "";
-                emitToolUpdate(toolName, "completed");
-                newTools.push({ name: toolName, detail });
+                const argsEntry = toolCallArgs.get(callId);
+                const detail = argsEntry?.preview || "";
+                const input = argsEntry?.full || undefined;
+                const outputText = Array.isArray(msg.content)
+                  ? (msg.content as Array<{ type?: string; text?: string }>)
+                      .filter((b) => Boolean(b) && typeof b === "object" && b.type === "text")
+                      .map((b) => String(b.text ?? ""))
+                      .join("\n")
+                  : typeof msg.content === "string"
+                    ? msg.content
+                    : "";
+                const output = outputText ? truncateForPill(outputText) : undefined;
+                const isError = Boolean(msg.isError);
+                emitToolUpdate(toolName, isError ? "error" : "completed");
+                newTools.push({ name: toolName, detail, input, output, isError });
               }
             }
           } catch { /* skip malformed */ }
@@ -417,7 +480,13 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
         // Inject tool markers into the draft text stream so they appear inline
         if (newTools.length > 0) {
           const toolMarkers = newTools.map((t) =>
-            t.detail ? `[[tool:${t.name}|${t.detail}]]` : `[[tool:${t.name}]]`
+            buildToolPillMarker({
+              toolName: t.name,
+              detail: t.detail || undefined,
+              input: t.input,
+              output: t.output,
+              isError: t.isError,
+            })
           ).join("\n");
           const combined = (lastStreamedText ? lastStreamedText + "\n" : "") + toolMarkers;
           lastStreamedText = combined;
@@ -502,11 +571,18 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
     // Collect ONLY this run's tool calls (entries written after runStartMs) for
     // the persisted message payload. Timestamp filtering is reliable even when
     // the session file is shared across turns of the same hall thread.
-    const collectedToolCalls: Array<{ toolName: string; toolStatus: string; detail?: string }> = [];
+    const collectedToolCalls: Array<{
+      toolName: string;
+      toolStatus: string;
+      detail?: string;
+      input?: string;
+      output?: string;
+      isError?: boolean;
+    }> = [];
     if (resolvedSessionFilePath) {
       try {
         const raw = await readFile(resolvedSessionFilePath, "utf8");
-        const callArgs = new Map<string, string>();
+        const callArgs = new Map<string, { preview: string; full: string }>();
         for (const line of raw.split("\n")) {
           if (!line.trim()) continue;
           try {
@@ -517,9 +593,10 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
               for (const block of msg.content) {
                 if (block?.type === "toolCall" && block.id && block.arguments) {
                   const args = block.arguments;
-                  callArgs.set(block.id, typeof args === "object"
+                  const preview = typeof args === "object"
                     ? Object.values(args).map((v) => String(v)).join(", ").slice(0, 120)
-                    : String(args).slice(0, 120));
+                    : String(args).slice(0, 120);
+                  callArgs.set(block.id, { preview, full: truncateForPill(args) });
                 }
               }
             }
@@ -529,10 +606,23 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
                 : (typeof msg.timestamp === "string" ? Date.parse(msg.timestamp) : NaN);
               const entryMs = Number.isFinite(tsValue) ? (tsValue as number) : NaN;
               if (!Number.isFinite(entryMs) || entryMs >= runStartMs) {
+                const argsEntry = callArgs.get(msg.toolCallId || "");
+                const outputText = Array.isArray(msg.content)
+                  ? (msg.content as Array<{ type?: string; text?: string }>)
+                      .filter((b) => Boolean(b) && typeof b === "object" && b.type === "text")
+                      .map((b) => String(b.text ?? ""))
+                      .join("\n")
+                  : typeof msg.content === "string"
+                    ? msg.content
+                    : "";
+                const isError = Boolean(msg.isError);
                 collectedToolCalls.push({
                   toolName: msg.toolName || msg.name || "tool",
-                  toolStatus: "completed",
-                  detail: callArgs.get(msg.toolCallId || "") || undefined,
+                  toolStatus: isError ? "error" : "completed",
+                  detail: argsEntry?.preview || undefined,
+                  input: argsEntry?.full || undefined,
+                  output: outputText ? truncateForPill(outputText) : undefined,
+                  isError: isError || undefined,
                 });
               }
             }
@@ -1280,7 +1370,14 @@ function buildHallRuntimeResult(input: {
   sessionKey?: string;
   sessionId?: string;
   model?: string;
-  toolCalls?: Array<{ toolName: string; toolStatus: string; detail?: string }>;
+  toolCalls?: Array<{
+    toolName: string;
+    toolStatus: string;
+    detail?: string;
+    input?: string;
+    output?: string;
+    isError?: boolean;
+  }>;
 }): HallRuntimeDispatchResult {
   const { input: dispatch, content, structured, sessionKey, sessionId, model, toolCalls } = input;
   const cleanedContent = stripCleanHallThreadContinuationLead(dispatch, content);
@@ -1305,9 +1402,7 @@ function buildHallRuntimeResult(input: {
   );
   // Prepend inline tool markers so they appear in the message timeline
   if (toolCalls && toolCalls.length > 0) {
-    const markers = toolCalls.map((tc) =>
-      tc.detail ? `[[tool:${tc.toolName}|${tc.detail}]]` : `[[tool:${tc.toolName}]]`
-    ).join("\n");
+    const markers = toolCalls.map((tc) => buildToolPillMarker(tc)).join("\n");
     visibleContent = markers + "\n" + visibleContent;
   }
   let kind = resolveHallRuntimeMessageKind(dispatch, directResponseIntent);

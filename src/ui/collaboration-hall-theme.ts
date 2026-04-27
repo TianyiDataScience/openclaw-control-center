@@ -1288,6 +1288,93 @@ export function renderCollaborationHallTheme(): string {
       box-shadow: 0 6px 18px rgba(0,0,0,0.22);
       pointer-events: none;
     }
+    .hall-tool-pill[data-tool-expandable="1"] {
+      cursor: pointer;
+      user-select: none;
+    }
+    .hall-tool-pill[data-tool-expandable="1"]::before {
+      content: "▸";
+      margin-right: 3px;
+      font-size: 10px;
+      transition: transform 0.15s ease;
+      display: inline-block;
+    }
+    .hall-tool-pill[data-tool-expandable="1"].is-open::before {
+      transform: rotate(90deg);
+    }
+    .hall-tool-pill[data-tool-expandable="1"].is-open[title]:hover::after {
+      display: none;
+    }
+    .hall-tool-popover {
+      position: absolute;
+      z-index: 30;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 8px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.32);
+      padding: 10px 12px;
+      font-size: 12px;
+      line-height: 1.5;
+      width: min(640px, calc(100vw - 48px));
+      max-height: min(520px, calc(100vh - 120px));
+      overflow: auto;
+    }
+    .hall-tool-popover-section {
+      margin-top: 8px;
+    }
+    .hall-tool-popover-section:first-child {
+      margin-top: 0;
+    }
+    .hall-tool-popover-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #94a3b8;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .hall-tool-popover-copy {
+      background: none;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      color: #cbd5f5;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 10px;
+      font-family: inherit;
+      cursor: pointer;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+    .hall-tool-popover-copy:hover {
+      background: rgba(148, 163, 184, 0.18);
+    }
+    .hall-tool-popover-pre {
+      margin: 0;
+      padding: 8px 10px;
+      background: rgba(15, 23, 42, 0.55);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11.5px;
+      color: #f1f5f9;
+      max-height: 280px;
+      overflow: auto;
+    }
+    .hall-tool-popover-pre.is-error {
+      border-color: rgba(239, 68, 68, 0.45);
+      background: rgba(239, 68, 68, 0.08);
+    }
+    .hall-tool-popover-empty {
+      color: #94a3b8;
+      font-style: italic;
+      padding: 6px 0;
+    }
     .hall-artifact-list {
       display: flex;
       flex-wrap: wrap;
