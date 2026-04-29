@@ -356,3 +356,27 @@ JSON store 里的原始消息**不动**——黑板是物化视图，UI 仍然�
 - `node ... test/hall-blackboard.test.ts` → 7/7 过
 - 全量 hall 测试 103，100 过，3 失败（基线，零回归）
 - Dev server 重启后已加载修复版正则
+
+### P3-A 提交 + P3-B/C 设计 issue（2026-04-29）
+
+- **PR #12**：feat(hall): Phase 3-A 黑板落地——共享 chat.jsonl + task_plan/findings/progress 三件套（针对 #9 第 1-3 项）
+  - URL: https://github.com/xiaolinfrank/openclaw-control-center/pull/12
+  - Branch: `feat/hall-blackboard-p3a`，commit `ea00bc9`
+  - 含 5 个文件：`hall-blackboard.ts` 新增、`test/hall-blackboard.test.ts` 新增、`collaboration-hall-orchestrator.ts` 改、`hall-runtime-dispatch.ts` 改、`progress.md` 改
+- **Issue #13**：Phase 3-B/C 设计——Mailbox + Speaker Policy chain（针对 #9 第 4 项 + A3 反循环兜底过于刚性）
+  - URL: https://github.com/xiaolinfrank/openclaw-control-center/issues/13
+  - 含 Mailbox 设计、Policy chain 设计（含 `detectClarifyingQuestion` 解决 A3 误伤反向 Q&A）、Supervisor 设计、拆 PR 计划
+- **Issue #9 进度更新评论**：在主 issue 下面加了一条简短指引，让 #9 的读者能直接跳到 PR #12 + issue #13
+  - URL: https://github.com/xiaolinfrank/openclaw-control-center/issues/9#issuecomment-4341549577
+
+### 当前架构层进度
+
+| Issue 9 子问题 | 状态 | 落点 |
+|---|---|---|
+| 1. 上下文构建（共享 vs 独立） | ✅ P3-A | PR #12 黑板 chat.jsonl + 5 条 inline cap |
+| 2. 共享 task_plan | ✅ P3-A | PR #12 task_plan.md + 追加协议 |
+| 3. 共享 findings / progress | ✅ P3-A | PR #12 同上 |
+| 4. 多对一/一对多/高并发 | 📋 设计完成 | issue #13 Mailbox + Policy + Supervisor |
+| 6. session 一致性 | ✅ Phase 2 | 已合 commit `36b4ca2`（Gateway WS） |
+
+任务计划文件 `task_plan.md` 和 `findings.md` 仍为本地工作脚本（未入 git，作为后续 phase 的 working memory）。
