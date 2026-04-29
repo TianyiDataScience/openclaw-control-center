@@ -381,6 +381,34 @@ JSON store 里的原始消息**不动**——黑板是物化视图，UI 仍然�
 
 任务计划文件 `task_plan.md` 和 `findings.md` 仍为本地工作脚本（未入 git，作为后续 phase 的 working memory）。
 
+## Session 2026-04-29 续 — Phase 3-B-1：Mailbox 透明层
+
+针对 issue #13 P3-B-1 拆分，把 hall dispatch 路径上每一次"我要派一条消息给某个 agent"的事件物化到磁盘的 inbox + delivery 审计日志，**不改 dispatch 行为**——为 P3-B-2 的防抖合并 + P3-C 的 policy chain 打地基。
+
+### 实施
+
+- 新增 `src/runtime/hall-mailbox.ts`：log-structured `inbox/{participantId}.jsonl`（同时存 enqueue / consume 行，读时 reduce 出 pending）+ `deliveries.jsonl`（投递审计）+ 内存索引（per-(card, agent) lazy hydrate）
+- 新增 `src/runtime/hall-scheduler.ts`：`enqueueAndDispatch(args, dispatch)` 薄包装——persist enqueue → 调 dispatch（现有 per-sessionKey `dispatchChains` 提供单飞）→ persist consume + delivery
+- 改 `src/runtime/collaboration-hall-orchestrator.ts`：4 个 dispatch 入口包成 `enqueueAndDispatch`：
+  - operator 路由（`routeAndDispatchHallMessage` 主 fan-out）
+  - main observer 入口（main 不在 primary targets 时的事后 observe）
+  - observer 内部 auto-chain（observer 自己 @ 别人时）
+  - `dispatchHallAgentReply` 内部 auto-chain + `wakeMentionInitiator`（@ 完成回调）
+- 测试：`test/hall-mailbox.test.ts`（7 case）+ `test/hall-scheduler.test.ts`（5 case）
+
+### 设计修正
+
+原设计想引入 per-(card, agent) worker queue，落地时发现 cyclic enqueue 死锁：A→B→C→A 链（chainDepth ≤ 5 内合法），如果 worker 在 await chain 子任务时被 chain 子任务的 enqueue 反向 block，构成依赖环。结论：P3-B-1 **不**引入 queue/worker，等 P3-B-2 防抖合并时一起设计——届时 enqueue 不再 await 单条 dispatch 完成、而是 buffer 后批处理，自然不会有依赖环。
+
+### 验证
+
+- `npm run build` 干净
+- 单 file 跑 mailbox + scheduler：12/12 过
+- 全 hall 套（除已知 hang 的 typing 文件）：96+ 过，3 失败全部是 P3-A 之前就存在的基线（execution-order persists / session-linkage / multi-mention routing），零回归
+- `npm run smoke:ui` 通过
+- `npm run smoke:hall` 失败（`data-hall-continue-discussion` 选择器在 commit 21f9403 拆 5 状态机时移除，smoke 脚本未跟上——pre-existing baseline broken，与本 PR 无关）
+- Playwright 真机 e2e：留作下一步手动 / 自动验证
+
 ## Session 2026-04-30 — 中途切分支：P3-B-1 暂停，开 P3-A-2
 
 ### 缘起

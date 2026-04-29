@@ -137,26 +137,63 @@ P3-A 黑板（chat.jsonl + task_plan/findings/progress 共享 markdown）已经�
 2. **agent 不会 grep 黑板**——LLM 可能不主动用 bash 查历史。**对策**：群聊意识段的引导要明确（已有黑板 guidance 模板，强化即可），并通过 e2e 真机观察行为
 3. **session 失效或被重置**——OpenClaw session 端可能 expire / be evicted。**对策**：dispatch 路径检测 session 是否存在；不存在时退化为 first-turn setup（已有 `firstParticipantTurnInThread` 判定逻辑可复用）
 
-## Files to Modify (P3-A Working Set)
-- `src/runtime/hall-workspace.ts`（扩展 ensureHallTaskWorkspace）
-- `src/runtime/hall-blackboard.ts`（新增）
-- `src/runtime/collaboration-hall-orchestrator.ts`（写路径调用 + latestSummary 回填）
-- `src/runtime/hall-runtime-dispatch.ts`（buildHallRuntimePrompt context cap，prompt 引导文本）
-- `src/types.ts`（如需新增类型）
-- `test/hall-blackboard.test.ts`（新增）
+#### Phase P3-B-1 — Inbox transparent layer (current)
+
+**Branch**: `feat/hall-mailbox-p3b1`（基于 `feat/hall-blackboard-p3a`，PR 标 depends on #12）
+
+范围：**透明加一层 inbox，不改 dispatch 行为，不做合并**——为 P3-B-2/3-C 打地基。
+
+工作项：
+- [ ] 1. 新增 `src/runtime/hall-mailbox.ts`：
+  - 文件：`{card}/.hall/inbox/{agentId}.jsonl`（log-structured：enqueue 行 + consume 行混存，读时 reduce）
+  - 文件：`{card}/.hall/deliveries.jsonl`（投递审计日志）
+  - 内存索引：`Map<"${cardId}:${agentId}", MailboxIndex>`，首次访问 lazy hydrate
+  - API：`enqueueHallInbox` / `readHallInboxPending` / `markHallInboxConsumed` / `appendHallDeliveryRecord`
+  - 模块级 mutex：per-(card, agent) 写串行化
+- [ ] 2. 新增 `src/runtime/hall-scheduler.ts`（**简化版** — 见下方"设计修正"）：
+  - 暴露 `enqueueAndDispatch(args, dispatch: () => Promise<void>)`
+  - 流程：persist enqueue → 调 `dispatch()`（现有 `dispatchChains` 已提供 per-sessionKey 序列化）→ persist consume + delivery
+  - **不引入 per-(card, agent) queue / worker scaffold**——避免 cyclic enqueue 死锁（A→B→C→A 链，A 的 worker await PB await PC await PA enqueue waiting for A worker 形成环）。queue/worker 留给 P3-B-2，与 defounce/merge 一起设计
+- [ ] 3. 接入 `collaboration-hall-orchestrator.ts`：
+  - `routeAndDispatchHallMessage` 解析 targets 后改成对每个 target enqueue + scheduleInboxTick
+  - `dispatchHallAgentReply` 内部仍直接调 `dispatchHallRuntimeTurn`（被 worker 调用）
+  - auto-chain 路径同样改成 enqueue 而非直接 dispatch
+  - **A1-A4 行为不变**：filter / autoRounds / OBSERVE_SILENT 仍在调 enqueue 之前生效（policy 抽函数留给 P3-C-1）
+- [ ] 4. 单元测试：
+  - `test/hall-mailbox.test.ts`：enqueue / read pending / markConsumed / 重启恢复 / 去重 / log-structured reduce
+  - `test/hall-scheduler.test.ts`：enqueueAndDispatch 调用顺序、consume + delivery 写入、dispatch 失败时的 outcome 标记
+- [ ] 5. build / 全测试 / smoke / Playwright e2e（多 agent 接力，验证 inbox 文件确实生成）
+- [ ] 6. commit + push + 开 PR（描述里标 depends on #12）+ 更新 progress.md
+
+退出标准：
+- [ ] `npm run build` 干净
+- [ ] hall 13 个测试文件不 regress（P3-A 之前已存在的 3 fail 仍是 fail，不变）
+- [ ] `npm run smoke:hall` 通过
+- [ ] Playwright 真机：发一条多 @ 消息，确认 `inbox/{agentId}.jsonl` 文件生成 + 每条 dispatch 落 `deliveries.jsonl`
+- [ ] 黑板路径不 regress（chat.jsonl / task_plan.md / findings.md / progress.md 仍然写）
+
+## Files to Modify (P3-B-1 Working Set)
+- `src/runtime/hall-mailbox.ts`（新增）
+- `src/runtime/hall-scheduler.ts`（新增）
+- `src/runtime/collaboration-hall-orchestrator.ts`（路由路径改 enqueue + scheduleInboxTick）
+- `test/hall-mailbox.test.ts`（新增）
+- `test/hall-scheduler.test.ts`（新增）
+- `progress.md`（追加 session 记录）
 
 ## Hard Constraints to Preserve
 1. `taskCardWriteChain` / `hallMessageWriteChain` 序列化（collaboration-hall-store.ts:372/555）
-2. `dispatchChains` per-sessionKey gate（hall-runtime-dispatch.ts:201）
+2. `dispatchChains` per-sessionKey gate（hall-runtime-dispatch.ts:201）—— **P3-B-1 保留**作为兜底
 3. Audit log append-only（operation-audit.ts）
 4. SSE event stream contract（collaboration-stream.ts）
-5. A1–A4 行为不变（P3-A 不动 policy）
+5. **A1–A4 行为不变**（P3-B-1 不动 policy）
 6. 30s 重复消息 dedup（hall-orchestrator:719）
+7. P3-A 黑板路径不 regress（chat.jsonl / 三 markdown 仍写）
 
-## Risks
-- 写黑板和写 JSON store 双写：必须 best-effort 异步、不阻塞主路径，且写失败不能让消息丢失（JSON 是权威源）
-- prompt 砍 30→5 可能让 agent 上下文不足：保留首轮 15 条 + 给 grep 工具兜底
-- workspace 目录已经被 agent 当 workdir 用：`.hall/` 加点防误删（README 标注 + 把 agent prompt 引导排除 .hall/ 写）
+## Risks (P3-B-1)
+- **路由路径改写**：`routeAndDispatchHallMessage` / `dispatchHallAgentReply` 内 auto-chain / `dispatchMainObserver` 三处接入点。**对策**：保留所有现有 policy 调用顺序、保留 `dispatchHallAgentReply` 内部结构，只把"调用 dispatch 那一行"包成 `enqueueAndDispatch`
+- **fire-and-forget 副作用顺序敏感**（P3-A 教训）：mailbox 写入应 fire-and-forget 不阻塞 dispatch 主路径；本 PR 把 enqueue 写做 await 但 catch 错误（写失败不能让 dispatch 中断），下个 PR 视性能再调
+- **重启恢复**：P3-B-1 inbox 文件持久化但**不**做重启 replay——pending 记录留在文件里供 audit / 后续 P3-C-3 Supervisor 拉起；本 PR 不丢消息（chat.jsonl 仍是权威源）
+- **设计修正**：原本设计 per-(card, agent) worker queue，发现 cyclic enqueue（A↔B↔C 链 + MAX_AUTO_CHAIN_DEPTH=5）会让 worker 在 await chain 子任务时被 chain 子任务的 enqueue 反向 block，形成依赖环死锁。决定 P3-B-1 不引入 queue/worker，等 P3-B-2 引入 defounce 时一起处理（届时 enqueue 不再 await 单条 dispatch 完成，而是 buffer 后批处理，自然不会有依赖环）
 
 ## Errors Encountered
 （开工后填）
