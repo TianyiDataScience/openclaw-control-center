@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { ensureHallTaskWorkspace, resolveHallTaskWorkspacePath } from "./hall-workspace";
+import { initializeHallBlackboard, renderHallBlackboardPromptGuidance } from "./hall-blackboard";
 import { copyHallFilesToWorkspace } from "./hall-file-store";
 import type { ToolClient } from "../clients/tool-client";
 import {
@@ -373,6 +374,10 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
       : [];
     baselineFingerprint = baselineHistory.at(-1) ? fingerprintHistoryMessage(baselineHistory.at(-1)!) : undefined;
     await ensureHallTaskWorkspace(input.taskCard.taskCardId);
+    // Best-effort: ensure the per-card blackboard exists. Fire-and-forget so
+    // dispatch latency is unaffected; orchestrator's postHallMessage path
+    // already initializes the blackboard on the first message in the thread.
+    void initializeHallBlackboard(input.taskCard).catch(() => undefined);
     const repoContext = buildHallRuntimeRepoContext(input);
     const prompt = buildHallRuntimePrompt(input, repoContext);
     const flushHistory = async (sessionKey: string | undefined): Promise<void> => {
@@ -692,6 +697,12 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
   }
 }
 
+// P3-A: prompt context lives mostly on the shared blackboard (.hall/chat.jsonl).
+// Inline transcript is intentionally narrow — agent is expected to grep / jq
+// the blackboard for anything beyond the immediate trigger context.
+const HALL_INLINE_CONTEXT_DEFAULT = 5;
+const HALL_INLINE_CONTEXT_FIRST_TURN = 15;
+
 function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: HallRuntimeRepoContext): string {
   const responseLanguage = inferHallResponseLanguage(
     input.triggerMessage?.content
@@ -701,16 +712,25 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
     ? "Reply in Simplified Chinese unless the latest human message explicitly asks for another language."
     : "Reply in English unless the latest human message explicitly asks for another language.";
 
-  // Recent thread messages (expanded from 10 to 30)
+  const firstParticipantTurnInThread = isFirstParticipantTurnInHallThread(
+    input.taskCard,
+    input.participant.agentId ?? input.participant.participantId,
+  );
+
+  // Recent thread messages — capped narrow on purpose. Agent grep's the
+  // blackboard (.hall/chat.jsonl) for full history.
+  const inlineCap = firstParticipantTurnInThread
+    ? HALL_INLINE_CONTEXT_FIRST_TURN
+    : HALL_INLINE_CONTEXT_DEFAULT;
   const recentMessages = dedupeHallPromptMessages(
     [...(input.recentThreadMessages ?? []), ...(input.triggerMessage ? [input.triggerMessage] : [])],
-  ).slice(-30);
+  ).slice(-inlineCap);
 
   const transcriptBlock = recentMessages.length > 0
     ? [
         responseLanguage === "zh"
-          ? "以下是当前线程的最近对话（从旧到新）："
-          : "Recent thread conversation (oldest to newest):",
+          ? `以下是当前线程的最近 ${recentMessages.length} 条对话（从旧到新；更多历史请去黑板查询）：`
+          : `Recent ${recentMessages.length} messages from this thread (oldest→newest; grep the blackboard for more):`,
         ...recentMessages.map((message) =>
           `- ${message.authorLabel}${message.authorSemanticRole ? ` [${message.authorSemanticRole}]` : ""}: ${message.content}`,
         ),
@@ -723,11 +743,7 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
   const hallRulesBlock = buildHallRulesPromptBlock();
   const taskArtifactBlock = buildHallRuntimeArtifactBlock(input.task?.artifacts, responseLanguage, "task");
   const repoContextLines = repoContext.lines;
-
-  const firstParticipantTurnInThread = isFirstParticipantTurnInHallThread(
-    input.taskCard,
-    input.participant.agentId ?? input.participant.participantId,
-  );
+  const blackboardGuidance = renderHallBlackboardPromptGuidance(input.taskCard.taskCardId, responseLanguage);
 
   // Role-specific instructions
   const roleInstruction = buildGroupChatRoleInstruction(input.participant, input.hall.participants, responseLanguage);
@@ -767,6 +783,11 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
     `Your working directory for this task is: ${resolveHallTaskWorkspacePath(input.taskCard.taskCardId)}`,
     `Please save all generated files and artifacts in this directory.`,
     `The main repository is still accessible at: ${CONTROL_CENTER_REPO_ROOT}`,
+
+    // P3-A: shared blackboard guidance — agents grep .hall/chat.jsonl for
+    // history beyond the narrow inline transcript above, and append to
+    // task_plan / findings / progress to coordinate with peers.
+    blackboardGuidance,
 
     // Assignment note (if any)
     input.note ? `Note: ${input.note}` : "",

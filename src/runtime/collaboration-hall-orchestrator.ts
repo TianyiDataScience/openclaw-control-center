@@ -58,6 +58,7 @@ import {
 import { loadBestEffortAgentRoster } from "./agent-roster";
 import { copyHallFilesToWorkspace } from "./hall-file-store";
 import { ensureHallTaskWorkspace } from "./hall-workspace";
+import { appendHallBlackboardMessage, initializeHallBlackboard } from "./hall-blackboard";
 import {
   canDispatchHallToRuntime,
   dispatchHallRuntimeTurn,
@@ -610,6 +611,12 @@ export async function createHallTaskFromOperatorRequest(
     })
   ).message;
 
+  // Materialize the shared blackboard for this brand-new task card so the
+  // initial operator request lands in .hall/chat.jsonl alongside subsequent
+  // agent replies. Best-effort.
+  await initializeHallBlackboard(taskCard).catch(() => undefined);
+  void appendHallBlackboardMessage(taskCard.taskCardId, initialMessage);
+
   await appendOperationAudit({
     action: "hall_task_create",
     source: "api",
@@ -773,6 +780,13 @@ export async function postHallMessage(
   if (fileAttachments && fileAttachments.length > 0 && taskCard) {
     const workspaceDir = await ensureHallTaskWorkspace(taskCard.taskCardId);
     await copyHallFilesToWorkspace(fileAttachments, workspaceDir).catch(() => {});
+  }
+
+  // Materialize the shared blackboard for this task card on first message.
+  // Best-effort: failure must not break message persistence.
+  if (taskCard) {
+    await initializeHallBlackboard(taskCard).catch(() => undefined);
+    void appendHallBlackboardMessage(taskCard.taskCardId, message);
   }
 
   // Route and dispatch — the core of the new group chat model
@@ -3404,6 +3418,9 @@ async function appendStreamedGeneratedHallMessage(input: {
     content: input.content,
   });
   await touchHallTaskAgentActivity(input.taskCardId);
+  if (input.taskCardId) {
+    void appendHallBlackboardMessage(input.taskCardId, message);
+  }
   return message;
 }
 
@@ -3436,6 +3453,9 @@ async function appendPersistedHallMessage(input: {
     })
   ).message;
   await touchHallTaskAgentActivity(input.taskCardId);
+  if (input.taskCardId) {
+    void appendHallBlackboardMessage(input.taskCardId, message);
+  }
   return message;
 }
 

@@ -233,3 +233,126 @@ as obsolete:
 ## Session 2026-04-14 — planning
 
 (unchanged — planning notes from initial investigation)
+
+## Session 2026-04-27 — Phase 3 调度引擎启动
+
+Phase 1（反循环兜底，#8）和 Phase 2（hall 派发走 Gateway WebSocket，#9 第 6 项）已合入。
+本会话启动 Phase 3，针对 Issue #9 第 1/2/3/4 项做架构层重构而非继续打补丁。
+
+### 设计文档
+
+- `task_plan.md` 已建：Phase 3 三件套（Blackboard + Mailbox + Policy），决定先做 P3-A
+- `findings.md` 已建：当前 hall 架构摸底 + 业界做法蒸馏（Anthropic 多智能体研究系统、Cognition 反方观点、MetaGPT 共享消息池、AutoGen GroupChat、LangGraph 监督/swarm、Hearsay-II 黑板、Claude Code subagents、Actor model、A2A/ACP）
+- 设计提案已通过后台 agent 评论到 issue：https://github.com/xiaolinfrank/openclaw-control-center/issues/9#issuecomment-4323964598
+
+### 已定决策
+
+1. 黑板写一致性 → **追加协议 + agent 写自己块**（`<!-- agent: X, ts: Y --> ... <!-- /agent -->`），引擎工具兜底
+2. inbox 存储 → **文件 append-only + 内存索引**
+
+### P3-A 实施落地
+
+#### 新增 / 修改
+
+- **`src/runtime/hall-blackboard.ts`**（新增 ~250 行）
+  - `initializeHallBlackboard(taskCard)` 创建 `.hall/{chat.jsonl, chat-index.md, locks/}` + 三份 stub markdown（`task_plan.md` / `findings.md` / `progress.md`）；幂等，已有文件不覆盖
+  - `appendHallBlackboardMessage(taskCardId, message)` append 到 `chat.jsonl` + 重新生成 `chat-index.md`；按 messageId 去重（in-memory cap 256）
+  - `readHallProgressLatestEntry(taskCardId)` 读 progress.md 最后一个 `<!-- agent: X, ts: Y -->` 块的内容，供 orchestrator 回填 `latestSummary`（本期未接入，留 P3-A 跟进）
+  - `renderHallBlackboardPromptGuidance(taskCardId, lang)` 中英双版本的黑板使用引导文案
+  - per-card promise chain (`runSerial`) 序列化所有写
+- **`src/runtime/hall-runtime-dispatch.ts`**
+  - 引入 `HALL_INLINE_CONTEXT_DEFAULT = 5` / `HALL_INLINE_CONTEXT_FIRST_TURN = 15`，把 prompt 的 recentMessages 从 `slice(-30)` 改成动态 cap
+  - dispatch 路径：`void initializeHallBlackboard(taskCard).catch(() => undefined)` fire-and-forget，避免 `await` 影响测试时序（详见 task_plan 的 Lessons learned）
+  - 在 prompt 中插入 `blackboardGuidance` 段
+- **`src/runtime/collaboration-hall-orchestrator.ts`**
+  - `postHallMessage` 写消息后 `await initializeHallBlackboard(taskCard)` + `void appendHallBlackboardMessage(taskCardId, message)`
+  - `appendStreamedGeneratedHallMessage` / `appendPersistedHallMessage` 各 append 一份到黑板
+- **`test/hall-blackboard.test.ts`**（新增）
+  - 6 个测试：init 创建文件 / init 幂等不覆盖 / append 写 JSONL + 索引 / append 去重 / readLatestEntry / guidance 渲染
+  - 测试用真实 path + 测后 cleanup（`HALL_WORKSPACES_DIR` 模块级常量，无法用 `process.chdir`）
+
+#### 测试结果
+
+- `npm run build` 干净
+- `node --import tsx scripts/run-tests-isolated.ts test/hall-*.test.ts test/collaboration-hall-*.test.ts test/hall-blackboard.test.ts` ＝ 102 个测试，99 过，3 失败（全部是 P3-A 之前就有的旧 bug：execution-order persists / runtime-backed session linkage / multi-@mention routing），与本次改动无关
+- `test/hall-blackboard.test.ts` 6/6 全过
+
+#### 排查记录（值得一记）
+
+最初版本在 `dispatchHallRuntimeTurn` 里 `await initializeHallBlackboard(...)`，导致 `runtime execution persists artifact refs` 测试**单跑通过、批量跑挂掉**。bisect 证实：是 await 增加的 microtask 让 `FakeRuntimeToolClient` 的 enqueue/dequeue 时序与 `assignHallTaskExecution` 的返回点出现毫秒级竞争。改成 `void initializeHallBlackboard(...).catch(() => undefined)` 后回归消失。**生产路径上的 best-effort 副作用应当 fire-and-forget，不要 await**。
+
+#### 接下来 / 跟进
+
+- progress.md 末块 → `latestSummary` 回填（P3-A 跟进 PR，不阻塞）
+- P3-B：Mailbox 改造（独立 PR）
+- P3-C：Policy + Supervisor（独立 PR）
+
+### 手测 + 现场修两个 bug（2026-04-29）
+
+用户在 hall 群聊里发了一条"搜索 codex 最近几次的产品更新"作为黑板手测。结果发现 `.hall/` 目录正确建出来了、三份 stub 也对，但 `chat.jsonl` 里**只有 1 条 main 的 status 消息**——operator 的原始消息丢了，且 status 消息里塞着 5KB 的 base64 tool I/O。
+
+#### Bug 1：operator task 消息没进黑板
+
+根因：UI 创建任务走 `createHallTaskFromOperatorRequest`（line 599 以 `kind: "task"` 写入），但 P3-A 只接了 `postHallMessage`。task 创建路径完全没通到黑板 append。
+
+修复：在 `createHallTaskFromOperatorRequest` 里 `appendHallMessage` 之后加了：
+```typescript
+await initializeHallBlackboard(taskCard).catch(() => undefined);
+void appendHallBlackboardMessage(taskCard.taskCardId, initialMessage);
+```
+
+#### Bug 2：status 消息塞满 base64 tool I/O 让 chat.jsonl 不可读
+
+现象：单条 status 消息 5108 字符，全是 `[[tool:web_search|Codex OpenAI...|~eyJpIjoie1wic...]]` 这种格式——tool name + summary + base64 全量 I/O，UI 用来渲染工具药丸 detail。基本变成压缩包噪声。
+
+修复：在 `hall-blackboard.ts` 加 `sanitizeMessageForBlackboard(message)`，写入 `chat.jsonl` 之前用正则 `\[\[tool:([^|\]]+)\|([^|\]]*)\|~[^\]]+\]\]` 把 `|~base64...` 段去掉，保留 `[[tool:<name>|<summary>]]` 形式。grep 友好，base64 噪声消失。
+
+JSON store 里的原始消息**不动**——黑板是物化视图，UI 仍然能从权威源读完整 tool I/O 渲染药丸。
+
+新增测试：`appendHallBlackboardMessage strips base64 tool I/O payload from status content`。
+
+#### 验证
+
+- `npm run build` 干净
+- `node ... test/hall-blackboard.test.ts` → 7/7 过
+- 全量 hall 测试 103 个，100 过，3 失败（仍然是基线，零回归）
+
+待用户再发一条 hall 消息真机复测两个 fix。
+
+### Playwright 真机 e2e 复测（2026-04-29）
+
+用 Playwright MCP 起 dev server 上 hall UI，发了一条三 agent 接力任务："@图灵 列 fizzbuzz 需求 → @林纳斯 写 Python → @阿达 点评代码风格"。
+
+**结果**：
+- ✅ 新 task workspace `collaboration-hall:turing-3-fizzbuzz-...-771a8f80/` 自动建出 `.hall/{chat.jsonl, chat-index.md, locks/}` + 三份 stub
+- ✅ Bug 1 fix 生效：operator 的 task 消息（170B、3 个 mention target 全部解析）落到 chat.jsonl 第 1 条
+- ✅ 多 agent 接力：图灵 → 林纳斯 → 阿达 全部回复，链路 4 条消息（task + 3 status）
+- ✅ 林纳斯按追加协议自己写了 progress.md：
+  ```
+  <!-- agent: linus-dev, ts: 2026-04-29T06:21:00.000Z -->
+  ### Linus 产出 — Python FizzBuzz 实现
+  文件：`fizzbuzz.py`（10 行内，含断言验证）
+  状态：代码已跑通，单元测试通过。
+  <!-- /agent -->
+  ```
+- ✅ 实际产出 `fizzbuzz.py` 落到 workspace 根目录（10 行内、含 type hint、list comprehension、断言自测）
+- ✅ chat-index.md 正确分组（By kind / By author / Recent timeline）
+
+**发现并修了一个 sanitizer 边角 case**：
+
+林纳斯写代码时给 `[[tool:write|...]]` 的 summary 是真实代码片段，含 `list[str]` 这种带 `]` 的字符。原正则 `\[\[tool:([^|\]]+)\|([^|\]]*)\|~[^\]]+\]\]` 的 summary 字符类排除了 `]`，遇到 `list[str]` 直接 bail，base64 段就漏出来了。
+
+修复：把 summary 字符类改成非贪婪的 `[\s\S]*?`，base64 段用 `[A-Za-z0-9+/=]*` 限定（base64 字母表不含 `]`，所以 `]]` 自然成为终止符）。新正则：
+
+```ts
+/\[\[tool:([^|\]]+)\|([\s\S]*?)\|~[A-Za-z0-9+/=]*\]\]/g
+```
+
+测试加了一个 case 覆盖：summary 含 `list[str]` + 多行 + `FizzBuzz` 代码块。
+
+#### 最终验证
+
+- `npm run build` 干净
+- `node ... test/hall-blackboard.test.ts` → 7/7 过
+- 全量 hall 测试 103，100 过，3 失败（基线，零回归）
+- Dev server 重启后已加载修复版正则
