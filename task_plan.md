@@ -67,7 +67,42 @@ P3-A 落地后，Phase 3 的剩余架构层工作（解决 issue #9 第 4 项 + 
 
 拆 PR 计划：~~P3-B-1 inbox 层~~（PR #14 已开） → **P3-A-2 prompt 简化** → P3-B-2 防抖合并 → P3-C-1 policy 抽取（不变行为）→ P3-C-2 新 policy 上线（含 `dropResolvedTriggers`）→ P3-C-3 Supervisor。每步独立可发版。
 
-### Phase P3-C-3a — A2 hit 显式标 needsHumanReview（**current focus**, 2026-04-30）
+### Phase P3-C-3b — 崩溃恢复 Supervisor（**current focus**, 2026-04-30）
+
+**Design issue**: https://github.com/xiaolinfrank/openclaw-control-center/issues/13 (Supervisor 半，第二段)
+**Branch**: `feat/hall-supervisor-p3c3b`（基于已合并 P3-C-3a 的 main）
+
+#### 动机
+
+P3-B-1/B-2 把每条 dispatch 物化成 inbox/{agent}.jsonl 的 enqueue 行；worker 处理完会写 consume + delivery。但**进程在 enqueue 写盘到 worker dispatch 完之间崩溃**时，inbox 文件留下一个"已 enqueue 没 consume"的孤立记录。下次启动时这条记录就**永远不会再被处理**——闭包早就丢了。issue #13 Supervisor 设计的另一半就是补上这个洞：进程启动时扫所有任务卡的 inbox，把孤立 pending 重新调度。
+
+#### 工作项
+
+- [x] 1. `hall-mailbox.ts:listHallInboxParticipantsForCard(taskCardId)`——读 `.hall/inbox/` 目录列出所有 sanitized agentId
+- [x] 2. `hall-scheduler.ts:scheduleRecoveredHallInbox(record, dispatcher)`——直接挂进 worker pending，**不**写新 enqueue 行（disk 上已有原 enqueue）
+- [x] 3. `hall-supervisor.ts` 新模块：列卡片 → 列 inbox → reduce pending → 重建 dispatcher 闭包 → schedule
+- [x] 4. `collaboration-hall-orchestrator.ts:buildHallRecoveryDispatcher(toolClient)`——生产侧闭包工厂
+- [x] 5. `src/index.ts` UI_MODE 启动时 fire-and-forget 调一次 `recoverPendingHallInboxes`
+- [x] 6. 跳过策略：done/archived 卡跳过；hall 不存在跳过；participant 不再活跃 → 标 canceled；trigger message 不在了 → 标 canceled；`main-observer` / `wake-mention-initiator` 类型 → 标 canceled（瞬态 dispatch 重启重放无意义）
+- [x] 7. 单测 11 个：list / scheduleRecovered 不写双重 enqueue / 多卡过滤 / 缺失 trigger / participant 已离开 / 瞬态 reason / hall 没了 / 多 record 合批 / 空输入 / 已 consume 跳过
+
+#### 退出标准
+
+- [x] tsc 干净
+- [x] supervisor 单测 11/11 全过
+- [x] 重点回归批（hall-loop-prevention + hall-mailbox + hall-scheduler + hall-policies + hall-human-review + collaboration-hall-store + orchestrator + dispatch + prompt-context）：167 过 2 fail，2 fail 全是 P3-A 之前的基线（session-linkage / multi-mention routing），零新回归
+- [x] `npm run smoke:ui` 通过
+- [ ] PR 入 main
+
+#### 设计 trade-offs
+
+- **DI 让 supervisor 可测**：`recoverPendingHallInboxes({ dispatcher, deps? })` 接受 store loader / inbox lister 注入。生产用默认实现（直读 store + mailbox），测试用 fake。这样不必启 OpenClaw runtime 就能验 hydration / cancellation 路径
+- **闭包不可序列化怎么办**：把"生产 dispatcher 工厂"留在 orchestrator 里（`buildHallRecoveryDispatcher`），让它访问私有 `dispatchHallAgentReply` / `loadRecentHallThreadMessages`。supervisor 只接受这个工厂出来的接口，与 orchestrator 解耦
+- **不重写 enqueue 行**：`scheduleRecoveredHallInbox` 直接进 worker pending，绕过 `enqueueHallInbox` 的持久化。不然 disk 上会出现两条 enqueue 同 recordId 的怪状态
+- **瞬态 reason 不重放**：`main-observer`（observer pass，时间一过无意义）+ `wake-mention-initiator`（chain 完成后的回叫，重启时 chain 状态早没了）标 canceled。其他 reason（operator-route / auto-chain / observer-chain / parallel-dispatch）按原 chainDepth 重新走 dispatchHallAgentReply
+- **fire-and-forget 不阻塞 UI**：startup 不 await——recovery 慢扫描不该挡 HTTP server 起来。失败也只 console.error，不影响 dashboard 启动
+
+### Phase P3-C-3a — A2 hit 显式标 needsHumanReview（completed, PR #21 merged 2026-04-30）
 
 **Design issue**: https://github.com/xiaolinfrank/openclaw-control-center/issues/13 (Supervisor 半)
 **Branch**: `feat/hall-supervisor-p3c3`（基于已合并 P3-C-2 的 main）
@@ -91,8 +126,8 @@ A2（auto-round limit）hit 时目前只发 system 消息 + status=blocked，UI 
 - [x] tsc 干净
 - [x] 单测全过
 - [x] 重点回归零新回归
-- [ ] PR 入 main
-- [ ] 后续 P3-C-3b 崩溃恢复
+- [x] PR 入 main（#21）
+- [x] 后续 P3-C-3b 崩溃恢复（已开 P3-C-3b）
 
 #### 设计 trade-offs
 

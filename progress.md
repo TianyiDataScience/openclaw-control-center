@@ -732,6 +732,55 @@ P3-C-3a 加显式 `escalatedAt` 字段，A2 hit 时立刻写入，`needsHumanRev
 - 重点回归批（hall-human-review + hall-loop-prevention + collaboration-hall-orchestrator + hall-policies + collaboration-hall-store）：112 过 2 fail，2 fail 全是 P3-A 之前的基线（session-linkage / multi-mention routing），**零新回归**
 - 端到端测试 A2 → escalatedAt 走通的 integration 测试因为 A3 + chain depth 上限的天然约束（一个 operator turn 内最多让一个 agent 被 dispatch 3 次，达不到 6 次）而难以构造。改成测试字段管线（store round-trip / pure-function logic / touch-clear），覆盖到 A2 调用 `handleAutoRoundBlockedThreshold` 时写入的实际代码路径
 
+## Session 2026-04-30 — Phase 3-C-3b Supervisor 崩溃恢复半场
 
+P3-C-3 issue #13 三件套最后一块的另一半。3a 已合并（PR #21）。3b 解决进程在 enqueue 写盘到 worker dispatch 完成之间崩溃的孤儿 inbox 记录。
 
+### 动机
 
+P3-B-1/B-2 落地后，每次 dispatch 都会先写 enqueue 行到 `.hall/inbox/{agent}.jsonl`，dispatch 完成再写 consume 行。但 worker 是内存里的状态——进程崩了就丢，留下 disk 上的 enqueue 没被 consume，下次启动也不会被处理（闭包都没了）。Supervisor 在启动时扫盘把这些孤儿重新调度。
+
+### What landed
+
+- **`src/runtime/hall-mailbox.ts`** 加 `listHallInboxParticipantsForCard(taskCardId)` + 导出 `sanitizeHallInboxParticipantId`。前者读 `.hall/inbox/` 目录返回所有 jsonl 文件名（去后缀），后者让 supervisor 把 live participant id 映射到 disk 上的 sanitized 形式做匹配
+- **`src/runtime/hall-scheduler.ts`** 加 `scheduleRecoveredHallInbox(record, dispatcher)`——直接 `enqueueIntoWorker` 进 pending，**不调** `persistHallInboxEnqueue`（disk 上原 enqueue 行已经存在）
+- **`src/runtime/hall-supervisor.ts`** 新模块：
+  - `recoverPendingHallInboxes({ dispatcher, deps? })` 主入口
+  - 走全部任务卡，跳过 `archivedAt` 或 `status === "done"` 的
+  - 每张卡：`loadHallById` 拿 hall（hall 不在 → skip + skipped++）、`listInboxParticipants` 拿磁盘 sanitized id 列表、对每个 sanitized id 在 `hall.participants` 里找匹配（按 `sanitizeHallInboxParticipantId(participantId)` 比较）
+  - participant 不存在或 inactive → 把这家 inbox 的 pending 全标 canceled
+  - 每条 record：`main-observer` / `wake-mention-initiator` reason → 标 canceled（瞬态语义重启重放无意义）；trigger message 不在 message store → 标 canceled；其他正常 reason → 调 `scheduleRecoveredHallInbox`
+  - DI 让 store loader / inbox lister 可注入，方便测试
+  - 返回 `HallRecoveryReport`（scheduled/canceled/skipped + perCard 明细）
+- **`src/runtime/collaboration-hall-orchestrator.ts`** 末尾新增 `buildHallRecoveryDispatcher(toolClient)` 导出函数，封装"用 `dispatchHallAgentReply` 走完整生产链路"的闭包工厂。supervisor 模块只对接接口、不依赖 orchestrator 私有函数
+- **`src/index.ts`** UI_MODE 启动时 fire-and-forget 调 `recoverPendingHallInboxes({ dispatcher: buildHallRecoveryDispatcher(client) })`；非零 scheduled/canceled 时打一行 console.log。CLI 命令路径不接（避免 backup-export 之类的命令意外触发 dispatch）
+
+### 设计要点
+
+1. **DI 测试可达**：测试用 fake 的 `loadTaskCards` / `loadHallById` / `loadHallMessagesByHallId` 直接喂数据，不必启 OpenClaw 真客户端。生产环境用默认实现走 collaboration-hall-store 三个 loader
+2. **闭包不能跨进程持久化**：解法是"只持久化 record，重启时由生产侧工厂重建闭包"。`buildHallRecoveryDispatcher` 留在 orchestrator 文件里能直接用 `dispatchHallAgentReply` / `loadRecentHallThreadMessages` 这俩私有函数，不必把它们 export 出去暴露 surface
+3. **不重写 enqueue 行**：`scheduleRecoveredHallInbox` 直接进 worker pending。这样 disk 上一条 record 始终最多一条 enqueue 行——recovery 只可能补 consume 行
+4. **`main-observer` / `wake-mention-initiator` 不重放**：observer 是事后观察的瞬态 dispatch，重启时 trigger 早过期；wake-mention-initiator 依赖 auto-chain 完成的回叫语义，重启时 chain 状态丢失。标 canceled 而不是装作能恢复
+5. **fire-and-forget 启动**：startup 不 await。recovery 失败只 `console.error`，不影响 dashboard 启动
+
+### 测试
+
+`test/hall-supervisor.test.ts` 新增 11 个 case：
+- `listHallInboxParticipantsForCard` 返回 sanitized id / 空目录返回 []
+- `scheduleRecoveredHallInbox` 不写 enqueue 行 + 写 consume + delivery
+- 多卡场景下 `done` / `archived` 卡跳过，只有 `in_progress` 卡里的 record 被 scheduled
+- 缺失 trigger message → canceled + 写 consume + reason 含 "trigger message no longer present"
+- participant 已离开 hall → canceled
+- `main-observer` / `wake-mention-initiator` reason → canceled，dispatcher 不被调用
+- hall 不存在 → 卡片 skipped++，scheduledCount=0
+- 同 (card, agent) 多 record 触发 worker debounce 合批（dispatcher 调用次数可能 < record 数，但全部都被 consume）
+- 空 inbox 输入返回空报告，perCard=[]
+- 已 consume 的 record 不再被 schedule
+
+### 验证
+
+- `npm run build` 干净
+- `test/hall-supervisor.test.ts`：11/11 全过
+- 重点回归批 1（hall-loop-prevention + hall-mailbox + hall-scheduler + hall-policies + hall-human-review + collaboration-hall-store）：110/110 全过
+- 重点回归批 2（collaboration-hall-orchestrator + hall-runtime-dispatch + hall-prompt-context）：57 过 2 fail，2 fail 全是 P3-A 之前就有的基线（session-linkage / multi-mention routing），**零新回归**
+- `npm run smoke:ui` 通过
