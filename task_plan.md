@@ -67,7 +67,44 @@ P3-A 落地后，Phase 3 的剩余架构层工作（解决 issue #9 第 4 项 + 
 
 拆 PR 计划：~~P3-B-1 inbox 层~~（PR #14 已开） → **P3-A-2 prompt 简化** → P3-B-2 防抖合并 → P3-C-1 policy 抽取（不变行为）→ P3-C-2 新 policy 上线（含 `dropResolvedTriggers`）→ P3-C-3 Supervisor。每步独立可发版。
 
-### Phase P3-B-2 — 防抖合并 + worker queue（**current focus**, 2026-04-30+）
+### Phase P3-C-1 — A1-A4 抽成可插拔 policy 函数（**current focus**, 2026-04-30）
+
+**Design issue**: https://github.com/xiaolinfrank/openclaw-control-center/issues/13
+**Branch**: `feat/hall-policy-chain-p3c1`（基于已合并的 main，含 P3-A / P3-A-2 / P3-B-1 / P3-B-2）
+
+#### 动机
+
+A1-A4 反循环兜底当前散落在 `collaboration-hall-orchestrator.ts` 的 inline 检查里：A1+A2-reset 在 `routeAndDispatchHallMessage` 顶部、A2-increment+limit 在 `dispatchHallAgentReply` per-target gate、A3 在两处 chain candidate filter（observer + auto-chain）、A4 在三处 silence check（observer + per-target + wake-mention initiator）。要再加新 policy（`dropResolvedTriggers` / `detectClarifyingQuestion` / `enforceBackPingBudget`）就得继续往这些位置塞 if 块，无组合性、难单测。
+
+P3-C-1 把这层抽成两条 policy 链：
+- `PreDispatchPolicy[]`（per-target gate / chain filter 用）—— 顺序执行，第一个 deny 短路；带 `policyId` 让 caller 区分该不该跑对应侧效
+- `PostDispatchPolicy[]`（agent reply 后用）—— 顺序执行，第一个 drop 短路
+
+行为完全不变；P3-C-2 直接往链里加新 policy。
+
+#### 工作项
+
+- [x] 1. 新建 `src/runtime/hall-policies.ts`：types + 4 个 policy 纯函数 + 默认链组合 + 链 runner + 状态帮手
+- [x] 2. `collaboration-hall-orchestrator.ts` 全部 A1-A4 inline 检查替换成链调用，常量从 `hall-policies` 导入
+- [x] 3. `test/hall-policies.test.ts` 38 个 case
+- [x] 4. `npm run build` 干净
+- [x] 5. 全套测试零回归（基线 3 失败仍是 P3-A 之前的）
+
+#### 退出标准
+
+- [x] tsc 干净
+- [x] policy 单测全过
+- [x] hall 全套零回归
+- [ ] PR 入 main
+
+#### 设计 trade-offs
+
+- **policyId 字符串 vs symbol vs class**：选字符串常量（`POLICY_ENFORCE_AUTO_ROUND_LIMIT` 等）。简单、可测试、跨模块边界稳定（symbol 不能跨进程）
+- **侧效绑在 caller 还是 policy**：选 caller。policy 是纯函数（更易测、更易组合），caller 通过 `policyId` 分发侧效。代价是新增有侧效 policy 时 caller 要加 case；但 P3-C 的预期 policy 大多是 silent deny（filter 候选），只有 A2 是有侧效的特殊情况
+- **per-target gate vs chain filter 用同一条链 vs 不同链**：选不同链。per-target gate 跑 A2-limit（已 increment，主战场）；chain filter 跑 max-depth + A3（未 increment）。共用同一条链会让 A2 在 chain filter 处误删候选而错过 auto-round-blocked 通知
+- **保留 `if (chainDepth < MAX_AUTO_CHAIN_DEPTH)` 外层早出**：保留。chain filter 内部也会因 max-depth 把所有候选 deny 掉，但外层早出避免白白 `loadRecentHallThreadMessages` + 构建候选
+
+### Phase P3-B-2 — 防抖合并 + worker queue（completed, PR #17 merged 2026-04-30）
 
 **Design issue**: https://github.com/xiaolinfrank/openclaw-control-center/issues/13
 **Branch**: `feat/hall-mailbox-debounce-p3b2`（基于合并后的 `main`，已包含 P3-A / P3-B-1 / P3-A-2）
