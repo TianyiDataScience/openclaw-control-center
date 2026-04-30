@@ -526,3 +526,55 @@ P3-A-2 跟 P3-B-1 是兄弟分支，都基于 P3-A，互不依赖（功能上正
 #### Agent 行为副作用：首轮就用了 `tail .hall/chat.jsonl`
 
 观察到 Linus 收到第一条 task 后**主动调 bash `tail -n 20 .hall/chat.jsonl`**——正是新群聊意识引导教的工作流。说明 prompt 强化生效。
+
+## Session 2026-04-30 续 — Phase 3-B-2 防抖合并 + worker pump
+
+合 P3-A / P3-B-1 / P3-A-2 三 PR 进 main 后，开 `feat/hall-mailbox-debounce-p3b2` 分支继续 mailbox 路线。
+
+### 落地
+
+把 P3-B-1 的同步 `enqueueAndDispatch(args, closure)` 重构为真正的异步 worker pump，但**保留 closure-per-call 模式**（不是注册全局 dispatcher）以维持测试隔离：
+
+- **`src/runtime/hall-scheduler.ts` 完全重写**
+  - per-(cardId, agentId) `WorkerState`：pending records 队列 + debounce timer + isDispatching 锁
+  - `enqueueAndDispatch(args, dispatch)` 仍接受 closure（关键：closure 通过 lexical scope 持有调用方的 `toolClient` / `hall` / `taskCard`，让测试的 fake client 仍能用）
+  - 750ms 防抖窗（可由 `HALL_INBOX_DEBOUNCE_MS` 覆盖）
+  - 窗稳定后 `drainAndDispatch`：原子 snapshot pending → **调 batch[0] 的 closure**（同一 (card, agent) 的 closures 等价，任意一个都行）→ 批量写 consume + delivery（共享 batchId）→ resolve 全部 pending promise
+  - closure 接收 `InboxBatchContext`（含全部合并的 records），自己负责从 message store 拉 triggerMessages
+  - dispatcher 抛错时 outcome 标 failed 但 promise 仍 resolve（callers `Promise.allSettled` 拿到 fulfilled，不破坏 observer 时序）
+  - 死锁规避：worker 自身不 await 任何 enqueue 返回的 promise；re-entrant enqueue（auto-chain）只追加 pending，下一窗自然处理
+- **`src/runtime/hall-mailbox.ts`**：`HallInboxDeliveryRecord` 加 `batchId?` / `batchSize?` 字段，反映合并批次
+- **`src/runtime/hall-runtime-dispatch.ts`**
+  - `HallRuntimeDispatchInput` 加 `triggerMessages?: HallMessage[]`
+  - `renderTriggerBlock` 多 trigger 时加头 `[在短时间内你被多次 @ (N 条 trigger 合并)，请在一条回复里照顾到全部：]`，每个 trigger 单独 attribution 块
+  - 单 trigger 时渲染不变（向后兼容）
+- **`src/runtime/collaboration-hall-orchestrator.ts`**
+  - 5 处 `enqueueAndDispatch(args, closure)`：closure 现在接收 batch 参数，从 message store 拉 triggerMessages 数组，调 `dispatchHallAgentReply` 时传 `triggerMessages: HallMessage[]`
+  - `dispatchHallAgentReply` 接受 `triggerMessages?` 字段并透传给 `dispatchHallRuntimeTurn`
+  - 新增 `loadTriggerMessagesFromBatch` 帮手：按 batch.records 的 triggerMessageId 从 message store 解析回 HallMessage 列表
+
+### 设计修正（中途回头）
+
+最初尝试用"注册全局 InboxDispatcher"模式（orchestrator 在模块加载时注册一个集中 dispatcher，worker 调它）。落地时发现这破坏测试隔离——测试通过 `options.toolClient` 注入的 fake client，原本由 dispatchHallAgentReply closure 通过 lexical scope 捕获；新模式下集中 dispatcher 改用 `createToolClient()` 创建真实 OpenClawLiveClient，导致 `hall-loop-prevention` 等测试连接真实 OpenClaw 卡死。回退为 closure-per-call 模式，让 closure 自然带着 caller 的 toolClient 流入 worker。
+
+### 测试
+
+- `test/hall-scheduler.test.ts` 重写：7 个 case 全过
+  - 多 trigger 合并（3 个并发 enqueue → 1 个 batch，共享 batchId，batchSize=3）
+  - 晚到 enqueue 进新 batch
+  - 跨 (card, agent) 并行 worker
+  - **re-entrant enqueue 不死锁**（dispatcher 内部 fire-and-forget enqueue 自身，第二批正常处理）
+  - dispatcher failed outcome：consume + delivery 标 failed 但 promise 仍 resolve
+  - outcome override
+  - inbox 文件每 record 仍写 enqueue + consume 两行
+- `test/hall-prompt-context.test.ts` 加 2 个 case：
+  - 多 trigger batch 渲染含合并 header + 每 trigger attribution
+  - 单 trigger 时无 merge header，向后兼容
+- `test/hall-mailbox.test.ts` 不变（mailbox API 不变），7 个 case 仍过
+
+### 验证
+
+- `npm run build` 干净
+- hall 全套（除 typing 已知 hang）：~134 过，3 失败仍是 P3-A 之前的基线（execution-order persists / session-linkage / multi-mention routing），**零新回归**
+- `npm run smoke:ui` 通过
+- Playwright e2e 略过（unit test 已覆盖关键合并行为；orchestrator 路径形态与 P3-B-1 同构，P3-B-1 e2e 验证过）
