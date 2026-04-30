@@ -3,17 +3,25 @@ import test from "node:test";
 
 import {
   AUTO_ROUND_BLOCK_THRESHOLD,
+  DROP_RESOLVED_OVERLAP_THRESHOLD,
+  HALL_BACK_PING_BUDGET,
   HALL_CHAIN_FILTER_POLICIES,
   HALL_DEFAULT_POST_DISPATCH_POLICIES,
   HALL_PER_TARGET_GATE_POLICIES,
   MAX_AUTO_CHAIN_DEPTH,
   OBSERVE_SILENT_MARKER,
+  POLICY_DETECT_CLARIFYING_QUESTION,
+  POLICY_DROP_RESOLVED_TRIGGERS,
   POLICY_ENFORCE_AUTO_ROUND_LIMIT,
+  POLICY_ENFORCE_BACK_PING_BUDGET,
   POLICY_ENFORCE_MAX_AUTO_CHAIN_DEPTH,
   POLICY_EXCLUDE_TRIGGER_AUTHOR,
   POLICY_OBSERVE_SILENT_MARKER,
   buildOperatorTurnStatePatch,
+  detectClarifyingQuestion,
+  dropResolvedTriggers,
   enforceAutoRoundLimit,
+  enforceBackPingBudget,
   enforceMaxAutoChainDepth,
   excludeTriggerAuthor,
   incrementAutoRoundCounter,
@@ -26,6 +34,7 @@ import {
 } from "../src/runtime/hall-policies";
 import type {
   CollaborationHall,
+  HallMessage,
   HallParticipant,
   HallTaskCard,
 } from "../src/types";
@@ -484,3 +493,543 @@ test("incrementAutoRoundCounter does not mutate the original taskCard", () => {
   incrementAutoRoundCounter(original, makeParticipant({ agentId: "linus" }));
   assert.equal(JSON.stringify(original.autoRoundsByAgent), snapshot);
 });
+
+// ===========================================================================
+// P3-C-2 — chain runner force-allow short-circuit
+// ===========================================================================
+
+test("runPreDispatchPolicies short-circuits on force-allow (overrides downstream deny)", () => {
+  const calls: string[] = [];
+  const policyA: PreDispatchPolicy = () => { calls.push("a"); return { kind: "allow" }; };
+  const policyB: PreDispatchPolicy = () => { calls.push("b"); return { kind: "force-allow", policyId: "b", reason: "force" }; };
+  const policyC: PreDispatchPolicy = () => { calls.push("c"); return { kind: "deny", policyId: "c", reason: "would deny" }; };
+
+  const verdict = runPreDispatchPolicies([policyA, policyB, policyC], makeInput());
+  assert.equal(verdict.kind, "force-allow");
+  if (verdict.kind === "force-allow") assert.equal(verdict.policyId, "b");
+  // C must not have run — force-allow short-circuits like deny
+  assert.deepEqual(calls, ["a", "b"]);
+});
+
+test("runPreDispatchPolicies returns allow when chain ends without any short-circuit", () => {
+  const policies: PreDispatchPolicy[] = [
+    () => ({ kind: "allow" }),
+    () => ({ kind: "allow" }),
+  ];
+  const verdict = runPreDispatchPolicies(policies, makeInput());
+  assert.equal(verdict.kind, "allow");
+});
+
+// ===========================================================================
+// P3-C-2 — detectClarifyingQuestion
+// ===========================================================================
+
+function makeMessage(overrides: Partial<HallMessage> = {}): HallMessage {
+  return {
+    hallId: "hall-1",
+    messageId: `m-${Math.random().toString(36).slice(2, 8)}`,
+    kind: "agent",
+    authorParticipantId: "p-turing",
+    authorLabel: "图灵 Turing",
+    content: "",
+    targetParticipantIds: [],
+    mentionTargets: [],
+    createdAt: "2026-04-30T00:00:00Z",
+    ...overrides,
+  };
+}
+
+test("detectClarifyingQuestion force-allows on ASCII question mark", () => {
+  const verdict = detectClarifyingQuestion(makeInput({
+    triggerMessage: makeMessage({ content: "@林纳斯 do you mean INNER JOIN?" }),
+  }));
+  assert.equal(verdict.kind, "force-allow");
+  if (verdict.kind === "force-allow") assert.equal(verdict.policyId, POLICY_DETECT_CLARIFYING_QUESTION);
+});
+
+test("detectClarifyingQuestion force-allows on CJK question mark", () => {
+  const verdict = detectClarifyingQuestion(makeInput({
+    triggerMessage: makeMessage({ content: "@林纳斯 这里要不要做缓存？" }),
+  }));
+  assert.equal(verdict.kind, "force-allow");
+});
+
+test("detectClarifyingQuestion force-allows on CJK 吗 ending", () => {
+  const verdict = detectClarifyingQuestion(makeInput({
+    triggerMessage: makeMessage({ content: "@林纳斯 你确认要这样改吗" }),
+  }));
+  assert.equal(verdict.kind, "force-allow");
+});
+
+test("detectClarifyingQuestion force-allows on CJK A-还是-B pattern", () => {
+  const verdict = detectClarifyingQuestion(makeInput({
+    triggerMessage: makeMessage({ content: "@林纳斯 INNER JOIN 还是 LEFT JOIN" }),
+  }));
+  assert.equal(verdict.kind, "force-allow");
+});
+
+test("detectClarifyingQuestion force-allows on English interrogative lead", () => {
+  const verdict = detectClarifyingQuestion(makeInput({
+    triggerMessage: makeMessage({ content: "How would you handle the migration window" }),
+  }));
+  assert.equal(verdict.kind, "force-allow");
+});
+
+test("detectClarifyingQuestion force-allows on clarification phrase", () => {
+  const verdict = detectClarifyingQuestion(makeInput({
+    triggerMessage: makeMessage({ content: "Just to be sure, the timeout is 30s right" }),
+  }));
+  assert.equal(verdict.kind, "force-allow");
+});
+
+test("detectClarifyingQuestion force-allows on CJK clarification verb", () => {
+  const verdict = detectClarifyingQuestion(makeInput({
+    triggerMessage: makeMessage({ content: "想澄清一下你的方案" }),
+  }));
+  assert.equal(verdict.kind, "force-allow");
+});
+
+test("detectClarifyingQuestion allows (no force) on a plain assertion", () => {
+  const verdict = detectClarifyingQuestion(makeInput({
+    triggerMessage: makeMessage({ content: "我已经把 idempotent 的例子写好了。" }),
+  }));
+  assert.equal(verdict.kind, "allow");
+});
+
+test("detectClarifyingQuestion allows when triggerMessage is missing", () => {
+  const verdict = detectClarifyingQuestion(makeInput({ triggerMessage: undefined }));
+  assert.equal(verdict.kind, "allow");
+});
+
+test("detectClarifyingQuestion allows on empty trigger content", () => {
+  const verdict = detectClarifyingQuestion(makeInput({
+    triggerMessage: makeMessage({ content: "   \n  " }),
+  }));
+  assert.equal(verdict.kind, "allow");
+});
+
+// ===========================================================================
+// P3-C-2 — dropResolvedTriggers
+// ===========================================================================
+
+test("dropResolvedTriggers always allows on operator-route enqueue (operator intent is authoritative)", () => {
+  // Even if the candidate's recent reply heavily overlaps the trigger, an
+  // operator-route trigger is allowed through — operators issue authoritative
+  // follow-ups that should always dispatch.
+  const verdict = dropResolvedTriggers(makeInput({
+    enqueueReason: "operator-route",
+    triggerMessage: makeMessage({ content: "@林纳斯 idempotent 例子 软件开发" }),
+    recentThreadMessages: [
+      makeMessage({
+        authorParticipantId: "p-linus",
+        content: "idempotent 是说软件开发里同样输入产生同样输出的例子",
+      }),
+    ],
+  }));
+  assert.equal(verdict.kind, "allow");
+});
+
+test("dropResolvedTriggers denies an auto-chain trigger redundantly covered by candidate's last reply", () => {
+  const verdict = dropResolvedTriggers(makeInput({
+    enqueueReason: "auto-chain",
+    participant: makeParticipant({ participantId: "p-linus", displayName: "林纳斯", agentId: "linus" }),
+    triggerMessage: makeMessage({
+      authorParticipantId: "p-turing",
+      content: "@林纳斯 举一个软件开发里的 idempotent 例子",
+    }),
+    recentThreadMessages: [
+      makeMessage({
+        authorParticipantId: "p-linus",
+        content: "idempotent 在软件开发里很常见，比如 PUT request——同样的请求重复发送也是一样的结果，就是一个 idempotent 例子。",
+      }),
+    ],
+  }));
+  assert.equal(verdict.kind, "deny");
+  if (verdict.kind === "deny") {
+    assert.equal(verdict.policyId, POLICY_DROP_RESOLVED_TRIGGERS);
+    assert.match(verdict.reason, /overlaps/);
+  }
+});
+
+test("dropResolvedTriggers allows when trigger is on a different topic from candidate's last reply", () => {
+  const verdict = dropResolvedTriggers(makeInput({
+    enqueueReason: "auto-chain",
+    participant: makeParticipant({ participantId: "p-linus" }),
+    triggerMessage: makeMessage({
+      content: "@林纳斯 endpoint 延迟 多少 毫秒",
+    }),
+    recentThreadMessages: [
+      makeMessage({
+        authorParticipantId: "p-linus",
+        content: "INNER JOIN 是这样写的：SELECT a.*, b.id FROM ...",
+      }),
+    ],
+  }));
+  assert.equal(verdict.kind, "allow");
+});
+
+test("dropResolvedTriggers allows when candidate has no prior reply in the thread", () => {
+  const verdict = dropResolvedTriggers(makeInput({
+    enqueueReason: "auto-chain",
+    participant: makeParticipant({ participantId: "p-linus" }),
+    triggerMessage: makeMessage({
+      content: "@林纳斯 请用 idempotent 的例子说明一下软件开发场景",
+    }),
+    recentThreadMessages: [
+      makeMessage({
+        authorParticipantId: "p-turing",
+        content: "@林纳斯 请用 idempotent 的例子说明软件开发场景",
+      }),
+    ],
+  }));
+  assert.equal(verdict.kind, "allow");
+});
+
+test("dropResolvedTriggers allows when trigger is too short to have meaningful overlap", () => {
+  const verdict = dropResolvedTriggers(makeInput({
+    enqueueReason: "auto-chain",
+    triggerMessage: makeMessage({ content: "ok" }),
+    recentThreadMessages: [
+      makeMessage({ authorParticipantId: "p-linus", content: "ok" }),
+    ],
+  }));
+  assert.equal(verdict.kind, "allow");
+});
+
+test("dropResolvedTriggers allows when recentThreadMessages is empty/undefined", () => {
+  const v1 = dropResolvedTriggers(makeInput({
+    enqueueReason: "auto-chain",
+    triggerMessage: makeMessage({ content: "@林纳斯 一些 软件开发 idempotent 例子" }),
+  }));
+  assert.equal(v1.kind, "allow");
+  const v2 = dropResolvedTriggers(makeInput({
+    enqueueReason: "auto-chain",
+    triggerMessage: makeMessage({ content: "@林纳斯 一些 软件开发 idempotent 例子" }),
+    recentThreadMessages: [],
+  }));
+  assert.equal(v2.kind, "allow");
+});
+
+test("dropResolvedTriggers picks the candidate's MOST RECENT reply, not earlier ones", () => {
+  // Earlier reply about idempotent; latest reply about something else.
+  // Trigger about idempotent should NOT be denied — only the latest reply counts.
+  const verdict = dropResolvedTriggers(makeInput({
+    enqueueReason: "auto-chain",
+    participant: makeParticipant({ participantId: "p-linus" }),
+    triggerMessage: makeMessage({
+      content: "@林纳斯 再举一个 idempotent 软件开发 例子",
+    }),
+    recentThreadMessages: [
+      makeMessage({
+        messageId: "old-1",
+        authorParticipantId: "p-linus",
+        content: "idempotent 例子：PUT 请求 软件开发 场景",
+      }),
+      makeMessage({
+        messageId: "newer-1",
+        authorParticipantId: "p-turing",
+        content: "好的谢谢",
+      }),
+      makeMessage({
+        messageId: "newest-from-linus",
+        authorParticipantId: "p-linus",
+        content: "好的我去看看",
+      }),
+    ],
+  }));
+  assert.equal(verdict.kind, "allow");
+});
+
+// ===========================================================================
+// P3-C-2 — enforceBackPingBudget
+// ===========================================================================
+
+function makeHallWithHumans(): CollaborationHall {
+  return {
+    ...makeHall(),
+    participants: [
+      { participantId: "operator", displayName: "Operator", semanticRole: "manager", active: true, aliases: [], isHuman: true } as HallParticipant,
+      { participantId: "p-turing", displayName: "图灵", semanticRole: "manager", active: true, aliases: [], agentId: "turing" } as HallParticipant,
+      { participantId: "p-linus", displayName: "林纳斯", semanticRole: "implementer", active: true, aliases: [], agentId: "linus" } as HallParticipant,
+      { participantId: "p-ada", displayName: "阿达", semanticRole: "reviewer", active: true, aliases: [], agentId: "ada" } as HallParticipant,
+    ],
+  };
+}
+
+test("enforceBackPingBudget allows when triggerAuthor has no prior @-mentions of candidate this round", () => {
+  const verdict = enforceBackPingBudget(makeInput({
+    hall: makeHallWithHumans(),
+    participant: makeParticipant({ participantId: "p-linus", displayName: "林纳斯", agentId: "linus" }),
+    triggerAuthorParticipantId: "p-turing",
+    triggerMessage: makeMessage({ messageId: "trigger", authorParticipantId: "p-turing", content: "@林纳斯 一个新问题" }),
+    recentThreadMessages: [
+      makeMessage({ authorParticipantId: "operator", content: "@图灵 帮忙看看" }),
+      makeMessage({ authorParticipantId: "p-turing", content: "好的我去做" }),
+      makeMessage({ messageId: "trigger", authorParticipantId: "p-turing", content: "@林纳斯 一个新问题" }),
+    ],
+  }));
+  assert.equal(verdict.kind, "allow");
+});
+
+test("enforceBackPingBudget denies when triggerAuthor has already @-mentioned candidate once this round (budget=1)", () => {
+  const verdict = enforceBackPingBudget(makeInput({
+    hall: makeHallWithHumans(),
+    participant: makeParticipant({ participantId: "p-linus", displayName: "林纳斯", agentId: "linus" }),
+    triggerAuthorParticipantId: "p-turing",
+    triggerMessage: makeMessage({ messageId: "current-trigger", authorParticipantId: "p-turing", content: "@林纳斯 第二次问" }),
+    recentThreadMessages: [
+      makeMessage({ authorParticipantId: "operator", content: "@图灵 看看" }),
+      makeMessage({ messageId: "first-ping", authorParticipantId: "p-turing", content: "@林纳斯 第一次问的内容" }),
+      makeMessage({ authorParticipantId: "p-linus", content: "回答..." }),
+      makeMessage({ messageId: "current-trigger", authorParticipantId: "p-turing", content: "@林纳斯 第二次问" }),
+    ],
+  }));
+  assert.equal(verdict.kind, "deny");
+  if (verdict.kind === "deny") {
+    assert.equal(verdict.policyId, POLICY_ENFORCE_BACK_PING_BUDGET);
+    assert.match(verdict.reason, new RegExp(`>= ${HALL_BACK_PING_BUDGET}`));
+  }
+});
+
+test("enforceBackPingBudget resets count at human-authored round boundary", () => {
+  // Old round had 2 prior pings, but new operator post resets the round.
+  const verdict = enforceBackPingBudget(makeInput({
+    hall: makeHallWithHumans(),
+    participant: makeParticipant({ participantId: "p-linus", agentId: "linus" }),
+    triggerAuthorParticipantId: "p-turing",
+    triggerMessage: makeMessage({ messageId: "trigger", authorParticipantId: "p-turing", content: "@林纳斯 一个新问题" }),
+    recentThreadMessages: [
+      // OLD ROUND
+      makeMessage({ authorParticipantId: "p-turing", content: "@林纳斯 旧问题1" }),
+      makeMessage({ authorParticipantId: "p-turing", content: "@林纳斯 旧问题2" }),
+      // ROUND BOUNDARY
+      makeMessage({ authorParticipantId: "operator", content: "新一轮开始" }),
+      // NEW ROUND
+      makeMessage({ messageId: "trigger", authorParticipantId: "p-turing", content: "@林纳斯 一个新问题" }),
+    ],
+  }));
+  // No prior pings in NEW round (only the current trigger, which is excluded) → allow
+  assert.equal(verdict.kind, "allow");
+});
+
+test("enforceBackPingBudget excludes the current triggerMessage from the count", () => {
+  // Only message in the round is the current trigger — count should be 0, not 1.
+  const verdict = enforceBackPingBudget(makeInput({
+    hall: makeHallWithHumans(),
+    participant: makeParticipant({ participantId: "p-linus", agentId: "linus" }),
+    triggerAuthorParticipantId: "p-turing",
+    triggerMessage: makeMessage({ messageId: "current", authorParticipantId: "p-turing", content: "@林纳斯 第一次问" }),
+    recentThreadMessages: [
+      makeMessage({ authorParticipantId: "operator", content: "开始" }),
+      makeMessage({ messageId: "current", authorParticipantId: "p-turing", content: "@林纳斯 第一次问" }),
+    ],
+  }));
+  assert.equal(verdict.kind, "allow");
+});
+
+test("enforceBackPingBudget treats isHuman=true participants as round boundaries (multi-human safe)", () => {
+  // Use a non-"operator" id with isHuman=true; the round boundary should still
+  // be detected so prior pings before the boundary aren't counted.
+  const hall = {
+    ...makeHall(),
+    participants: [
+      { participantId: "human-2", displayName: "Bob", semanticRole: "manager", active: true, aliases: [], isHuman: true } as HallParticipant,
+      { participantId: "p-turing", displayName: "图灵", semanticRole: "manager", active: true, aliases: [], agentId: "turing" } as HallParticipant,
+      { participantId: "p-linus", displayName: "林纳斯", semanticRole: "implementer", active: true, aliases: [], agentId: "linus" } as HallParticipant,
+    ],
+  };
+  const verdict = enforceBackPingBudget(makeInput({
+    hall,
+    participant: makeParticipant({ participantId: "p-linus", agentId: "linus" }),
+    triggerAuthorParticipantId: "p-turing",
+    triggerMessage: makeMessage({ messageId: "trigger", authorParticipantId: "p-turing", content: "@林纳斯 新问题" }),
+    recentThreadMessages: [
+      makeMessage({ authorParticipantId: "p-turing", content: "@林纳斯 旧的问题" }),
+      makeMessage({ authorParticipantId: "human-2", content: "新一轮" }),
+      makeMessage({ messageId: "trigger", authorParticipantId: "p-turing", content: "@林纳斯 新问题" }),
+    ],
+  }));
+  assert.equal(verdict.kind, "allow");
+});
+
+test("enforceBackPingBudget counts mentions case-insensitively across displayName / agentId / participantId", () => {
+  const hall = makeHallWithHumans();
+  // Trigger author's prior message mentioned candidate by lowercased agentId.
+  const verdict = enforceBackPingBudget(makeInput({
+    hall,
+    participant: makeParticipant({ participantId: "p-linus", displayName: "林纳斯", agentId: "linus" }),
+    triggerAuthorParticipantId: "p-turing",
+    triggerMessage: makeMessage({ messageId: "current", authorParticipantId: "p-turing", content: "@linus 第二次" }),
+    recentThreadMessages: [
+      makeMessage({ authorParticipantId: "operator", content: "go" }),
+      makeMessage({ authorParticipantId: "p-turing", content: "@LINUS 第一次问 (uppercase mention)" }),
+      makeMessage({ messageId: "current", authorParticipantId: "p-turing", content: "@linus 第二次" }),
+    ],
+  }));
+  assert.equal(verdict.kind, "deny");
+});
+
+test("enforceBackPingBudget allows when triggerAuthorParticipantId is missing", () => {
+  const verdict = enforceBackPingBudget(makeInput({
+    hall: makeHallWithHumans(),
+    triggerAuthorParticipantId: undefined,
+    recentThreadMessages: [
+      makeMessage({ authorParticipantId: "p-turing", content: "@林纳斯 1" }),
+      makeMessage({ authorParticipantId: "p-turing", content: "@林纳斯 2" }),
+    ],
+  }));
+  assert.equal(verdict.kind, "allow");
+});
+
+// ===========================================================================
+// P3-C-2 — chain composition + interaction tests
+// ===========================================================================
+
+test("HALL_PER_TARGET_GATE_POLICIES order: A2 before detectClarifyingQuestion (A2 is a hard cap; CQ cannot bypass)", () => {
+  // Counter at threshold + trigger looks like a question. A2 still wins.
+  const verdict = runPreDispatchPolicies(HALL_PER_TARGET_GATE_POLICIES, {
+    hall: makeHallWithHumans(),
+    taskCard: makeTaskCard({ autoRoundsByAgent: { linus: AUTO_ROUND_BLOCK_THRESHOLD } }),
+    participant: makeParticipant({ agentId: "linus" }),
+    triggerMessage: makeMessage({ content: "你确定要这样做吗？" }), // would force-allow
+    triggerAuthorParticipantId: "p-turing",
+    chainDepth: 1,
+    enqueueReason: "auto-chain",
+    recentThreadMessages: [],
+  });
+  assert.equal(verdict.kind, "deny");
+  if (verdict.kind === "deny") {
+    assert.equal(verdict.policyId, POLICY_ENFORCE_AUTO_ROUND_LIMIT);
+  }
+});
+
+test("HALL_CHAIN_FILTER_POLICIES: detectClarifyingQuestion overrides excludeTriggerAuthor (A3) for real questions", () => {
+  // Reverse Q&A: B's reply mentions @A asking a clarifying question. A3 would
+  // normally deny (candidate == trigger author of A's earlier turn), but the
+  // question pattern force-allows.
+  const verdict = runPreDispatchPolicies(HALL_CHAIN_FILTER_POLICIES, {
+    hall: makeHallWithHumans(),
+    taskCard: makeTaskCard(),
+    participant: makeParticipant({ participantId: "p-turing", displayName: "图灵" }),
+    triggerMessage: makeMessage({
+      authorParticipantId: "p-linus",
+      content: "@图灵 你的意思是用 LEFT JOIN 吗？",
+    }),
+    triggerAuthorParticipantId: "p-turing",  // Same as candidate → A3 would deny
+    chainDepth: 1,
+    enqueueReason: "auto-chain",
+    recentThreadMessages: [],
+  });
+  assert.equal(verdict.kind, "force-allow");
+  if (verdict.kind === "force-allow") {
+    assert.equal(verdict.policyId, POLICY_DETECT_CLARIFYING_QUESTION);
+  }
+});
+
+test("HALL_CHAIN_FILTER_POLICIES: dropResolvedTriggers fires even when trigger is non-questioning auto-chain ping", () => {
+  // Non-question trigger from B to A; A's last reply already covered the topic.
+  // detectClarifyingQuestion does NOT fire → dropResolvedTriggers can deny.
+  const verdict = runPreDispatchPolicies(HALL_CHAIN_FILTER_POLICIES, {
+    hall: makeHallWithHumans(),
+    taskCard: makeTaskCard(),
+    participant: makeParticipant({ participantId: "p-linus", displayName: "林纳斯", agentId: "linus" }),
+    triggerMessage: makeMessage({
+      authorParticipantId: "p-turing",
+      content: "@林纳斯 idempotent 例子 软件开发 帮忙",
+    }),
+    triggerAuthorParticipantId: "p-turing",
+    chainDepth: 1,
+    enqueueReason: "auto-chain",
+    recentThreadMessages: [
+      makeMessage({
+        authorParticipantId: "p-linus",
+        content: "idempotent 在软件开发里很常见，举例 PUT 请求 重复发 也是同样结果，就是 idempotent 例子。",
+      }),
+    ],
+  });
+  assert.equal(verdict.kind, "deny");
+  if (verdict.kind === "deny") {
+    assert.equal(verdict.policyId, POLICY_DROP_RESOLVED_TRIGGERS);
+  }
+});
+
+test("HALL_CHAIN_FILTER_POLICIES: enforceBackPingBudget fires when (B → A) already pinged once this round", () => {
+  // B pinged A once already this round; current ping is the 2nd → deny.
+  const verdict = runPreDispatchPolicies(HALL_CHAIN_FILTER_POLICIES, {
+    hall: makeHallWithHumans(),
+    taskCard: makeTaskCard(),
+    participant: makeParticipant({ participantId: "p-linus", displayName: "林纳斯", agentId: "linus" }),
+    triggerMessage: makeMessage({
+      messageId: "current",
+      authorParticipantId: "p-turing",
+      content: "@林纳斯 完全无关的新话题这里没什么关键词",
+    }),
+    triggerAuthorParticipantId: "p-turing",
+    chainDepth: 1,
+    enqueueReason: "auto-chain",
+    recentThreadMessages: [
+      makeMessage({ authorParticipantId: "operator", content: "go" }),
+      makeMessage({ authorParticipantId: "p-turing", content: "@林纳斯 第一次 ping" }),
+      makeMessage({ messageId: "current", authorParticipantId: "p-turing", content: "@林纳斯 完全无关的新话题这里没什么关键词" }),
+    ],
+  });
+  assert.equal(verdict.kind, "deny");
+  if (verdict.kind === "deny") {
+    assert.equal(verdict.policyId, POLICY_ENFORCE_BACK_PING_BUDGET);
+  }
+});
+
+test("HALL_CHAIN_FILTER_POLICIES: clarifying-question force-allow beats both back-ping-budget AND A3", () => {
+  // (B → A) already pinged once this round AND candidate IS the trigger author
+  // (A3 would also deny). Both downstream denies are skipped because the
+  // trigger looks like a clarifying question.
+  const verdict = runPreDispatchPolicies(HALL_CHAIN_FILTER_POLICIES, {
+    hall: makeHallWithHumans(),
+    taskCard: makeTaskCard(),
+    participant: makeParticipant({ participantId: "p-turing", displayName: "图灵" }),
+    triggerMessage: makeMessage({
+      messageId: "current",
+      authorParticipantId: "p-linus",
+      content: "@图灵 我应该用 INNER JOIN 还是 LEFT JOIN",
+    }),
+    triggerAuthorParticipantId: "p-turing",
+    chainDepth: 1,
+    enqueueReason: "auto-chain",
+    recentThreadMessages: [
+      makeMessage({ authorParticipantId: "operator", content: "go" }),
+      makeMessage({ authorParticipantId: "p-linus", content: "@图灵 第一次 ping" }),
+      makeMessage({ messageId: "current", authorParticipantId: "p-linus", content: "@图灵 我应该用 INNER JOIN 还是 LEFT JOIN" }),
+    ],
+  });
+  assert.equal(verdict.kind, "force-allow");
+});
+
+test("HALL_PER_TARGET_GATE_POLICIES: max-depth deny precedes detectClarifyingQuestion (also a hard cap)", () => {
+  const verdict = runPreDispatchPolicies(HALL_PER_TARGET_GATE_POLICIES, {
+    hall: makeHallWithHumans(),
+    taskCard: makeTaskCard(),
+    participant: makeParticipant({ agentId: "linus" }),
+    triggerMessage: makeMessage({ content: "你说什么？" }), // would force-allow if reached
+    triggerAuthorParticipantId: "p-turing",
+    chainDepth: MAX_AUTO_CHAIN_DEPTH + 1, // over the cap
+    enqueueReason: "auto-chain",
+    recentThreadMessages: [],
+  });
+  assert.equal(verdict.kind, "deny");
+  if (verdict.kind === "deny") assert.equal(verdict.policyId, POLICY_ENFORCE_MAX_AUTO_CHAIN_DEPTH);
+});
+
+// ===========================================================================
+// P3-C-2 — overlap threshold sanity check
+// ===========================================================================
+
+test("DROP_RESOLVED_OVERLAP_THRESHOLD is a sane value in [0.4, 0.8]", () => {
+  // Sanity: very low (< 0.4) → many false positives; very high (> 0.8) → ineffective.
+  assert.ok(DROP_RESOLVED_OVERLAP_THRESHOLD >= 0.4);
+  assert.ok(DROP_RESOLVED_OVERLAP_THRESHOLD <= 0.8);
+});
+
+test("HALL_BACK_PING_BUDGET equals 1 (per issue #13 — first ping allowed, second denied)", () => {
+  assert.equal(HALL_BACK_PING_BUDGET, 1);
+});
+
