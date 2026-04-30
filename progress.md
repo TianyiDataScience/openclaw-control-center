@@ -578,3 +578,58 @@ P3-A-2 跟 P3-B-1 是兄弟分支，都基于 P3-A，互不依赖（功能上正
 - hall 全套（除 typing 已知 hang）：~134 过，3 失败仍是 P3-A 之前的基线（execution-order persists / session-linkage / multi-mention routing），**零新回归**
 - `npm run smoke:ui` 通过
 - Playwright e2e 略过（unit test 已覆盖关键合并行为；orchestrator 路径形态与 P3-B-1 同构，P3-B-1 e2e 验证过）
+
+## Session 2026-04-30 — Phase 3-C-1 policy chain 抽取
+
+P3-C-1 目标：把 A1-A4 反循环兜底从 `collaboration-hall-orchestrator.ts` 散落的 inline 检查抽到 `hall-policies.ts` 的可插拔纯函数链——**行为不变**，为 P3-C-2（`detectClarifyingQuestion` / `dropResolvedTriggers` / `enforceBackPingBudget`）打地基。
+
+### What landed
+
+- **`src/runtime/hall-policies.ts`**（新增）：
+  - 常量：`OBSERVE_SILENT_MARKER` / `MAX_AUTO_CHAIN_DEPTH=5` / `AUTO_ROUND_BLOCK_THRESHOLD=6`
+  - 类型：`PreDispatchVerdict` / `PostDispatchVerdict`（带 `policyId` 让 caller 按 policy 分支侧效）、`PreDispatchPolicy` / `PostDispatchPolicy`
+  - 4 个 policy 纯函数：`enforceAutoRoundLimit`（A2）/ `enforceMaxAutoChainDepth` / `excludeTriggerAuthor`（A3）/ `observeSilentMarker`（A4）
+  - 链组合：`HALL_PER_TARGET_GATE_POLICIES`（per-target gate, A2 优先以保留 auto-round-blocked 通知侧效）/ `HALL_CHAIN_FILTER_POLICIES`（chain candidate 过滤）/ `HALL_DEFAULT_POST_DISPATCH_POLICIES`
+  - 链 runner：`runPreDispatchPolicies` / `runPostDispatchPolicies` —— 顺序执行，第一个 deny/drop 短路返回
+  - 状态帮手：`buildOperatorTurnStatePatch`（A1 seed + A2 reset 合并成一个 patch）/ `incrementAutoRoundCounter`（不可变返回）
+
+- **`src/runtime/collaboration-hall-orchestrator.ts`**：
+  - 删除 inline `MAX_AUTO_CHAIN_DEPTH` / `AUTO_ROUND_BLOCK_THRESHOLD` / `OBSERVE_SILENT_MARKER` 常量定义，改为从 `hall-policies` 导入
+  - `routeAndDispatchHallMessage` 顶部 A1+A2-reset：22 行 → 8 行，调 `buildOperatorTurnStatePatch`
+  - `dispatchHallAgentReply` per-target gate（line 1140-1180）：21 行 → 30 行，先 `incrementAutoRoundCounter` 再 `runPreDispatchPolicies(HALL_PER_TARGET_GATE_POLICIES, ...)`，deny 时按 `policyId` 分发侧效（A2 触发 `handleAutoRoundBlockedThreshold`）
+  - `dispatchHallAgentReply` post-dispatch silence check（A4）：3 行 → `runPostDispatchPolicies` 一行
+  - `dispatchHallAgentReply` chain target filter（A3 + chain depth）：手写 filter → `runPreDispatchPolicies(HALL_CHAIN_FILTER_POLICIES, ...)`
+  - `dispatchMainObserver` 同样替换 silence check + chain target filter
+  - `wakeMentionInitiator` 同样替换 silence check
+  - 保留 `if (chainDepth < MAX_AUTO_CHAIN_DEPTH)` 外层早出（避免 chainDepth=5 时白白 build candidates + 拉 thread messages）
+
+### 设计要点
+
+- **行为不变是硬约束**：所有 policy 都是纯函数，对应的输入/输出与原 inline 检查 1:1 对齐。每条 policy 的注释列出对应的原行号区段
+- **`policyId` 让 caller 区分侧效**：A2 deny 时 caller 调 `handleAutoRoundBlockedThreshold`；其他 deny 静默丢弃。这是为了精确保留旧行为——老代码只在 A2 命中时发那条 system 消息
+- **A2 的 race-with-persistence 行为保留**：原代码先 increment 本地 `rounds`，再 try-catch persist；阈值检查读的是**本地 rounds**（即使 persist 失败也按 incremented 值 block）。重构后在 catch 分支 `taskCard = { ...taskCard, autoRoundsByAgent: rounds }` 把本地 rounds 反映到 taskCard，policy 链照样读到 incremented counter
+- **policy 链的两个站点**：per-target gate（已 increment, A2 主战场）和 chain filter（未 increment, A3+max-depth 主战场）。两个链各自的组合刻意把 A2-limit 留在 gate 链、把 max-depth+A3 留在 filter 链——避免 chain filter 误用 A2 把候选静默删掉而错过 auto-round-blocked 通知
+- **未来 P3-C-2 的入口**：新 policy（`dropResolvedTriggers` / `enforceBackPingBudget` / `detectClarifyingQuestion`）只需 push 进 `HALL_CHAIN_FILTER_POLICIES`（或 gate 链），不需要再改 orchestrator
+
+### 测试
+
+- `test/hall-policies.test.ts` 新增 38 个 case，覆盖：
+  - 4 个 policy 纯函数的所有 verdict 分支（含 `??` 与空字符串边界）
+  - 链 runner 的空链 / 短路 / 顺序保留
+  - 默认链组合 (`HALL_PER_TARGET_GATE_POLICIES` / `HALL_CHAIN_FILTER_POLICIES` / `HALL_DEFAULT_POST_DISPATCH_POLICIES`) 行为
+  - `buildOperatorTurnStatePatch` 5 个分支（seed / reset / null / no triggerAuthor / 不覆盖已有 assigner）
+  - `incrementAutoRoundCounter` 的 agentId fallback / 空字符串行为 / 不可变性
+- 一个 case 上来失败：误以为 `??` 像 `||` 那样把空字符串视作 fallback 信号——更正后行为对齐：`agentId === ""` 不走 fallback，`agentId === undefined` 才 fallback 到 `participantId`。两个 case 分别验证两条路径
+
+### 验证
+
+- `npm run build` 干净
+- `test/hall-policies.test.ts`：38/38 全过
+- 全套测试（除 `collaboration-hall-typing.test.ts` 已知 hang）：~250 过，5 失败：
+  - 3 个 P3-A 之前的基线（execution-order persists / session-linkage / multi-mention routing）
+  - 1 个 typing test（已知 hang，与 P3-C-1 无关）
+  - 1 个 ui-render-smoke "memory and workspace sections expose editable file workbenches"——在裸 main 上同样失败，pre-existing
+- 重点回归测试 small batch（hall-loop-prevention + collaboration-hall-orchestrator + hall-policies + hall-mailbox + hall-scheduler）：76 过 2 fail，2 fail 全是基线，**A1-A4 直接相关测试全过**——`A1: prompt 注入 originalAssigner @汇报指令` / `A1: 无 originalAssigner 时不注入` / `A4: 提示 OBSERVE_SILENT` / `store: originalAssigner 与 autoRoundsByAgent round-trip` / `A1+A2: operator 触发 dispatch 时 seed + reset` / `A4: main OBSERVE_SILENT 在 orchestrator 层吞掉`
+- Playwright e2e 略过（policy chain 是纯 refactor 不改行为；orchestrator 形态与 P3-A/P3-B-1/P3-B-2 同构）
+
+
