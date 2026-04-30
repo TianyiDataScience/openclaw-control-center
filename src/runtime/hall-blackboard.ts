@@ -97,19 +97,29 @@ export function renderHallBlackboardPromptGuidance(taskCardId: string, language:
   const root = resolveHallTaskWorkspacePath(taskCardId);
   if (language === "zh") {
     return [
-      "群聊共享黑板（在你的工作目录下，可直接用 bash 访问）：",
-      `- ${join(root, CHAT_JSONL)} —— 全量消息（JSON Lines），每行一条 HallMessage。需要历史时用 \`jq\` / \`grep\`，不要假设你看到的 inline 上下文是完整的。`,
-      `- ${join(root, CHAT_INDEX_MD)} —— 按 kind / 作者 / 时间分组的索引（grep 友好）。`,
+      "[群聊意识 — 你看不到的部分]",
+      "你只在被 @ 时（或作为 main observer 时）被唤醒。**唤醒之间，群里其他人一直在说话，那些消息不会出现在你的 prompt 里。** 想知道这段时间发生了什么，必须自己去黑板查：",
+      "",
+      `- ${join(root, CHAT_JSONL)} —— 群聊全量消息（JSON Lines，每行一条 HallMessage，含他人发言、status、tool 调用摘要等）。看新动向：\`tail -n 20 .hall/chat.jsonl | jq -c '{from: .authorLabel, kind, content: .content[0:200]}'\`。按人查：\`grep '"authorLabel":"林纳斯' .hall/chat.jsonl | jq .content -r\`。`,
+      `- ${join(root, CHAT_INDEX_MD)} —— 按 kind / 作者 / 时间分组的索引，grep 友好。`,
       `- ${join(root, TASK_PLAN_MD)} / ${join(root, FINDINGS_MD)} / ${join(root, PROGRESS_MD)} —— 共享 markdown，所有 agent 可读写。`,
-      "写入这三份共享 markdown 时，请用 `<!-- agent: <你的 id>, ts: <ISO 时间> -->` 和 `<!-- /agent -->` 把自己的内容包起来，**只追加，不覆盖**别人的块。完成阶段性产出后请在 progress.md 末尾追加一段，系统会把最末块同步到任务卡片摘要。",
+      "",
+      "建议工作流：被 @ 唤醒后，**先快速 `tail` 一下 chat.jsonl 看群聊最新进展**，再看 task_plan / findings / progress 的最新追加块，再开干。",
+      "",
+      "写共享 markdown 时，用 `<!-- agent: <你的 id>, ts: <ISO 时间> -->` 和 `<!-- /agent -->` 把自己的内容包起来，**只追加，不覆盖**别人的块。完成阶段性产出后请在 progress.md 末尾追加一段，系统会把最末块同步到任务卡片摘要。",
     ].join("\n");
   }
   return [
-    "Group-chat shared blackboard (under your working directory, accessible via bash):",
-    `- ${join(root, CHAT_JSONL)} — full message log (JSON Lines, one HallMessage per line). For history, use \`jq\` or \`grep\` rather than assuming your inline context is complete.`,
+    "[Group-chat awareness — what you DON'T see]",
+    "You are dispatched only when @mentioned (or as the main observer). **Between dispatches, other agents keep talking in this thread, and those messages do NOT appear in your prompts.** To see what happened while you were silent, you must consult the blackboard yourself:",
+    "",
+    `- ${join(root, CHAT_JSONL)} — full message log (JSON Lines, one HallMessage per line; includes others' replies, status, tool-call summaries). Latest activity: \`tail -n 20 .hall/chat.jsonl | jq -c '{from: .authorLabel, kind, content: .content[0:200]}'\`. By author: \`grep '"authorLabel":"Linus' .hall/chat.jsonl | jq .content -r\`.`,
     `- ${join(root, CHAT_INDEX_MD)} — grep-friendly index by kind / author / time.`,
     `- ${join(root, TASK_PLAN_MD)} / ${join(root, FINDINGS_MD)} / ${join(root, PROGRESS_MD)} — shared markdown, readable and writable by every agent.`,
-    "When writing to those three shared markdown files, wrap your content in `<!-- agent: <your-id>, ts: <ISO-timestamp> -->` ... `<!-- /agent -->`. Append only — do not overwrite other agents' blocks. After delivering a milestone, append a block to progress.md; the system will mirror the last block back into the task card summary.",
+    "",
+    "Suggested workflow when @-woken: **first `tail` chat.jsonl to catch up on recent thread activity**, then check the latest appended blocks in task_plan / findings / progress, then act.",
+    "",
+    "When writing to the shared markdown files, wrap your content in `<!-- agent: <your-id>, ts: <ISO-timestamp> -->` ... `<!-- /agent -->`. Append only — do not overwrite other agents' blocks. After delivering a milestone, append a block to progress.md; the system will mirror the last block back into the task card summary.",
   ].join("\n");
 }
 

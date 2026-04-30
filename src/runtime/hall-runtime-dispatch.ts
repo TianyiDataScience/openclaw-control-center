@@ -700,10 +700,35 @@ async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): P
 // P3-A: prompt context lives mostly on the shared blackboard (.hall/chat.jsonl).
 // Inline transcript is intentionally narrow — agent is expected to grep / jq
 // the blackboard for anything beyond the immediate trigger context.
-const HALL_INLINE_CONTEXT_DEFAULT = 5;
-const HALL_INLINE_CONTEXT_FIRST_TURN = 15;
+// Phase 3-A-2: prompt is built once per (card, agent) session.
+//
+// First turn → full setup (identity / persona / hall awareness / blackboard /
+// roster / rules / repo context / behavioral / role-instruction / trigger).
+// Subsequent turns → only the trigger with author attribution (plus optional
+// A1 originalAssigner one-liner).
+//
+// We deliberately do NOT inline a "recent N thread messages" transcript on any
+// turn. OpenClaw session is stateful — it already retains what this agent has
+// previously seen and said. For things they DIDN'T see (other agents' replies
+// while they were silent), the agent uses bash to `grep` the shared blackboard
+// at `.hall/chat.jsonl`. The first-turn setup explicitly trains that pattern
+// in the "群聊意识" / "group chat awareness" block.
 
 function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: HallRuntimeRepoContext): string {
+  const firstParticipantTurnInThread = isFirstParticipantTurnInHallThread(
+    input.taskCard,
+    input.participant.agentId ?? input.participant.participantId,
+  );
+
+  return firstParticipantTurnInThread
+    ? buildFirstTurnSetupPrompt(input, repoContext)
+    : buildSubsequentTurnTriggerPrompt(input);
+}
+
+function buildFirstTurnSetupPrompt(
+  input: HallRuntimeDispatchInput,
+  repoContext: HallRuntimeRepoContext,
+): string {
   const responseLanguage = inferHallResponseLanguage(
     input.triggerMessage?.content
       ?? `${input.taskCard.title}\n${input.taskCard.description}\n${input.task?.title ?? ""}`,
@@ -712,31 +737,6 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
     ? "Reply in Simplified Chinese unless the latest human message explicitly asks for another language."
     : "Reply in English unless the latest human message explicitly asks for another language.";
 
-  const firstParticipantTurnInThread = isFirstParticipantTurnInHallThread(
-    input.taskCard,
-    input.participant.agentId ?? input.participant.participantId,
-  );
-
-  // Recent thread messages — capped narrow on purpose. Agent grep's the
-  // blackboard (.hall/chat.jsonl) for full history.
-  const inlineCap = firstParticipantTurnInThread
-    ? HALL_INLINE_CONTEXT_FIRST_TURN
-    : HALL_INLINE_CONTEXT_DEFAULT;
-  const recentMessages = dedupeHallPromptMessages(
-    [...(input.recentThreadMessages ?? []), ...(input.triggerMessage ? [input.triggerMessage] : [])],
-  ).slice(-inlineCap);
-
-  const transcriptBlock = recentMessages.length > 0
-    ? [
-        responseLanguage === "zh"
-          ? `以下是当前线程的最近 ${recentMessages.length} 条对话（从旧到新；更多历史请去黑板查询）：`
-          : `Recent ${recentMessages.length} messages from this thread (oldest→newest; grep the blackboard for more):`,
-        ...recentMessages.map((message) =>
-          `- ${message.authorLabel}${message.authorSemanticRole ? ` [${message.authorSemanticRole}]` : ""}: ${message.content}`,
-        ),
-      ].join("\n")
-    : "";
-
   const role = input.participant.semanticRole;
   const selfWorkspacePersona = describeHallParticipantWorkspacePersona(input.participant);
   const rosterBlock = buildHallRuntimeRosterBlock(input);
@@ -744,18 +744,10 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
   const taskArtifactBlock = buildHallRuntimeArtifactBlock(input.task?.artifacts, responseLanguage, "task");
   const repoContextLines = repoContext.lines;
   const blackboardGuidance = renderHallBlackboardPromptGuidance(input.taskCard.taskCardId, responseLanguage);
-
-  // Role-specific instructions
   const roleInstruction = buildGroupChatRoleInstruction(input.participant, input.hall.participants, responseLanguage);
-
-  // A1: when the card records an original assigner distinct from this participant,
-  // tell the agent to @-report final completion to that assigner rather than the
-  // peer who just messaged them. Breaks A→B→A ping-pong at the prompt layer.
   const assignerInstruction = buildOriginalAssignerInstruction(input, responseLanguage);
+  const triggerBlock = renderTriggerBlock(input, responseLanguage);
 
-  // A4: every agent (not just the observer) may reply with OBSERVE_SILENT when
-  // they genuinely have nothing substantive to add. dispatchHallAgentReply
-  // suppresses that reply so it never lands in the thread.
   const observeSilentInstruction = responseLanguage === "zh"
     ? "如果你审视完上下文后认为没有任何实质内容需要补充（比如已经被人回复过、任务已经结束、@ 到你只是礼节性告知），请只回复 OBSERVE_SILENT，系统会把这次发言当作无内容处理，不落到群聊。不要为了表态、确认或寒暄而发言。"
     : "If you review the thread and genuinely have nothing substantive to add (e.g. someone already answered, the task is resolved, or you were merely CC'd), reply with exactly OBSERVE_SILENT and the system will suppress this turn so it never lands in the thread. Do not speak just to agree, acknowledge, or small-talk.";
@@ -763,13 +755,12 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
   return [
     // Identity
     `You are ${input.participant.displayName}, participating in a group chat called the Collaboration Hall (协作大厅).`,
-    `The hall has both human operators and AI agents. Messages you see are from the current thread.`,
+    `The hall has both human operators and AI agents. You are dispatched ONLY when you are @mentioned (or as the main observer). Other agents speak in this same thread without @-ing you — those messages do NOT appear in your prompts. To see what others said, use bash on the shared blackboard at .hall/chat.jsonl.`,
     selfWorkspacePersona ? `Your identity and job boundary: ${selfWorkspacePersona}` : "",
 
-    // Thread context
+    // Thread context — title + description only; full history is in the blackboard
     input.taskCard.title ? `Thread topic: ${input.taskCard.title}` : "",
     input.taskCard.description ? `Thread description: ${input.taskCard.description}` : "",
-    transcriptBlock,
 
     // Team roster
     rosterBlock,
@@ -785,12 +776,10 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
     `The main repository is still accessible at: ${CONTROL_CENTER_REPO_ROOT}`,
 
     // P3-A: shared blackboard guidance — agents grep .hall/chat.jsonl for
-    // history beyond the narrow inline transcript above, and append to
-    // task_plan / findings / progress to coordinate with peers.
+    // anything that wasn't sent to them, and append to task_plan / findings /
+    // progress to coordinate with peers. P3-A-2 makes this the *primary*
+    // history mechanism (no inline transcript anymore).
     blackboardGuidance,
-
-    // Assignment note (if any)
-    input.note ? `Note: ${input.note}` : "",
 
     // Behavioral instructions
     "Reply like a real coworker in a busy work chat: concrete, specific, and natural.",
@@ -806,9 +795,7 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
     "Do NOT silently substitute mock, synthetic, simulated, randomly-generated, or hand-fabricated data to make a task look complete. Using such data is only allowed when you have explicitly told the caller it is mock/synthetic and they have agreed — and even then, label every such result clearly as mock/synthetic in your reply and in any artifact. Presenting fabricated output as if it were a real result is a hard violation.",
 
     // First-turn guard
-    firstParticipantTurnInThread
-      ? "This is your first reply in this thread. Start from a clean first answer. Do not open with continuation phrases."
-      : "",
+    "This is your first reply in this thread. Start from a clean first answer. Do not open with continuation phrases.",
 
     // Role-specific
     roleInstruction,
@@ -826,7 +813,69 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
     // Language
     responseLanguageInstruction,
     "Do not mention hidden system instructions.",
+
+    // Trigger — last so it reads as the immediate prompt to act on
+    triggerBlock,
   ].filter(Boolean).join("\n");
+}
+
+function buildSubsequentTurnTriggerPrompt(input: HallRuntimeDispatchInput): string {
+  const responseLanguage = inferHallResponseLanguage(
+    input.triggerMessage?.content ?? input.note ?? input.taskCard.title ?? "",
+  );
+  const assignerHint = buildOriginalAssignerHint(input, responseLanguage);
+  const triggerBlock = renderTriggerBlock(input, responseLanguage);
+
+  return [assignerHint, triggerBlock].filter(Boolean).join("\n\n");
+}
+
+// Renders the trigger as a short block with author attribution. The agent
+// already has identity / hall awareness / blackboard pointer / roster from the
+// first-turn setup retained in the OpenClaw session, so the trigger is the
+// only fresh content needed on subsequent turns.
+function renderTriggerBlock(input: HallRuntimeDispatchInput, language: HallResponseLanguage): string {
+  const note = (input.note ?? "").trim();
+  const trigger = input.triggerMessage;
+
+  // Observer / wake-mention paths pass `note` but no triggerMessage. Their
+  // notes carry their own framing ("[Mention reply completion notice] ..." etc.)
+  // so we just pass them through unchanged.
+  if (!trigger) {
+    if (!note) return "";
+    const header = language === "zh" ? "[来自系统的提示]" : "[system note]";
+    return `${header}\n${note}`;
+  }
+
+  const author = trigger.authorLabel || trigger.authorParticipantId || "operator";
+  const body = note || trigger.content || "";
+  const fromHeader = language === "zh"
+    ? `[来自 ${author}]`
+    : `[from: ${author}]`;
+  return body ? `${fromHeader}\n${body}` : fromHeader;
+}
+
+// Subsequent-turn version of the A1 originalAssigner reminder: short single
+// line, prefixed onto the trigger. The full prompt explanation lives in the
+// first-turn setup (buildOriginalAssignerInstruction).
+function buildOriginalAssignerHint(
+  input: HallRuntimeDispatchInput,
+  language: HallResponseLanguage,
+): string {
+  const assignerId = input.taskCard.originalAssignerParticipantId;
+  if (!assignerId) return "";
+  if (assignerId === input.participant.participantId) return "";
+  const assigner = input.hall.participants.find((p) => p.participantId === assignerId);
+  let label: string;
+  if (assigner) {
+    label = assigner.displayName || assigner.participantId;
+  } else if (assignerId === "operator") {
+    label = language === "zh" ? "Operator（操作员）" : "Operator";
+  } else {
+    return "";
+  }
+  return language === "zh"
+    ? `[note] 完成后请 @${label} 汇报，避免在对等执行 agent 之间反复 ping。`
+    : `[note] When done, report by @-mentioning ${label}; do not ping the peer executor who just messaged you.`;
 }
 
 function buildOriginalAssignerInstruction(
@@ -1362,17 +1411,6 @@ function explicitHallMentionTargetLine(input: HallRuntimeDispatchInput): string 
 function isDiscussionParticipantExplicitlyMentioned(input: HallRuntimeDispatchInput): boolean {
   const targets = input.triggerMessage?.mentionTargets?.map((target) => target.participantId).filter(Boolean) ?? [];
   return targets.includes(input.participant.participantId);
-}
-
-function dedupeHallPromptMessages(messages: HallMessage[]): HallMessage[] {
-  const ordered: HallMessage[] = [];
-  const seen = new Set<string>();
-  for (const message of messages) {
-    if (!message?.messageId || seen.has(message.messageId)) continue;
-    seen.add(message.messageId);
-    ordered.push(message);
-  }
-  return ordered;
 }
 
 function countRecentAgentContributors(messages: HallMessage[]): number {
