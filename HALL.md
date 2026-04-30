@@ -2,8 +2,9 @@
 
 This file defines shared collaboration preferences for the Control Center Collaboration Hall.
 
-These rules shape tone and teamwork style only.
-Do not override explicit operator requests, current owner routing, queued execution order, or hard hall safety rules.
+These rules shape **tone and teamwork style only** — they are injected into agents' setup prompt as persona guidance. They do not override explicit operator requests, current owner routing, queued execution order, anti-loop policies, or hard hall safety rules.
+
+> Section headers (Discussion / Execution / Review / Handoff) describe **behavioral modes** an agent is in at any given moment — they are not stage-machine states. The hall is a free-form group chat; an agent moves between these modes naturally as the conversation progresses. For the underlying architecture, see [docs/HALL_ARCHITECTURE.md](./docs/HALL_ARCHITECTURE.md).
 
 ## Default style
 
