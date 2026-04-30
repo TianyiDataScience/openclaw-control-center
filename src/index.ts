@@ -16,7 +16,9 @@ import {
   TASK_HEARTBEAT_MAX_TASKS_PER_RUN,
   UI_TIMEZONE,
 } from "./config";
+import { buildHallRecoveryDispatcher } from "./runtime/collaboration-hall-orchestrator";
 import { buildExportBundle, writeExportBundle } from "./runtime/export-bundle";
+import { recoverPendingHallInboxes } from "./runtime/hall-supervisor";
 import { validateExportFileDryRun } from "./runtime/import-dry-run";
 import { monitorIntervalMs, nextContinuousMonitorDelayMs, runMonitorOnce } from "./runtime/monitor";
 import { pruneStaleAcks } from "./runtime/notification-center";
@@ -64,6 +66,23 @@ async function start(): Promise<void> {
 
   if (UI_MODE) {
     startUiServer(UI_PORT, client);
+    // P3-C-3b: recover any inbox records left pending by a previous process.
+    // Fire-and-forget so a slow recovery scan can't block the HTTP server, and
+    // best-effort so a transient store error doesn't crash the dashboard.
+    void recoverPendingHallInboxes({ dispatcher: buildHallRecoveryDispatcher(client) })
+      .then((report) => {
+        if (report.scheduledCount > 0 || report.canceledCount > 0) {
+          console.log("[mission-control] hall inbox recovery", {
+            scheduled: report.scheduledCount,
+            canceled: report.canceledCount,
+            skipped: report.skippedCount,
+            cards: report.perCard.length,
+          });
+        }
+      })
+      .catch((error) => {
+        console.error("[mission-control] hall inbox recovery failed", error);
+      });
   }
 
   const runMonitorSafely = async () => {

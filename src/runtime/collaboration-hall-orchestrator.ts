@@ -4008,3 +4008,45 @@ async function requireLinkedRoom(roomId: string) {
   }
   return room;
 }
+
+// ---------------------------------------------------------------------------
+// P3-C-3b — recovery dispatcher
+// ---------------------------------------------------------------------------
+// Closures captured at enqueue time (operator-route, auto-chain, etc.) hold
+// references to the caller's hall / participant / toolClient and don't survive
+// process restarts. The supervisor walks the on-disk inbox at startup and
+// hands each pending record to a freshly constructed closure built here. We
+// dispatch through `dispatchHallAgentReply` (the same path live traffic uses)
+// so anti-loop policies, A1-A4 counters, and persistence stay consistent.
+//
+// `main-observer` and `wake-mention-initiator` records are NOT replayed by
+// the supervisor itself — that filter lives in `hall-supervisor.ts` so this
+// builder doesn't need to inspect enqueueReason. By the time the supervisor
+// hands control to this closure, the record has already been classified as
+// replayable.
+
+export function buildHallRecoveryDispatcher(toolClient: ToolClient): import("./hall-supervisor").HallRecoveryDispatcher {
+  return async ({ hall, taskCard, participant, triggerMessage, record }) => {
+    if (!canDispatchHallToRuntime(toolClient, participant)) {
+      return { outcome: "skipped", reason: "recovery: runtime cannot dispatch participant" };
+    }
+    const recentThreadMessages = await loadRecentHallThreadMessages(taskCard);
+    try {
+      await dispatchHallAgentReply({
+        hall,
+        taskCard,
+        participant,
+        triggerMessage,
+        recentThreadMessages,
+        toolClient,
+        chainDepth: record.chainDepth,
+      });
+    } catch (error) {
+      return {
+        outcome: "failed",
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+    return { outcome: "dispatched" };
+  };
+}

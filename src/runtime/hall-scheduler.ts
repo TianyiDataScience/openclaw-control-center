@@ -222,6 +222,25 @@ async function drainAndDispatch(key: string, state: WorkerState): Promise<void> 
   }
 }
 
+/**
+ * P3-C-3b: schedule a record that already exists on disk (loaded from inbox
+ * during crash recovery) without re-persisting an enqueue line. The worker
+ * picks it up just like a fresh enqueue and the consume + delivery records
+ * still get written when the batch finishes — that's how we close the loop
+ * on what was previously pending.
+ *
+ * The returned promise resolves when the batch containing this record has
+ * finished dispatching, same contract as `enqueueAndDispatch`.
+ */
+export function scheduleRecoveredHallInbox(
+  record: HallInboxEnqueueRecord,
+  dispatch: BatchDispatcher,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    enqueueIntoWorker(record, dispatch, resolve, reject);
+  });
+}
+
 // Test helper — drop in-memory worker state between tests.
 export function __resetHallSchedulerForTests(): void {
   for (const state of workers.values()) {

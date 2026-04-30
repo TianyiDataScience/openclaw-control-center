@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -189,6 +189,40 @@ export async function appendHallDeliveryRecord(record: HallInboxDeliveryRecord):
 
 export function buildHallInboxFilename(targetParticipantId: string): string {
   return `${sanitizeParticipantId(targetParticipantId)}.jsonl`;
+}
+
+/**
+ * P3-C-3b: list every sanitized participant id that has an inbox file under
+ * `.hall/inbox/` for this card. Used by the supervisor at startup to discover
+ * which (card, agent) pairs may have unconsumed records to recover.
+ *
+ * Returns sanitized ids (`sanitizeParticipantId(participantId)`); supervisor
+ * matches them back against `hall.participants[*].participantId` by sanitizing
+ * the live participant id and comparing.
+ */
+export async function listHallInboxParticipantsForCard(taskCardId: string): Promise<string[]> {
+  const root = resolveHallTaskWorkspacePath(taskCardId);
+  let entries: string[] = [];
+  try {
+    entries = await readdir(join(root, INBOX_DIR));
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const name of entries) {
+    if (!name.endsWith(".jsonl")) continue;
+    out.push(name.slice(0, -".jsonl".length));
+  }
+  return out;
+}
+
+/**
+ * P3-C-3b: same as the internal sanitize used for filenames. Exported so the
+ * supervisor can map `hall.participants[*].participantId` back to the on-disk
+ * sanitized form when listHallInboxParticipantsForCard returns its list.
+ */
+export function sanitizeHallInboxParticipantId(input: string): string {
+  return sanitizeParticipantId(input);
 }
 
 // Test-only: drop in-memory state so a fresh test can hydrate from disk.
