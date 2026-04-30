@@ -81,6 +81,11 @@ export interface HallInboxDeliveryRecord {
   outcome: HallInboxConsumeOutcome;
   reason?: string;
   durationMs: number;
+  /** P3-B-2: shared id for all records consumed in the same merged batch.
+   * `batchSize > 1` means the worker merged multiple triggers (e.g. 750ms
+   * debounce window combining concurrent @s) into one dispatch. */
+  batchId?: string;
+  batchSize?: number;
 }
 
 interface InboxLogLine {

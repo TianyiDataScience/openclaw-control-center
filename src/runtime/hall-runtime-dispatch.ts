@@ -84,6 +84,12 @@ export interface HallRuntimeDispatchInput {
   participant: HallParticipant;
   task?: ProjectTask;
   triggerMessage?: HallMessage;
+  /** P3-B-2: when the inbox worker merges multiple @s within the debounce
+   * window into one dispatch, this holds the full ordered list of triggers.
+   * `triggerMessage` (singular) remains the most recent / primary one, used
+   * for language detection and as the fallback when this list is unset.
+   * Always read both: `triggerMessages ?? (triggerMessage ? [triggerMessage] : [])`. */
+  triggerMessages?: HallMessage[];
   recentThreadMessages?: HallMessage[];
   mode: "discussion" | "execution" | "handoff";
   handoff?: StructuredHandoffPacket;
@@ -833,25 +839,51 @@ function buildSubsequentTurnTriggerPrompt(input: HallRuntimeDispatchInput): stri
 // already has identity / hall awareness / blackboard pointer / roster from the
 // first-turn setup retained in the OpenClaw session, so the trigger is the
 // only fresh content needed on subsequent turns.
+//
+// P3-B-2 multi-trigger merge: when the inbox worker batched multiple @s within
+// the debounce window into one dispatch, `input.triggerMessages` carries them
+// all and we render each as its own attribution block, prefixed with a
+// "you've been pinged multiple times" header so the agent knows to address
+// every trigger in the same reply.
 function renderTriggerBlock(input: HallRuntimeDispatchInput, language: HallResponseLanguage): string {
   const note = (input.note ?? "").trim();
-  const trigger = input.triggerMessage;
+  const triggers = pickTriggerList(input);
 
   // Observer / wake-mention paths pass `note` but no triggerMessage. Their
   // notes carry their own framing ("[Mention reply completion notice] ..." etc.)
   // so we just pass them through unchanged.
-  if (!trigger) {
+  if (triggers.length === 0) {
     if (!note) return "";
     const header = language === "zh" ? "[来自系统的提示]" : "[system note]";
     return `${header}\n${note}`;
   }
 
-  const author = trigger.authorLabel || trigger.authorParticipantId || "operator";
-  const body = note || trigger.content || "";
-  const fromHeader = language === "zh"
-    ? `[来自 ${author}]`
-    : `[from: ${author}]`;
-  return body ? `${fromHeader}\n${body}` : fromHeader;
+  if (triggers.length === 1) {
+    const trigger = triggers[0];
+    const author = trigger.authorLabel || trigger.authorParticipantId || "operator";
+    const body = note || trigger.content || "";
+    const fromHeader = language === "zh" ? `[来自 ${author}]` : `[from: ${author}]`;
+    return body ? `${fromHeader}\n${body}` : fromHeader;
+  }
+
+  // Multi-trigger batch — each trigger gets its own attribution block.
+  const header = language === "zh"
+    ? `[在短时间内你被多次 @ (${triggers.length} 条 trigger 合并)，请在一条回复里照顾到全部：]`
+    : `[You were @-mentioned ${triggers.length} times in quick succession (merged batch); address every trigger in a single reply:]`;
+  const blocks = triggers.map((t) => {
+    const author = t.authorLabel || t.authorParticipantId || "operator";
+    const body = (t.content ?? "").trim();
+    const fromHeader = language === "zh" ? `[来自 ${author}]` : `[from: ${author}]`;
+    return body ? `${fromHeader}\n${body}` : fromHeader;
+  });
+  return `${header}\n\n${blocks.join("\n\n")}`;
+}
+
+function pickTriggerList(input: HallRuntimeDispatchInput): HallMessage[] {
+  if (input.triggerMessages && input.triggerMessages.length > 0) {
+    return input.triggerMessages;
+  }
+  return input.triggerMessage ? [input.triggerMessage] : [];
 }
 
 // Subsequent-turn version of the A1 originalAssigner reminder: short single

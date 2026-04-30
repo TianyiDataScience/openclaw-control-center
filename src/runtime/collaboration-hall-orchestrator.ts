@@ -59,7 +59,7 @@ import { loadBestEffortAgentRoster } from "./agent-roster";
 import { copyHallFilesToWorkspace } from "./hall-file-store";
 import { ensureHallTaskWorkspace } from "./hall-workspace";
 import { appendHallBlackboardMessage, initializeHallBlackboard } from "./hall-blackboard";
-import { enqueueAndDispatch } from "./hall-scheduler";
+import { enqueueAndDispatch, type InboxBatchContext, type InboxBatchOutcome } from "./hall-scheduler";
 import {
   canDispatchHallToRuntime,
   dispatchHallRuntimeTurn,
@@ -211,6 +211,28 @@ export async function waitForHallBackgroundWork(): Promise<void> {
   const pending = [...pendingHallBackgroundWork];
   if (pending.length === 0) return;
   await Promise.allSettled(pending);
+}
+
+// P3-B-2: helper for orchestrator dispatch sites that constructs a closure
+// capturing the caller's hall / toolClient / participant / triggerMessage and
+// hands it to the inbox worker. The worker batches concurrent enqueues to the
+// same (cardId, agentId) within a 750ms debounce window, then invokes the
+// closure ONCE with the merged batch — closures for the same key share caller
+// context (orchestrator), so picking the first one is correct.
+//
+// The closure receives `batch.records` so it can look up all the merged
+// triggerMessageIds and pass them as `triggerMessages` into
+// dispatchHallAgentReply, which renders a multi-attribution prompt block.
+async function loadTriggerMessagesFromBatch(
+  hall: CollaborationHall,
+  batch: InboxBatchContext,
+): Promise<HallMessage[]> {
+  const messageStore = await loadCollaborationHallMessageStore();
+  const allMessages = listHallMessages(messageStore, { hallId: hall.hallId });
+  const messageById = new Map(allMessages.map((m) => [m.messageId, m]));
+  return batch.records
+    .map((r) => messageById.get(r.triggerMessageId))
+    .filter((m): m is HallMessage => m != null);
 }
 
 export async function readCollaborationHall(hallId = DEFAULT_COLLABORATION_HALL_ID): Promise<HallReadResult> {
@@ -914,11 +936,13 @@ async function routeAndDispatchHallMessage(input: RouteAndDispatchInput): Promis
   // Load thread messages for context
   const recentThreadMessages = await loadRecentHallThreadMessages(taskCard);
 
-  // Dispatch all targets concurrently. Each dispatch goes through the inbox
-  // scheduler so we get a durable enqueue / consume / delivery audit trail
-  // under {card}/.hall/. P3-B-1 is transparent: the closure runs synchronously
-  // and existing per-sessionKey serialization in dispatchHallRuntimeTurn
-  // continues to gate concurrent turns for the same (card, agent).
+  // Enqueue all targets. P3-B-2: each enqueue persists to inbox + signals
+  // the (card, agent) worker; the worker batches concurrent @s within a 750ms
+  // debounce window into a single dispatch. The Promise returned by
+  // `enqueueAndDispatch` resolves only when the batch containing this record
+  // has finished dispatching, so `Promise.allSettled` here still correctly
+  // waits for every primary target to be dispatched before we move on to the
+  // observer step (preserving the pre-P3-B-2 ordering).
   await Promise.allSettled(
     targetParticipants.map((participant) =>
       enqueueAndDispatch(
@@ -930,16 +954,25 @@ async function routeAndDispatchHallMessage(input: RouteAndDispatchInput): Promis
           enqueueReason: "operator-route",
           chainDepth: 0,
         },
-        () =>
-          dispatchHallAgentReply({
+        async (batch) => {
+          // Worker batched possibly-concurrent enqueues — pull all merged
+          // trigger messages so the prompt can render multi-attribution.
+          const triggerMessages = await loadTriggerMessagesFromBatch(hall, batch);
+          if (triggerMessages.length === 0) {
+            return { outcome: "skipped", reason: "no trigger messages found" };
+          }
+          await dispatchHallAgentReply({
             hall,
             taskCard,
             participant,
-            triggerMessage,
+            triggerMessage: triggerMessages[triggerMessages.length - 1],
+            triggerMessages,
             recentThreadMessages,
             toolClient,
             chainDepth: 0,
-          }),
+          });
+          return { outcome: "dispatched" };
+        },
       ),
     ),
   );
@@ -959,7 +992,10 @@ async function routeAndDispatchHallMessage(input: RouteAndDispatchInput): Promis
           enqueueReason: "main-observer",
           chainDepth: 0,
         },
-        () => dispatchMainObserver({ hall, taskCard, mainParticipant, toolClient }),
+        async () => {
+          await dispatchMainObserver({ hall, taskCard, mainParticipant, toolClient });
+          return { outcome: "dispatched" };
+        },
       );
     }
   }
@@ -1057,16 +1093,21 @@ async function dispatchMainObserver(input: {
             enqueueReason: "observer-chain",
             chainDepth: 1,
           },
-          () =>
-            dispatchHallAgentReply({
+          async (batch) => {
+            const triggerMessages = await loadTriggerMessagesFromBatch(hall, batch);
+            const primaryTrigger = triggerMessages[triggerMessages.length - 1] ?? chainTrigger;
+            await dispatchHallAgentReply({
               hall,
               taskCard,
               participant: target,
-              triggerMessage: chainTrigger,
+              triggerMessage: primaryTrigger,
+              triggerMessages: triggerMessages.length > 0 ? triggerMessages : undefined,
               recentThreadMessages: updatedMessages,
               toolClient,
               chainDepth: 1,
-            }),
+            });
+            return { outcome: "dispatched" };
+          },
         ),
       ),
     );
@@ -1078,11 +1119,16 @@ async function dispatchHallAgentReply(input: {
   taskCard: HallTaskCard;
   participant: HallParticipant;
   triggerMessage: HallMessage;
+  /** P3-B-2: when the inbox worker merged multiple @s into this dispatch, the
+   * full list lives here (latest-first ordering preserved). The singular
+   * `triggerMessage` remains the most recent / primary one for backward
+   * compatibility with A3 exclusion + language detection. */
+  triggerMessages?: HallMessage[];
   recentThreadMessages: HallMessage[];
   toolClient: ToolClient;
   chainDepth: number;
 }): Promise<void> {
-  const { hall, participant, triggerMessage, recentThreadMessages, toolClient, chainDepth } = input;
+  const { hall, participant, triggerMessage, triggerMessages, recentThreadMessages, toolClient, chainDepth } = input;
   let taskCard = input.taskCard;
 
   const canDispatch = canDispatchHallToRuntime(toolClient, participant);
@@ -1119,6 +1165,7 @@ async function dispatchHallAgentReply(input: {
       taskCard,
       participant,
       triggerMessage,
+      triggerMessages, // P3-B-2: pass merged trigger batch through to prompt builder
       recentThreadMessages,
       mode: "execution",
       note: input.triggerMessage.content,
@@ -1205,21 +1252,26 @@ async function dispatchHallAgentReply(input: {
               enqueueReason: "auto-chain",
               chainDepth: chainDepth + 1,
             },
-            () =>
-              dispatchHallAgentReply({
+            async (batch) => {
+              const triggerMessages = await loadTriggerMessagesFromBatch(hall, batch);
+              const primaryTrigger = triggerMessages[triggerMessages.length - 1] ?? replyMessage;
+              await dispatchHallAgentReply({
                 hall,
                 taskCard,
                 participant: target,
-                triggerMessage: replyMessage,
+                triggerMessage: primaryTrigger,
+                triggerMessages: triggerMessages.length > 0 ? triggerMessages : undefined,
                 recentThreadMessages: updatedThreadMessages,
                 toolClient,
                 chainDepth: chainDepth + 1,
-              }),
+              });
+              return { outcome: "dispatched" };
+            },
           ),
         ),
       );
 
-      // Notify originating agent that @mentioned agents have completed
+      // Notify originating agent that @mentioned agents have completed.
       if (canDispatchHallToRuntime(toolClient, participant)) {
         await enqueueAndDispatch(
           {
@@ -1230,15 +1282,17 @@ async function dispatchHallAgentReply(input: {
             enqueueReason: "wake-mention-initiator",
             chainDepth: chainDepth + 1,
           },
-          () =>
-            wakeMentionInitiator({
+          async () => {
+            await wakeMentionInitiator({
               hall,
               taskCard,
               initiator: participant,
               mentionedTargets: chainTargets,
               mentionResults,
               toolClient,
-            }),
+            });
+            return { outcome: "dispatched" };
+          },
         );
       }
     }

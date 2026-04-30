@@ -4,7 +4,12 @@ import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { enqueueAndDispatch } from "../src/runtime/hall-scheduler";
+import {
+  __resetHallSchedulerForTests,
+  enqueueAndDispatch,
+  type InboxBatchContext,
+  type InboxBatchOutcome,
+} from "../src/runtime/hall-scheduler";
 import {
   __resetHallMailboxIndexForTests,
   buildHallInboxFilename,
@@ -23,6 +28,7 @@ async function cleanup(taskCardId: string): Promise<void> {
     /* ignore */
   }
   __resetHallMailboxIndexForTests();
+  __resetHallSchedulerForTests();
 }
 
 async function readDeliveries(taskCardId: string): Promise<Record<string, unknown>[]> {
@@ -34,71 +40,224 @@ async function readDeliveries(taskCardId: string): Promise<Record<string, unknow
   }
 }
 
-test("enqueueAndDispatch invokes dispatch closure and records 'dispatched' outcome", async () => {
-  const id = freshCardId("dispatch");
+const QUICK_DEBOUNCE_MS = 50;
+
+test("worker batches concurrent enqueues into one dispatch (multi-trigger merge)", async () => {
+  process.env.HALL_INBOX_DEBOUNCE_MS = String(QUICK_DEBOUNCE_MS);
+  const id = freshCardId("merge");
+  __resetHallSchedulerForTests();
   __resetHallMailboxIndexForTests();
   try {
-    let dispatched = false;
+    const observedBatches: InboxBatchContext[] = [];
+    const dispatcher = async (batch: InboxBatchContext): Promise<InboxBatchOutcome> => {
+      observedBatches.push(batch);
+      return { outcome: "dispatched" };
+    };
+
+    const promises = ["a", "b", "c"].map((tag) =>
+      enqueueAndDispatch(
+        {
+          taskCardId: id,
+          targetParticipantId: "linus-dev",
+          triggerMessageId: `m-${tag}`,
+          triggerAuthorParticipantId: "operator",
+          enqueueReason: "operator-route",
+          chainDepth: 0,
+        },
+        dispatcher,
+      ),
+    );
+    await Promise.all(promises);
+
+    assert.equal(observedBatches.length, 1, `expected 1 batch, got ${observedBatches.length}`);
+    assert.equal(observedBatches[0].records.length, 3);
+    assert.deepEqual(
+      observedBatches[0].records.map((r) => r.triggerMessageId).sort(),
+      ["m-a", "m-b", "m-c"],
+    );
+
+    const deliveries = await readDeliveries(id);
+    assert.equal(deliveries.length, 3);
+    const batchIds = new Set(deliveries.map((d) => (d as { batchId?: string }).batchId));
+    assert.equal(batchIds.size, 1, "all 3 records should share a single batchId");
+    for (const d of deliveries) {
+      assert.equal((d as { batchSize: number }).batchSize, 3);
+      assert.equal((d as { outcome: string }).outcome, "dispatched");
+    }
+  } finally {
+    delete process.env.HALL_INBOX_DEBOUNCE_MS;
+    await cleanup(id);
+  }
+});
+
+test("late-arriving enqueue past debounce window goes into its own batch", async () => {
+  process.env.HALL_INBOX_DEBOUNCE_MS = String(QUICK_DEBOUNCE_MS);
+  const id = freshCardId("late");
+  __resetHallSchedulerForTests();
+  __resetHallMailboxIndexForTests();
+  try {
+    const observedBatches: InboxBatchContext[] = [];
+    const dispatcher = async (batch: InboxBatchContext): Promise<InboxBatchOutcome> => {
+      observedBatches.push(batch);
+      return { outcome: "dispatched" };
+    };
+
     await enqueueAndDispatch(
       {
         taskCardId: id,
-        targetParticipantId: "linus-dev",
+        targetParticipantId: "ada-ds",
         triggerMessageId: "m-1",
         triggerAuthorParticipantId: "operator",
         enqueueReason: "operator-route",
         chainDepth: 0,
       },
-      async () => {
-        dispatched = true;
+      dispatcher,
+    );
+    await new Promise((r) => setTimeout(r, QUICK_DEBOUNCE_MS * 4));
+    await enqueueAndDispatch(
+      {
+        taskCardId: id,
+        targetParticipantId: "ada-ds",
+        triggerMessageId: "m-2",
+        triggerAuthorParticipantId: "operator",
+        enqueueReason: "operator-route",
+        chainDepth: 0,
       },
+      dispatcher,
     );
-    assert.equal(dispatched, true);
 
-    // After completion, pending must be empty
-    const pending = await readHallInboxPending(id, "linus-dev");
-    assert.equal(pending.length, 0);
-
-    // Inbox file has both enqueue + consume lines
-    const text = await readFile(
-      join(resolveHallTaskWorkspacePath(id), ".hall", "inbox", buildHallInboxFilename("linus-dev")),
-      "utf8",
-    );
-    const lines = text.trim().split("\n");
-    assert.equal(lines.length, 2);
-    assert.equal(JSON.parse(lines[0]).op, "enqueue");
-    assert.equal(JSON.parse(lines[1]).op, "consume");
-    assert.equal(JSON.parse(lines[1]).record.outcome, "dispatched");
-
-    // Delivery record persisted
-    const deliveries = await readDeliveries(id);
-    assert.equal(deliveries.length, 1);
-    assert.equal((deliveries[0] as { outcome: string }).outcome, "dispatched");
-    assert.equal((deliveries[0] as { triggerMessageId: string }).triggerMessageId, "m-1");
-    assert.ok(typeof (deliveries[0] as { durationMs: number }).durationMs === "number");
+    assert.equal(observedBatches.length, 2);
+    assert.equal(observedBatches[0].records.length, 1);
+    assert.equal(observedBatches[1].records.length, 1);
+    assert.notEqual(observedBatches[0].batchId, observedBatches[1].batchId);
   } finally {
+    delete process.env.HALL_INBOX_DEBOUNCE_MS;
     await cleanup(id);
   }
 });
 
-test("enqueueAndDispatch records 'failed' outcome when dispatch throws and rethrows", async () => {
-  const id = freshCardId("fail");
+test("enqueues to different (card, agent) pairs run in parallel workers", async () => {
+  process.env.HALL_INBOX_DEBOUNCE_MS = String(QUICK_DEBOUNCE_MS);
+  const id = freshCardId("parallel");
+  __resetHallSchedulerForTests();
   __resetHallMailboxIndexForTests();
   try {
-    await assert.rejects(
+    const observedBatches: InboxBatchContext[] = [];
+    const dispatcher = async (batch: InboxBatchContext): Promise<InboxBatchOutcome> => {
+      observedBatches.push(batch);
+      return { outcome: "dispatched" };
+    };
+
+    await Promise.all([
       enqueueAndDispatch(
         {
           taskCardId: id,
-          targetParticipantId: "ada-ds",
-          triggerMessageId: "m-fail",
+          targetParticipantId: "linus-dev",
+          triggerMessageId: "m-l",
           triggerAuthorParticipantId: "operator",
           enqueueReason: "operator-route",
           chainDepth: 0,
         },
-        async () => {
-          throw new Error("dispatch boom");
-        },
+        dispatcher,
       ),
-      /dispatch boom/,
+      enqueueAndDispatch(
+        {
+          taskCardId: id,
+          targetParticipantId: "ada-ds",
+          triggerMessageId: "m-a",
+          triggerAuthorParticipantId: "operator",
+          enqueueReason: "operator-route",
+          chainDepth: 0,
+        },
+        dispatcher,
+      ),
+    ]);
+
+    assert.equal(observedBatches.length, 2);
+    const targets = new Set(observedBatches.map((b) => b.targetParticipantId));
+    assert.equal(targets.size, 2);
+    assert.ok(targets.has("linus-dev"));
+    assert.ok(targets.has("ada-ds"));
+  } finally {
+    delete process.env.HALL_INBOX_DEBOUNCE_MS;
+    await cleanup(id);
+  }
+});
+
+test("re-entrant enqueue from inside dispatcher does not deadlock and lands in next batch", async () => {
+  process.env.HALL_INBOX_DEBOUNCE_MS = String(QUICK_DEBOUNCE_MS);
+  const id = freshCardId("reentrant");
+  __resetHallSchedulerForTests();
+  __resetHallMailboxIndexForTests();
+  try {
+    const observedBatches: InboxBatchContext[] = [];
+    let reEnqueued = false;
+    const dispatcher = async (batch: InboxBatchContext): Promise<InboxBatchOutcome> => {
+      observedBatches.push(batch);
+      if (!reEnqueued && batch.records.some((r) => r.triggerMessageId === "m-outer")) {
+        reEnqueued = true;
+        // Re-enqueue back to same (card, agent) FROM INSIDE the dispatcher.
+        // Critical: this is fire-and-forget — must NOT deadlock the worker.
+        void enqueueAndDispatch(
+          {
+            taskCardId: id,
+            targetParticipantId: "linus-dev",
+            triggerMessageId: "m-inner",
+            triggerAuthorParticipantId: "linus-dev",
+            enqueueReason: "auto-chain",
+            chainDepth: 1,
+          },
+          dispatcher,
+        ).catch(() => undefined);
+      }
+      return { outcome: "dispatched" };
+    };
+
+    await enqueueAndDispatch(
+      {
+        taskCardId: id,
+        targetParticipantId: "linus-dev",
+        triggerMessageId: "m-outer",
+        triggerAuthorParticipantId: "operator",
+        enqueueReason: "operator-route",
+        chainDepth: 0,
+      },
+      dispatcher,
+    );
+    // wait for the re-enqueued batch to drain
+    await new Promise((r) => setTimeout(r, QUICK_DEBOUNCE_MS * 4));
+
+    assert.equal(observedBatches.length, 2, "outer + re-enqueued = 2 batches");
+    assert.equal(observedBatches[0].records[0].triggerMessageId, "m-outer");
+    assert.equal(observedBatches[1].records[0].triggerMessageId, "m-inner");
+  } finally {
+    delete process.env.HALL_INBOX_DEBOUNCE_MS;
+    await cleanup(id);
+  }
+});
+
+test("dispatcher 'failed' outcome is recorded but enqueue promise still resolves", async () => {
+  process.env.HALL_INBOX_DEBOUNCE_MS = String(QUICK_DEBOUNCE_MS);
+  const id = freshCardId("fail");
+  __resetHallSchedulerForTests();
+  __resetHallMailboxIndexForTests();
+  try {
+    const dispatcher = async (): Promise<InboxBatchOutcome> => {
+      throw new Error("dispatch boom");
+    };
+
+    // Promise resolves — worker swallows dispatch errors so callers using
+    // Promise.allSettled still get fulfilled results.
+    await enqueueAndDispatch(
+      {
+        taskCardId: id,
+        targetParticipantId: "ada-ds",
+        triggerMessageId: "m-fail",
+        triggerAuthorParticipantId: "operator",
+        enqueueReason: "operator-route",
+        chainDepth: 0,
+      },
+      dispatcher,
     );
 
     const pending = await readHallInboxPending(id, "ada-ds");
@@ -109,12 +268,15 @@ test("enqueueAndDispatch records 'failed' outcome when dispatch throws and rethr
     assert.equal((deliveries[0] as { outcome: string }).outcome, "failed");
     assert.match((deliveries[0] as { reason: string }).reason, /dispatch boom/);
   } finally {
+    delete process.env.HALL_INBOX_DEBOUNCE_MS;
     await cleanup(id);
   }
 });
 
-test("enqueueAndDispatch supports outcome override", async () => {
+test("dispatcher outcome override is honored and persisted to delivery", async () => {
+  process.env.HALL_INBOX_DEBOUNCE_MS = String(QUICK_DEBOUNCE_MS);
   const id = freshCardId("override");
+  __resetHallSchedulerForTests();
   __resetHallMailboxIndexForTests();
   try {
     await enqueueAndDispatch(
@@ -126,79 +288,68 @@ test("enqueueAndDispatch supports outcome override", async () => {
         enqueueReason: "auto-chain",
         chainDepth: 3,
       },
-      async () => ({ outcome: "skipped" as const, reason: "auto-round threshold" }),
+      async (): Promise<InboxBatchOutcome> => ({
+        outcome: "skipped",
+        reason: "custom skip reason",
+      }),
     );
 
     const deliveries = await readDeliveries(id);
     assert.equal(deliveries.length, 1);
     assert.equal((deliveries[0] as { outcome: string }).outcome, "skipped");
-    assert.equal((deliveries[0] as { reason: string }).reason, "auto-round threshold");
+    assert.equal((deliveries[0] as { reason: string }).reason, "custom skip reason");
+    assert.equal((deliveries[0] as { chainDepth: number }).chainDepth, 3);
   } finally {
+    delete process.env.HALL_INBOX_DEBOUNCE_MS;
     await cleanup(id);
   }
 });
 
-test("multiple dispatches to same target serialize via per-card write chain (no interleaved log lines)", async () => {
-  const id = freshCardId("serial");
+test("inbox file records both enqueue and consume lines per record (even when batched)", async () => {
+  process.env.HALL_INBOX_DEBOUNCE_MS = String(QUICK_DEBOUNCE_MS);
+  const id = freshCardId("inboxfile");
+  __resetHallSchedulerForTests();
   __resetHallMailboxIndexForTests();
   try {
-    const tasks = ["a", "b", "c", "d", "e"].map((tag) =>
+    const dispatcher = async (): Promise<InboxBatchOutcome> => ({ outcome: "dispatched" });
+
+    await Promise.all([
       enqueueAndDispatch(
         {
           taskCardId: id,
           targetParticipantId: "turing",
-          triggerMessageId: `m-${tag}`,
+          triggerMessageId: "m-1",
           triggerAuthorParticipantId: "operator",
           enqueueReason: "operator-route",
           chainDepth: 0,
         },
-        async () => {
-          await new Promise((r) => setTimeout(r, 5));
-        },
+        dispatcher,
       ),
-    );
-    await Promise.all(tasks);
+      enqueueAndDispatch(
+        {
+          taskCardId: id,
+          targetParticipantId: "turing",
+          triggerMessageId: "m-2",
+          triggerAuthorParticipantId: "operator",
+          enqueueReason: "operator-route",
+          chainDepth: 0,
+        },
+        dispatcher,
+      ),
+    ]);
 
     const text = await readFile(
       join(resolveHallTaskWorkspacePath(id), ".hall", "inbox", buildHallInboxFilename("turing")),
       "utf8",
     );
     const lines = text.trim().split("\n");
-    // 5 enqueue + 5 consume = 10 well-formed JSONL lines
-    assert.equal(lines.length, 10);
-    for (const line of lines) {
-      const parsed = JSON.parse(line);
-      assert.ok(parsed.op === "enqueue" || parsed.op === "consume");
-    }
-    const deliveries = await readDeliveries(id);
-    assert.equal(deliveries.length, 5);
+    // 2 enqueue + 2 consume = 4 lines (every record gets its own consume even when batched)
+    assert.equal(lines.length, 4);
+    const ops = lines.map((l) => JSON.parse(l).op);
+    assert.equal(ops.filter((o: string) => o === "enqueue").length, 2);
+    assert.equal(ops.filter((o: string) => o === "consume").length, 2);
   } finally {
-    await cleanup(id);
-  }
-});
-
-test("enqueueAndDispatch persists chainDepth and enqueueReason in delivery", async () => {
-  const id = freshCardId("meta");
-  __resetHallMailboxIndexForTests();
-  try {
-    await enqueueAndDispatch(
-      {
-        taskCardId: id,
-        targetParticipantId: "linus-dev",
-        triggerMessageId: "m-meta",
-        triggerAuthorParticipantId: "ada-ds",
-        enqueueReason: "auto-chain",
-        chainDepth: 2,
-      },
-      async () => undefined,
-    );
-    const deliveries = await readDeliveries(id);
-    assert.equal(deliveries.length, 1);
-    const d = deliveries[0] as Record<string, unknown>;
-    assert.equal(d.chainDepth, 2);
-    assert.equal(d.enqueueReason, "auto-chain");
-    assert.equal(d.triggerAuthorParticipantId, "ada-ds");
-  } finally {
+    delete process.env.HALL_INBOX_DEBOUNCE_MS;
     await cleanup(id);
   }
 });
