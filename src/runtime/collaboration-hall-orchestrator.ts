@@ -61,6 +61,19 @@ import { ensureHallTaskWorkspace } from "./hall-workspace";
 import { appendHallBlackboardMessage, initializeHallBlackboard } from "./hall-blackboard";
 import { enqueueAndDispatch, type InboxBatchContext, type InboxBatchOutcome } from "./hall-scheduler";
 import {
+  AUTO_ROUND_BLOCK_THRESHOLD,
+  HALL_CHAIN_FILTER_POLICIES,
+  HALL_DEFAULT_POST_DISPATCH_POLICIES,
+  HALL_PER_TARGET_GATE_POLICIES,
+  MAX_AUTO_CHAIN_DEPTH,
+  OBSERVE_SILENT_MARKER,
+  POLICY_ENFORCE_AUTO_ROUND_LIMIT,
+  buildOperatorTurnStatePatch,
+  incrementAutoRoundCounter,
+  runPostDispatchPolicies,
+  runPreDispatchPolicies,
+} from "./hall-policies";
+import {
   canDispatchHallToRuntime,
   dispatchHallRuntimeTurn,
   type HallParallelTaskTarget,
@@ -845,13 +858,8 @@ export async function postHallMessage(
 // ---------------------------------------------------------------------------
 // Group Chat Routing — replaces the old workflow-driven discussion/execution
 // ---------------------------------------------------------------------------
-
-const MAX_AUTO_CHAIN_DEPTH = 5;
-// When a single (taskCardId, agentId) pair gets dispatched this many times
-// within one human-initiated round (no operator message in between), the card
-// is auto-paused and marked blocked for human review. 6 = 1 initial assignment
-// + 5 rounds of back-and-forth before we force a human into the loop.
-const AUTO_ROUND_BLOCK_THRESHOLD = 6;
+// MAX_AUTO_CHAIN_DEPTH and AUTO_ROUND_BLOCK_THRESHOLD live in hall-policies.ts
+// alongside the policy chain that enforces them.
 
 interface RouteAndDispatchInput {
   hall: CollaborationHall;
@@ -885,23 +893,13 @@ async function routeAndDispatchHallMessage(input: RouteAndDispatchInput): Promis
   const { hall, triggerMessage, mentionRouting, toolClient } = input;
   let taskCard = input.taskCard;
 
-  // A1 + A2: on every human-initiated dispatch, seed originalAssigner (once) and
-  // reset per-agent auto-round counters so a fresh human turn starts clean.
-  // scheduleRouteAndDispatch is only called for operator posts, so we can treat
-  // triggerMessage.authorParticipantId as the human here.
-  const assignerPatch: Parameters<typeof updateHallTaskCard>[0] = { taskCardId: taskCard.taskCardId };
-  let needsAssignerWrite = false;
-  if (!taskCard.originalAssignerParticipantId && triggerMessage.authorParticipantId) {
-    assignerPatch.originalAssignerParticipantId = triggerMessage.authorParticipantId;
-    needsAssignerWrite = true;
-  }
-  if (taskCard.autoRoundsByAgent && Object.keys(taskCard.autoRoundsByAgent).length > 0) {
-    assignerPatch.autoRoundsByAgent = {};
-    needsAssignerWrite = true;
-  }
-  if (needsAssignerWrite) {
+  // A1 + A2-reset: on every human-initiated dispatch, seed originalAssigner
+  // (once) and reset per-agent auto-round counters so a fresh human turn
+  // starts clean. scheduleRouteAndDispatch is only called for operator posts.
+  const operatorPatch = buildOperatorTurnStatePatch(taskCard, triggerMessage.authorParticipantId);
+  if (operatorPatch) {
     try {
-      const result = await updateHallTaskCard(assignerPatch);
+      const result = await updateHallTaskCard(operatorPatch);
       taskCard = result.taskCard;
     } catch {
       // Non-fatal: even if this patch fails we still want to route the message.
@@ -1005,8 +1003,6 @@ function resolveMainAgentParticipantId(participants: HallParticipant[]): string 
   return participants.find((p) => p.active && /\bmain\b/i.test(p.agentId ?? p.participantId))?.participantId;
 }
 
-const OBSERVE_SILENT_MARKER = "OBSERVE_SILENT";
-
 async function dispatchMainObserver(input: {
   hall: CollaborationHall;
   taskCard: HallTaskCard;
@@ -1046,9 +1042,15 @@ async function dispatchMainObserver(input: {
   // P3-A-2: link runtime sessionKey to card for subsequent-turn detection.
   await linkRuntimeSessionKeyToTaskCard(taskCard, result.sessionKey);
 
-  // Suppress silent responses
-  const trimmed = result.content.trim();
-  if (!trimmed || trimmed === OBSERVE_SILENT_MARKER || trimmed.startsWith(OBSERVE_SILENT_MARKER)) return;
+  // A4: drop empty / OBSERVE_SILENT replies (post-dispatch policy chain).
+  const observerVerdict = runPostDispatchPolicies(HALL_DEFAULT_POST_DISPATCH_POLICIES, {
+    hall,
+    taskCard,
+    participant: mainParticipant,
+    replyContent: result.content,
+    enqueueReason: "main-observer",
+  });
+  if (observerVerdict.kind === "drop") return;
 
   // Persist the observer's message
   await appendPersistedHallMessage({
@@ -1065,7 +1067,8 @@ async function dispatchMainObserver(input: {
   });
 
   // If observer @mentioned someone, auto-chain.
-  // A3: also exclude the author of the latest agent message — the message the
+  // A3 + chain depth limit: filter chain candidates via the policy chain.
+  // A3 excludes the author of the latest agent message — the message the
   // observer is reacting to — so the observer can't immediately re-dispatch
   // whoever just wrote and turn observation into ping-pong.
   const updatedMessages = await loadRecentHallThreadMessages(taskCard);
@@ -1077,8 +1080,18 @@ async function dispatchMainObserver(input: {
     .filter((p): p is HallParticipant =>
       p != null
       && p.active
-      && p.participantId !== mainParticipant.participantId
-      && p.participantId !== triggerAuthorId,
+      && p.participantId !== mainParticipant.participantId,
+    )
+    .filter((target) =>
+      runPreDispatchPolicies(HALL_CHAIN_FILTER_POLICIES, {
+        hall,
+        taskCard,
+        participant: target,
+        triggerMessage: lastMessage,
+        triggerAuthorParticipantId: triggerAuthorId,
+        chainDepth: 1,
+        enqueueReason: "observer-chain",
+      }).kind === "allow",
     );
   if (chainTargets.length > 0) {
     const chainTrigger = lastMessage ?? ({ content: result.content } as HallMessage);
@@ -1134,13 +1147,12 @@ async function dispatchHallAgentReply(input: {
   const canDispatch = canDispatchHallToRuntime(toolClient, participant);
   if (!canDispatch) return;
 
-  // A2: increment per-(card, agent) auto-round counter and stop if we hit the
-  // block threshold. Counters reset whenever an operator posts (see
-  // routeAndDispatchHallMessage above).
-  const agentKey = (participant.agentId ?? participant.participantId).trim();
+  // A2: increment the per-(card, agent) auto-round counter, then run the
+  // pre-dispatch policy chain. If the chain denies via A2 (counter reached
+  // block threshold), fire the auto-round-blocked notification side-effect.
+  // Counters reset whenever an operator posts (see routeAndDispatchHallMessage).
+  const { agentKey, rounds } = incrementAutoRoundCounter(taskCard, participant);
   if (agentKey) {
-    const rounds = { ...(taskCard.autoRoundsByAgent ?? {}) };
-    rounds[agentKey] = (rounds[agentKey] ?? 0) + 1;
     try {
       const patched = await updateHallTaskCard({
         taskCardId: taskCard.taskCardId,
@@ -1148,12 +1160,27 @@ async function dispatchHallAgentReply(input: {
       });
       taskCard = patched.taskCard;
     } catch {
-      // Non-fatal: counter state is best-effort.
+      // Non-fatal: counter state is best-effort. Even if persistence failed
+      // the policy chain must see the post-increment counter (pre-refactor
+      // behavior — the original code's threshold check read from the local
+      // `rounds` variable, not the persisted taskCard).
+      taskCard = { ...taskCard, autoRoundsByAgent: rounds };
     }
-    if ((rounds[agentKey] ?? 0) >= AUTO_ROUND_BLOCK_THRESHOLD) {
+  }
+  const gateVerdict = runPreDispatchPolicies(HALL_PER_TARGET_GATE_POLICIES, {
+    hall,
+    taskCard,
+    participant,
+    triggerMessage,
+    triggerAuthorParticipantId: triggerMessage.authorParticipantId,
+    chainDepth,
+    enqueueReason: chainDepth === 0 ? "operator-route" : "auto-chain",
+  });
+  if (gateVerdict.kind === "deny") {
+    if (gateVerdict.policyId === POLICY_ENFORCE_AUTO_ROUND_LIMIT) {
       await handleAutoRoundBlockedThreshold({ hall, taskCard, participant, rounds });
-      return;
     }
+    return;
   }
 
   // Dispatch the agent
@@ -1185,16 +1212,16 @@ async function dispatchHallAgentReply(input: {
   // branches on it.
   taskCard = await linkRuntimeSessionKeyToTaskCard(taskCard, result.sessionKey);
 
-  // A4: treat OBSERVE_SILENT from any agent (not just the observer path) as
-  // "nothing to add" — do not persist, do not trigger downstream wake / chain.
-  const trimmedReply = result.content.trim();
-  if (
-    !trimmedReply
-    || trimmedReply === OBSERVE_SILENT_MARKER
-    || trimmedReply.startsWith(OBSERVE_SILENT_MARKER)
-  ) {
-    return;
-  }
+  // A4: treat OBSERVE_SILENT (or empty) from any agent as "nothing to add"
+  // — do not persist, do not trigger downstream wake / chain.
+  const replyVerdict = runPostDispatchPolicies(HALL_DEFAULT_POST_DISPATCH_POLICIES, {
+    hall,
+    taskCard,
+    participant,
+    replyContent: result.content,
+    enqueueReason: chainDepth === 0 ? "operator-route" : "auto-chain",
+  });
+  if (replyVerdict.kind === "drop") return;
 
   // Persist the agent's reply
   const replyMessage = await appendPersistedHallMessage({
@@ -1222,21 +1249,31 @@ async function dispatchHallAgentReply(input: {
     });
   }
 
-  // Auto-chain: if agent @mentioned other agents, dispatch them (up to depth limit)
+  // Auto-chain: if agent @mentioned other agents, dispatch them. The chain
+  // candidate filter (A3 + chain depth limit) lives in the pre-dispatch
+  // policy chain. Keep an explicit outer gate as an early-exit optimization
+  // when the parent is already at the depth limit — otherwise we'd build
+  // candidates and load thread messages just to drop them all.
   if (chainDepth < MAX_AUTO_CHAIN_DEPTH) {
     const replyMentions = resolveHallMentionTargets(result.content, hall.participants);
     const triggerAuthorId = triggerMessage.authorParticipantId;
     const chainTargets = replyMentions.targets
       .map((t) => findParticipant(hall.participants, t.participantId))
-      // A3: also exclude the participant who triggered us (triggerMessage author)
-      // to break A→B→A ping-pong. The trigger author is presumed to already know
-      // what's happening in the thread; if they genuinely need more info they
-      // can post a new message as a human or via the dispatcher/PM path.
       .filter((p): p is HallParticipant =>
         p != null
         && p.active
-        && p.participantId !== participant.participantId
-        && p.participantId !== triggerAuthorId,
+        && p.participantId !== participant.participantId,
+      )
+      .filter((target) =>
+        runPreDispatchPolicies(HALL_CHAIN_FILTER_POLICIES, {
+          hall,
+          taskCard,
+          participant: target,
+          triggerMessage,
+          triggerAuthorParticipantId: triggerAuthorId,
+          chainDepth: chainDepth + 1,
+          enqueueReason: "auto-chain",
+        }).kind === "allow",
       );
 
     if (chainTargets.length > 0) {
@@ -1401,9 +1438,15 @@ async function wakeMentionInitiator(input: {
   // P3-A-2: link runtime sessionKey to card for subsequent-turn detection.
   await linkRuntimeSessionKeyToTaskCard(taskCard, result.sessionKey);
 
-  // Suppress silent / empty responses
-  const trimmed = result.content.trim();
-  if (!trimmed || trimmed === OBSERVE_SILENT_MARKER || trimmed.startsWith(OBSERVE_SILENT_MARKER)) return;
+  // A4: drop empty / OBSERVE_SILENT replies (post-dispatch policy chain).
+  const wakeVerdict = runPostDispatchPolicies(HALL_DEFAULT_POST_DISPATCH_POLICIES, {
+    hall,
+    taskCard,
+    participant: initiator,
+    replyContent: result.content,
+    enqueueReason: "wake-mention-initiator",
+  });
+  if (wakeVerdict.kind === "drop") return;
 
   // Persist the initiator's follow-up message
   await appendPersistedHallMessage({
