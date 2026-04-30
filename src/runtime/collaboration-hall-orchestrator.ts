@@ -970,19 +970,24 @@ async function dispatchMainObserver(input: {
       participant: mainParticipant,
       recentThreadMessages,
       mode: "execution",
+      // P3-A-2: concise observer trigger. The setup prompt (first turn) /
+      // OpenClaw session memory (subsequent turns) already covers identity,
+      // hall awareness, and blackboard pointer; observer only needs the
+      // mode marker + how to opt out.
       note: [
-        "You are observing this thread as a background reviewer.",
-        "Review the recent agent exchanges above.",
-        "Only speak if you have a genuinely useful observation, suggestion, or correction.",
-        "If nothing to add, respond with exactly: " + OBSERVE_SILENT_MARKER,
-        "Do NOT speak just to agree, summarize, or acknowledge. Silence is preferred over noise.",
-      ].join(" "),
+        "[mode: observer]",
+        "Tail .hall/chat.jsonl to see what just happened in this thread, then decide if you have a genuinely useful observation, suggestion, or correction.",
+        `If nothing substantive to add, respond with exactly ${OBSERVE_SILENT_MARKER}. Do NOT speak just to agree, summarize, or acknowledge.`,
+      ].join("\n"),
     });
   } catch {
     return; // Observer failures are silent
   }
 
   if (result.canceled) return;
+
+  // P3-A-2: link runtime sessionKey to card for subsequent-turn detection.
+  await linkRuntimeSessionKeyToTaskCard(taskCard, result.sessionKey);
 
   // Suppress silent responses
   const trimmed = result.content.trim();
@@ -1091,6 +1096,14 @@ async function dispatchHallAgentReply(input: {
   }
 
   if (result.canceled) return;
+
+  // P3-A-2: link the runtime sessionKey to the task card so the next dispatch
+  // for the same (card, agent) is correctly recognized as a subsequent turn
+  // (and gets the minimal trigger-only prompt instead of the full setup).
+  // Pre-P3-A-2 the dispatchHallAgentReply path never linked sessionKeys —
+  // benign before because every prompt was identical, but P3-A-2 actually
+  // branches on it.
+  taskCard = await linkRuntimeSessionKeyToTaskCard(taskCard, result.sessionKey);
 
   // A4: treat OBSERVE_SILENT from any agent (not just the observer path) as
   // "nothing to add" — do not persist, do not trigger downstream wake / chain.
@@ -1275,6 +1288,9 @@ async function wakeMentionInitiator(input: {
   }
 
   if (result.canceled) return;
+
+  // P3-A-2: link runtime sessionKey to card for subsequent-turn detection.
+  await linkRuntimeSessionKeyToTaskCard(taskCard, result.sessionKey);
 
   // Suppress silent / empty responses
   const trimmed = result.content.trim();
@@ -3529,6 +3545,28 @@ async function appendRuntimeFailureHallMessage(
       },
     })
   ).message;
+}
+
+// P3-A-2: lightweight session-key linking. Used by dispatch paths that don't
+// go through the heavier linkHallRuntimeArtifacts (dispatchHallAgentReply /
+// dispatchMainObserver / wakeMentionInitiator). Just adds the runtime
+// sessionKey to taskCard.sessionKeys if not already present, so the next
+// dispatch for the same (card, agent) is recognized as a subsequent turn.
+async function linkRuntimeSessionKeyToTaskCard(
+  taskCard: HallTaskCard,
+  sessionKey: string | undefined,
+): Promise<HallTaskCard> {
+  if (!sessionKey) return taskCard;
+  if (taskCard.sessionKeys.includes(sessionKey)) return taskCard;
+  try {
+    const updated = await updateHallTaskCard({
+      taskCardId: taskCard.taskCardId,
+      sessionKeys: [...taskCard.sessionKeys, sessionKey],
+    });
+    return updated.taskCard;
+  } catch {
+    return taskCard;
+  }
 }
 
 async function linkHallRuntimeArtifacts(input: {
