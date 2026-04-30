@@ -323,6 +323,12 @@ export interface HallTaskCard {
   // Set when an operator marks the thread as human-reviewed; cleared when a new
   // agent message lands. Suppresses the "needs human review" signal.
   humanReviewedAt?: string;
+  // P3-C-3: set when an anti-loop policy explicitly escalates (currently A2
+  // auto-round limit). Forces `needsHumanReview()` true regardless of the
+  // 10-minute idle window, so the operator sees the card immediately. Cleared
+  // when the operator marks the thread human-reviewed (humanReviewedAt is set
+  // strictly after escalatedAt).
+  escalatedAt?: string;
   archivedAt?: string;
   archivedByParticipantId?: string;
   archivedByLabel?: string;

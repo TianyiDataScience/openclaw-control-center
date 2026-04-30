@@ -111,6 +111,7 @@ export interface UpdateHallTaskCardInput {
   autoRoundsByAgent?: Record<string, number> | null;
   humanReviewedAt?: string | null;
   lastAgentActivityAt?: string | null;
+  escalatedAt?: string | null;
   archivedAt?: string | null;
   archivedByParticipantId?: string | null;
   archivedByLabel?: string | null;
@@ -410,6 +411,7 @@ async function updateHallTaskCardUnsafe(input: UpdateHallTaskCardInput): Promise
   if (payload.parallelGroups !== undefined) taskCard.parallelGroups = payload.parallelGroups ?? undefined;
   if (payload.humanReviewedAt !== undefined) taskCard.humanReviewedAt = payload.humanReviewedAt ?? undefined;
   if (payload.lastAgentActivityAt !== undefined) taskCard.lastAgentActivityAt = payload.lastAgentActivityAt ?? undefined;
+  if (payload.escalatedAt !== undefined) taskCard.escalatedAt = payload.escalatedAt ?? undefined;
   if (payload.sessionKeys !== undefined) taskCard.sessionKeys = payload.sessionKeys;
   if (payload.originalAssignerParticipantId !== undefined) {
     taskCard.originalAssignerParticipantId = payload.originalAssignerParticipantId ?? undefined;
@@ -1013,6 +1015,7 @@ function normalizeTaskCard(input: unknown): HallTaskCard | undefined {
     autoRoundsByAgent: normalizeAutoRoundsByAgent(root.autoRoundsByAgent),
     lastAgentActivityAt: normalizeIsoString(root.lastAgentActivityAt),
     humanReviewedAt: normalizeIsoString(root.humanReviewedAt),
+    escalatedAt: normalizeIsoString(root.escalatedAt),
     archivedAt: normalizeIsoString(root.archivedAt),
     archivedByParticipantId: asNonEmptyString(root.archivedByParticipantId),
     archivedByLabel: asNonEmptyString(root.archivedByLabel),
