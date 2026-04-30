@@ -67,7 +67,47 @@ P3-A 落地后，Phase 3 的剩余架构层工作（解决 issue #9 第 4 项 + 
 
 拆 PR 计划：~~P3-B-1 inbox 层~~（PR #14 已开） → **P3-A-2 prompt 简化** → P3-B-2 防抖合并 → P3-C-1 policy 抽取（不变行为）→ P3-C-2 新 policy 上线（含 `dropResolvedTriggers`）→ P3-C-3 Supervisor。每步独立可发版。
 
-### Phase P3-C-1 — A1-A4 抽成可插拔 policy 函数（**current focus**, 2026-04-30）
+### Phase P3-C-2 — 三条新 policy 上线（**current focus**, 2026-04-30）
+
+**Design issue**: https://github.com/xiaolinfrank/openclaw-control-center/issues/13 (P3-C-2 修正评论)
+**Branch**: `feat/hall-policy-chain-p3c2`（基于已合并 P3-C-1 的 main）
+
+#### 动机
+
+P3-C-1 把 A1-A4 抽成纯函数链，但行为不变。issue #9 第 4 项的真正改进点是 P3-C-2 引入的三条新 policy：
+
+- **`detectClarifyingQuestion`**——识别"反向 Q&A"。原本 A3 会把 B 反 ping A 拦掉（防 ping-pong），但当 B 的 reply 实际是问 A 一个真问题（"@A 你的意思是用 LEFT JOIN 吗？"）时该放行。新增 `force-allow` 短路 verdict 让这条 policy 能 override 下游的 deny
+- **`dropResolvedTriggers`**——issue #13 修正版（替换原本设计有缺陷的 `dedupRecentDispatch` 时间窗）。看 agent 已说过的最近一条 reply 是否已经回答了当前 trigger，是则 silence。tier 1 用 token-overlap 启发式（中英双语，去 stopwords）
+- **`enforceBackPingBudget`**——同一 (A,B) 对一轮内最多反 ping 1 次，多余的 silence
+
+#### 工作项
+
+- [x] 1. 扩 `PreDispatchVerdict` 加 `force-allow`；`runPreDispatchPolicies` 在 force-allow 也短路
+- [x] 2. 给 `PreDispatchPolicyInput` 加 `recentThreadMessages?: HallMessage[]`
+- [x] 3. 实现三条新 policy + token 提取帮手（去 URL / code / @mention，中英 stopwords）
+- [x] 4. 加常量：`DROP_RESOLVED_OVERLAP_THRESHOLD=0.6` / `DROP_RESOLVED_MIN_TRIGGER_TOKENS=3` / `HALL_BACK_PING_BUDGET=1`
+- [x] 5. 默认链组合按 issue #13 排序：A2 → max-depth → detectClarifyingQuestion → dropResolvedTriggers → enforceBackPingBudget → A3
+- [x] 6. orchestrator 三处 `runPreDispatchPolicies` 调用都传 `recentThreadMessages`；filter 用 `kind !== "deny"`（force-allow 也算放行）
+- [x] 7. auto-chain filter 之前 hoist `loadRecentHallThreadMessages`（content-aware policy 需要看刚发出的 reply）
+- [x] 8. 单元测试 ~34 个（force-allow 短路 / detect 多语言模式 / dropResolved overlap+边界 / backPing budget+轮边界+大小写）
+- [x] 9. tsc 干净 + hall 重点回归批次零回归
+
+#### 退出标准
+
+- [x] tsc 干净
+- [x] policy 单测全过（72 case，原 38 + 新 34）
+- [x] hall 重点批 125 过 2 fail（仍是 session-linkage / multi-mention 基线）
+- [ ] PR 入 main
+
+#### 设计 trade-offs
+
+- **force-allow 引入新 verdict 而不是 boolean**：caller 看 `policyId` 知道是哪条 policy 在 override（telemetry 友好）；chain runner 短路逻辑更清晰
+- **`dropResolvedTriggers` 跳过 operator-route**：operator 的 follow-up 问题（"INNER JOIN 还是 LEFT JOIN？"）应该总是 dispatch，不该被启发式误伤
+- **看"最近一条" reply 而不是滑动窗口**：tier 1 简化版。issue #13 列出 tier 2 (结构化标注 `<hall-structured>{"resolves": [...]}`) / tier 3 (mini LLM judge) 留给后续
+- **back-ping budget 排除当前 trigger**：当前 trigger 是允许的"第 1 次"——只有它之前已有的 ping 才算预算。budget=1 即"允许 1 次反 ping"
+- **round 边界用 isHuman**：兼容多 human（不只是 "operator" 这一个 id）。回退到 `participantId === "operator"` 做兜底
+
+### Phase P3-C-1 — A1-A4 抽成可插拔 policy 函数（completed, PR #18 merged 2026-04-30）
 
 **Design issue**: https://github.com/xiaolinfrank/openclaw-control-center/issues/13
 **Branch**: `feat/hall-policy-chain-p3c1`（基于已合并的 main，含 P3-A / P3-A-2 / P3-B-1 / P3-B-2）

@@ -632,4 +632,65 @@ P3-C-1 目标：把 A1-A4 反循环兜底从 `collaboration-hall-orchestrator.ts
 - 重点回归测试 small batch（hall-loop-prevention + collaboration-hall-orchestrator + hall-policies + hall-mailbox + hall-scheduler）：76 过 2 fail，2 fail 全是基线，**A1-A4 直接相关测试全过**——`A1: prompt 注入 originalAssigner @汇报指令` / `A1: 无 originalAssigner 时不注入` / `A4: 提示 OBSERVE_SILENT` / `store: originalAssigner 与 autoRoundsByAgent round-trip` / `A1+A2: operator 触发 dispatch 时 seed + reset` / `A4: main OBSERVE_SILENT 在 orchestrator 层吞掉`
 - Playwright e2e 略过（policy chain 是纯 refactor 不改行为；orchestrator 形态与 P3-A/P3-B-1/P3-B-2 同构）
 
+## Session 2026-04-30 — Phase 3-C-2 三条新 policy 上线
+
+P3-C-2 在 P3-C-1 的链上加 `detectClarifyingQuestion` / `dropResolvedTriggers` / `enforceBackPingBudget` 三条 policy，按 issue #13（P3-C-2 修正评论）的设计落地。
+
+### What landed
+
+- **`src/runtime/hall-policies.ts`**
+  - `PreDispatchVerdict` 新增第三态 `force-allow`：caller 看跟 `allow` 一样（继续 dispatch），但在链里 short-circuit 跳过下游的 deny
+  - `runPreDispatchPolicies` 在 `force-allow` 也短路返回
+  - `PreDispatchPolicyInput` 加 `recentThreadMessages?: HallMessage[]`，content-aware policy 用
+  - 新常量：`DROP_RESOLVED_OVERLAP_THRESHOLD=0.6` / `DROP_RESOLVED_MIN_TRIGGER_TOKENS=3` / `HALL_BACK_PING_BUDGET=1`
+  - 新 policy ids：`POLICY_DETECT_CLARIFYING_QUESTION` / `POLICY_DROP_RESOLVED_TRIGGERS` / `POLICY_ENFORCE_BACK_PING_BUDGET`
+  - **`detectClarifyingQuestion`**: tier 1 启发式，匹配 ?/？/吗结尾/还是选择/英文 interrogative 引导词/澄清动词等模式 → `force-allow`
+  - **`dropResolvedTriggers`**: tier 1 启发式
+    - operator-route 跳过（operator 意图权威，follow-up 问题该 dispatch）
+    - extractContentTokens 帮手：剥 URL / 代码块 / `@mention`，ASCII 词 (>= 3 字符，去英文 stopwords) + 中文 bigram (去常见 2 字 function words)
+    - 取 candidate 在 thread 里**最新一条** reply（issue #13 tier 1 简化版）
+    - token-overlap ratio >= 0.6 时 deny，附带百分比 reason 利于 audit
+    - 若 trigger 内容 token < 3 → 不做判断（不可信样本）
+  - **`enforceBackPingBudget`**: 从 `recentThreadMessages` 末尾向前扫
+    - 遇到 `isHuman=true` 参与者发的消息（兼容多 human + 兜底 `participantId === "operator"`）→ round 边界，停
+    - 计 trigger author 在边界以内 @ candidate 的次数（按 displayName / agentId / participantId 大小写不敏感匹配 `@xxx`）
+    - 排除当前 triggerMessage（它是被允许的"第 1 次"）
+    - 计数 >= 1 → deny
+  - 默认链组合按 issue #13 排序——`HALL_PER_TARGET_GATE_POLICIES`：A2 → max-depth → detectCQ → dropResolved → backPing → A3；`HALL_CHAIN_FILTER_POLICIES` 同序去掉 A2
+
+- **`src/runtime/collaboration-hall-orchestrator.ts`**
+  - 三处 `runPreDispatchPolicies` 调用都传 `recentThreadMessages`
+  - filter 改 `kind !== "deny"`（force-allow 视作放行）
+  - auto-chain filter 之前 hoist `loadRecentHallThreadMessages`（policy 要看刚发出的 reply 才能判 dropResolvedTriggers / backPing）
+
+### 关键设计决策
+
+1. **三态 verdict 而不是 boolean override 标记**：`{ kind: "force-allow", policyId, reason }` 让 telemetry 知道是哪条 policy override 了下游的 deny。chain runner 的短路逻辑保持简单——deny 或 force-allow 都终止链
+2. **检测启发式 tier 1 起步**：issue #13 给了 3 tier 路线（heuristic → 结构化标注 → mini LLM judge），先上 tier 1 看真机效果。token-overlap + 多语言 stopwords 已足够覆盖 issue #13 给的"图灵 → 林纳斯 idempotent 例子"重复 dispatch 场景
+3. **`dropResolvedTriggers` 看最新一条而不是滑动窗口**：tier 1 简化。多条历史的累计判断留给 tier 2（让 agent 自己用结构化标记 declare 解决了哪些 trigger ids）
+4. **`enforceBackPingBudget` 排除当前 trigger**：当前 trigger 算"第 1 次"——只有它之前的 prior 计数。budget=1 = "允许 1 次反 ping"。这样 (A↔B) 一轮内 A→B + B→A + A→B + B→A 的乒乓在第 4 步被砍
+5. **A2 + max-depth 必须排在 detectClarifyingQuestion 前**：A2 / max-depth 是硬上限，不该被 force-allow override。链顺序保证：硬限 → 软逻辑（CQ override / dropResolved / backPing）→ 兜底 (A3)
+
+### 测试
+
+`test/hall-policies.test.ts` 加 34 case（共 72，原 38 + 新 34）：
+- 链 runner force-allow 短路（含与 deny 共存时的优先级）
+- detectClarifyingQuestion 多语言模式：?/？/吗结尾/还是/英文 interrogative/澄清动词；非问句 allow；空 trigger allow
+- dropResolvedTriggers：operator-route 跳过 / 同话题 deny / 不同话题 allow / 候选无 reply allow / trigger 太短 allow / 空 thread allow / 选**最新一条** reply
+- enforceBackPingBudget：无 prior allow / 1 次 prior 时 deny / 跨 round 重置 / 排除当前 trigger / 多 human round 边界 / 大小写不敏感 mention / triggerAuthor 缺失 allow
+- 链组合行为：A2 优先于 detectCQ / max-depth 优先于 detectCQ / detectCQ override A3 / dropResolved 单独触发 / backPing 单独触发 / detectCQ 同时盖 backPing+A3
+- 常量 sanity：`DROP_RESOLVED_OVERLAP_THRESHOLD ∈ [0.4, 0.8]` / `HALL_BACK_PING_BUDGET === 1`
+
+### 验证
+
+- `npm run build` 干净
+- `test/hall-policies.test.ts` 72/72 全过
+- 重点回归批（hall-loop-prevention + collaboration-hall-orchestrator + hall-policies + hall-mailbox + hall-scheduler + hall-blackboard + hall-prompt-context）：125 过 2 fail；2 fail 全是 P3-A 之前的基线（session-linkage / multi-mention routing），**A1-A4 + 三条新 policy 测试全过**
+- Playwright e2e 略过（policy 链是 pure 函数加法；orchestrator 改动只有 hoist 一处 thread message 加载 + 三处 input 字段补传）
+
+### 中途的小事故
+
+- 第一次跑测试有 2 个失败：`detectClarifyingQuestion` 的 CJK 还是 regex `/[一-龥]+\s*还是\s*[一-龥]+/` 要求两侧都是 CJK，但测试用例 "INNER JOIN 还是 LEFT JOIN" 两侧是 ASCII。改成 `/\s还是\s|^还是\s|\s还是$/` 接受任何上下文（接受了 `还是`/"still" 副词义偶尔误命中作为 force-allow 假阳性的小代价）
+
+
 
