@@ -51,21 +51,27 @@ OpenClaw Gateway (ws://127.0.0.1:18789)
 
 The most complex subsystem. Agents collaborate in a group chat model with autonomous @mention routing.
 
+> **Read [docs/HALL_ARCHITECTURE.md](docs/HALL_ARCHITECTURE.md) first** if you're touching hall code — it covers the blackboard / mailbox / policy-chain three-piece architecture, the message lifecycle, and key invariants. The reply / typing / state-source contracts that prevent regressions are in [docs/HALL_REPLY_LIFECYCLE.md](docs/HALL_REPLY_LIFECYCLE.md).
+
 | File | Role |
 |------|------|
 | `collaboration-hall-orchestrator.ts` | Central coordinator: message routing, dispatch, auto-chain, observer |
 | `collaboration-hall-store.ts` | Persistence: 3 JSON files (halls, messages, task-cards) with write serialization |
-| `hall-runtime-dispatch.ts` | Dispatches to real `openclaw agent` CLI, streams live output, builds prompts |
+| `hall-runtime-dispatch.ts` | Dispatches to real `openclaw agent` CLI, streams live output, builds prompts (first-turn setup vs subsequent-turn minimal trigger) |
+| `hall-blackboard.ts` | Per-card workspace: `chat.jsonl` + `task_plan.md` / `findings.md` / `progress.md` |
+| `hall-mailbox.ts` | Per-(card, agent) inbox files + delivery audit log |
+| `hall-scheduler.ts` | Inbox worker pump: 750ms debounce + multi-trigger merge |
+| `hall-policies.ts` | Anti-loop policy chain: 4 baseline policies (A1-A4) + 3 P3-C-2 policies (detectClarifyingQuestion, dropResolvedTriggers, enforceBackPingBudget) |
 | `hall-mention-router.ts` | Resolves @mentions to participants (exact + prefix matching) |
 | `hall-role-resolver.ts` | Maps agent names to semantic roles (manager, coder, reviewer, planner) |
 | `collaboration-stream.ts` | SSE events: draft_start, draft_delta, draft_complete for live streaming |
 | `collaboration-hall.ts` (ui) | Hall UI rendering (SSR + client-side JS in one file, ~3000 lines) |
 
-**Dispatch flow**: `postHallMessage` → `scheduleRouteAndDispatch` (async) → `routeAndDispatchHallMessage` (determines targets: @mention → specific agent, no mention → main) → `dispatchHallAgentReply` → `dispatchHallRuntimeTurn` (calls `openclaw agent --agent <id> --message "..." --json`).
+**Dispatch flow**: `postHallMessage` → `scheduleRouteAndDispatch` (async) → `routeAndDispatchHallMessage` (parses @mentions, seeds A1 originalAssigner + resets A2 counters) → per-target `enqueueAndDispatch` (writes inbox, wakes worker) → worker batch fire → `dispatchHallAgentReply` (per-target gate via policy chain → `dispatchHallRuntimeTurn` → post-dispatch policy chain → persist).
 
-**Auto-chain**: When an agent @mentions another agent in its reply, the system auto-dispatches to the mentioned agent (up to depth 5).
+**Auto-chain**: When an agent @mentions another agent in its reply, the system auto-dispatches to the mentioned agent (up to depth 5). Candidates are filtered by the chain-filter policy chain.
 
-**Observer**: After non-main agents respond, main is dispatched as background observer. If nothing to add, responds with `OBSERVE_SILENT` marker which gets suppressed.
+**Observer**: After non-main agents respond, main is dispatched as background observer. If nothing to add, responds with `OBSERVE_SILENT` marker which is dropped by the post-dispatch policy chain (A4).
 
 ## State files
 

@@ -82,15 +82,14 @@ Example UI from a local OpenClaw environment:
 - Hall runtime turns now carry structured transport context such as `surface`, `workspaceRoot`, `workdir`, `entryFiles`, and artifact references so repo-aware tasks can run against the same working context your agents already use elsewhere.
 
 ## Hall workflow
-- Start with one task in the hall. The first turn stays in `discussion`.
-- Unless you explicitly `@` one agent, the hall aims to gather at least two short replies so the second person can add a missing angle instead of repeating the first.
-- Edit the repo-root `HALL.md` file if you want one shared collaboration style for the whole hall. It is injected into discussion, execution, and handoff turns, but it does not override owner routing or queued execution order.
-- Use `Arrange execution order` to decide the first owner, later owners, and what each person hands off.
-- Saving the order does **not** start execution.
-- Once the queue is ready, the decision card will show `Start execution (...)`.
-- During execution, each owner should finish only their own step, then visibly `@` the next owner in the same thread.
-- Review should happen only after the last queued owner finishes, or when a human explicitly asks to stop and review.
-- After review, use `Continue discussion` to reopen the thread, then arrange the next round and start again from the same thread.
+- Start with one task in the hall. Agents collaborate in a single shared thread — like a group chat where everyone can see everything.
+- `@`-mention one agent to route to them; mention multiple to dispatch in parallel; no mention defaults to the planner / manager-like participant on a new task and to the `main` agent on follow-ups.
+- Edit the repo-root `HALL.md` file if you want one shared collaboration style for the whole hall. It is injected into the agents' setup prompt as persona guidance and does not override mention routing or anti-loop policies.
+- Use `Arrange execution order` to decide the first owner, later owners, and what each person hands off (saving the order does **not** start execution; the decision card will show `Start execution (...)` when the queue is ready).
+- During execution, each owner should finish only their own step and visibly `@` the next owner in the same thread.
+- A task card surfaces a `Needs human review` flag when its thread has been idle for more than 10 minutes without operator input — clear it via `Mark human-reviewed` once you've checked it.
+
+> Architecture details — blackboard, mailbox + scheduler, anti-loop policy chain, observer turn — live in [docs/HALL_ARCHITECTURE.md](./docs/HALL_ARCHITECTURE.md). The reply / typing / state-source contract that prevents regressions is in [docs/HALL_REPLY_LIFECYCLE.md](./docs/HALL_REPLY_LIFECYCLE.md).
 
 ## 5-minute start
 ```bash
