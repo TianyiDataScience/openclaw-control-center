@@ -59,6 +59,7 @@ import { loadBestEffortAgentRoster } from "./agent-roster";
 import { copyHallFilesToWorkspace } from "./hall-file-store";
 import { ensureHallTaskWorkspace } from "./hall-workspace";
 import { appendHallBlackboardMessage, initializeHallBlackboard } from "./hall-blackboard";
+import { enqueueAndDispatch } from "./hall-scheduler";
 import {
   canDispatchHallToRuntime,
   dispatchHallRuntimeTurn,
@@ -913,18 +914,33 @@ async function routeAndDispatchHallMessage(input: RouteAndDispatchInput): Promis
   // Load thread messages for context
   const recentThreadMessages = await loadRecentHallThreadMessages(taskCard);
 
-  // Dispatch all targets concurrently
+  // Dispatch all targets concurrently. Each dispatch goes through the inbox
+  // scheduler so we get a durable enqueue / consume / delivery audit trail
+  // under {card}/.hall/. P3-B-1 is transparent: the closure runs synchronously
+  // and existing per-sessionKey serialization in dispatchHallRuntimeTurn
+  // continues to gate concurrent turns for the same (card, agent).
   await Promise.allSettled(
     targetParticipants.map((participant) =>
-      dispatchHallAgentReply({
-        hall,
-        taskCard,
-        participant,
-        triggerMessage,
-        recentThreadMessages,
-        toolClient,
-        chainDepth: 0,
-      }),
+      enqueueAndDispatch(
+        {
+          taskCardId: taskCard.taskCardId,
+          targetParticipantId: participant.participantId,
+          triggerMessageId: triggerMessage.messageId,
+          triggerAuthorParticipantId: triggerMessage.authorParticipantId,
+          enqueueReason: "operator-route",
+          chainDepth: 0,
+        },
+        () =>
+          dispatchHallAgentReply({
+            hall,
+            taskCard,
+            participant,
+            triggerMessage,
+            recentThreadMessages,
+            toolClient,
+            chainDepth: 0,
+          }),
+      ),
     ),
   );
 
@@ -934,12 +950,17 @@ async function routeAndDispatchHallMessage(input: RouteAndDispatchInput): Promis
   if (!mainWasPrimaryTarget && mainAgentId) {
     const mainParticipant = hall.participants.find((p) => p.participantId === mainAgentId);
     if (mainParticipant && canDispatchHallToRuntime(toolClient, mainParticipant)) {
-      await dispatchMainObserver({
-        hall,
-        taskCard,
-        mainParticipant,
-        toolClient,
-      });
+      await enqueueAndDispatch(
+        {
+          taskCardId: taskCard.taskCardId,
+          targetParticipantId: mainParticipant.participantId,
+          triggerMessageId: triggerMessage.messageId,
+          triggerAuthorParticipantId: triggerMessage.authorParticipantId,
+          enqueueReason: "main-observer",
+          chainDepth: 0,
+        },
+        () => dispatchMainObserver({ hall, taskCard, mainParticipant, toolClient }),
+      );
     }
   }
 }
@@ -1024,17 +1045,29 @@ async function dispatchMainObserver(input: {
       && p.participantId !== triggerAuthorId,
     );
   if (chainTargets.length > 0) {
+    const chainTrigger = lastMessage ?? ({ content: result.content } as HallMessage);
     await Promise.allSettled(
       chainTargets.map((target) =>
-        dispatchHallAgentReply({
-          hall,
-          taskCard,
-          participant: target,
-          triggerMessage: lastMessage ?? { content: result.content } as HallMessage,
-          recentThreadMessages: updatedMessages,
-          toolClient,
-          chainDepth: 1,
-        }),
+        enqueueAndDispatch(
+          {
+            taskCardId: taskCard.taskCardId,
+            targetParticipantId: target.participantId,
+            triggerMessageId: chainTrigger.messageId ?? `observer:${mainParticipant.participantId}`,
+            triggerAuthorParticipantId: chainTrigger.authorParticipantId ?? mainParticipant.participantId,
+            enqueueReason: "observer-chain",
+            chainDepth: 1,
+          },
+          () =>
+            dispatchHallAgentReply({
+              hall,
+              taskCard,
+              participant: target,
+              triggerMessage: chainTrigger,
+              recentThreadMessages: updatedMessages,
+              toolClient,
+              chainDepth: 1,
+            }),
+        ),
       ),
     );
   }
@@ -1163,28 +1196,50 @@ async function dispatchHallAgentReply(input: {
       const updatedThreadMessages = await loadRecentHallThreadMessages(taskCard);
       const mentionResults = await Promise.allSettled(
         chainTargets.map((target) =>
-          dispatchHallAgentReply({
-            hall,
-            taskCard,
-            participant: target,
-            triggerMessage: replyMessage,
-            recentThreadMessages: updatedThreadMessages,
-            toolClient,
-            chainDepth: chainDepth + 1,
-          }),
+          enqueueAndDispatch(
+            {
+              taskCardId: taskCard.taskCardId,
+              targetParticipantId: target.participantId,
+              triggerMessageId: replyMessage.messageId,
+              triggerAuthorParticipantId: replyMessage.authorParticipantId,
+              enqueueReason: "auto-chain",
+              chainDepth: chainDepth + 1,
+            },
+            () =>
+              dispatchHallAgentReply({
+                hall,
+                taskCard,
+                participant: target,
+                triggerMessage: replyMessage,
+                recentThreadMessages: updatedThreadMessages,
+                toolClient,
+                chainDepth: chainDepth + 1,
+              }),
+          ),
         ),
       );
 
       // Notify originating agent that @mentioned agents have completed
       if (canDispatchHallToRuntime(toolClient, participant)) {
-        await wakeMentionInitiator({
-          hall,
-          taskCard,
-          initiator: participant,
-          mentionedTargets: chainTargets,
-          mentionResults,
-          toolClient,
-        });
+        await enqueueAndDispatch(
+          {
+            taskCardId: taskCard.taskCardId,
+            targetParticipantId: participant.participantId,
+            triggerMessageId: replyMessage.messageId,
+            triggerAuthorParticipantId: replyMessage.authorParticipantId,
+            enqueueReason: "wake-mention-initiator",
+            chainDepth: chainDepth + 1,
+          },
+          () =>
+            wakeMentionInitiator({
+              hall,
+              taskCard,
+              initiator: participant,
+              mentionedTargets: chainTargets,
+              mentionResults,
+              toolClient,
+            }),
+        );
       }
     }
   }
