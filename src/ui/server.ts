@@ -112,6 +112,7 @@ import {
   archiveHallTaskThread,
   createHallTaskFromOperatorRequest,
   deleteHallTaskThread,
+  markHallTaskHumanReviewed,
   postHallMessage,
   readCollaborationHall,
   readCollaborationHallTaskDetail,
@@ -158,6 +159,7 @@ import {
   type SessionInterSessionSignal,
 } from "../runtime/session-conversations";
 import { renderCollaborationHall, renderCollaborationHallClientScript } from "./collaboration-hall";
+import { isDemoTaskCard, buildDemoTaskCard, buildDemoTaskCardSummary, getDemoMessages, getDemoPrompt, DEMO_CARD_ID } from "../runtime/demo-playback";
 import { renderTaskRoomClientScript, renderTaskRoomWorkbench, renderTaskRoomWorkbenchForSmoke } from "./task-room-workbench";
 import { loadBestEffortAgentRoster, type AgentRosterEntry, type AgentRosterSnapshot } from "../runtime/agent-roster";
 import {
@@ -174,6 +176,8 @@ import {
   upsertAgentAvatarPreference,
   type AvatarMode,
 } from "../runtime/avatar-preferences";
+import { serveHallFile, writeHallFileFromDataUrl, hallFileContentType } from "../runtime/hall-file-store";
+import { listHallTaskWorkspaceFiles, HALL_WORKSPACES_DIR } from "../runtime/hall-workspace";
 import type {
   ChatMessage,
   ChatRoom,
@@ -234,6 +238,7 @@ const FORM_MAX_BYTES = 16 * 1024;
 const EDITABLE_TEXT_FILE_MAX_BYTES = 1024 * 1024;
 const EDITABLE_TEXT_CONTENT_MAX_CHARS = 240_000;
 const AVATAR_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
+const HALL_FILE_UPLOAD_MAX_BYTES = 30 * 1024 * 1024;
 const SEARCH_LIMIT_MAX = 200;
 const TASK_RUNTIME_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const STALLED_RUNNING_SESSION_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -1010,7 +1015,7 @@ function resolveUiBindAddress(input: { explicitBindAddress?: string; publicUiUrl
   const explicit = input.explicitBindAddress?.trim();
   if (explicit) return explicit;
   const publicUrl = parsePublicUiUrl(input.publicUiUrl);
-  if (!publicUrl) return "127.0.0.1";
+  if (!publicUrl) return "0.0.0.0";
   return isLoopbackHostname(publicUrl.hostname) ? "127.0.0.1" : "0.0.0.0";
 }
 
@@ -1443,6 +1448,37 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         return await serveHallAvatarFile(res, fileName, method === "HEAD");
       }
 
+      if ((method === "GET" || method === "HEAD") && path.startsWith("/hall-files/")) {
+        assertAllowedQueryParams(url.searchParams, [], true);
+        const fileName = decodeURIComponent(path.slice("/hall-files/".length));
+        return await serveHallFile(res, fileName, method === "HEAD");
+      }
+
+      if ((method === "GET" || method === "HEAD") && path.startsWith("/hall-workspace-files/")) {
+        assertAllowedQueryParams(url.searchParams, [], true);
+        const rest = decodeURIComponent(path.slice("/hall-workspace-files/".length));
+        const slashIndex = rest.indexOf("/");
+        if (slashIndex < 1) return writeApiError(res, 404, "NOT_FOUND", "Workspace file not found.");
+        const taskCardId = rest.slice(0, slashIndex);
+        const filePath = rest.slice(slashIndex + 1);
+        if (!taskCardId || !filePath || filePath.includes("..") || filePath.startsWith("/")) {
+          return writeApiError(res, 400, "VALIDATION_ERROR", "Invalid file path.");
+        }
+        const absolutePath = join(HALL_WORKSPACES_DIR, taskCardId, filePath);
+        try {
+          const buffer = await readFile(absolutePath);
+          const contentType = hallFileContentType(filePath);
+          res.writeHead(200, {
+            "content-type": contentType,
+            "cache-control": "private, max-age=60",
+          });
+          res.end(method === "HEAD" ? undefined : buffer);
+        } catch {
+          return writeApiError(res, 404, "NOT_FOUND", "Workspace file not found.");
+        }
+        return;
+      }
+
       if (method === "GET" && path === "/api/search/tasks") {
         const query = parseSearchQuery(url.searchParams);
         const snapshot = await readReadModelSnapshot();
@@ -1820,17 +1856,32 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
 
       if (method === "GET" && path === "/api/hall") {
         const hall = await readCollaborationHall();
+        const demoCard = buildDemoTaskCard();
+        const demoSummary = buildDemoTaskCardSummary();
+        const taskCardsWithDemo = [
+          ...hall.taskCards.map((card) => ({
+            ...card,
+            summary: hall.taskSummaries.find((summary) => summary.taskCardId === card.taskCardId),
+          })),
+          { ...demoCard, summary: demoSummary, isDemo: true },
+        ];
         return writeJson(res, 200, {
           ok: true,
           hall: hall.hall,
           summary: hall.hallSummary,
           participants: hall.participants,
-          count: hall.taskCards.length,
-          taskCards: hall.taskCards.map((card) => ({
-            ...card,
-            summary: hall.taskSummaries.find((summary) => summary.taskCardId === card.taskCardId),
-          })),
+          count: taskCardsWithDemo.length,
+          taskCards: taskCardsWithDemo,
           messages: hall.messages.slice(-180),
+        });
+      }
+
+      if (method === "GET" && path === "/api/hall/demo/data") {
+        return writeJson(res, 200, {
+          ok: true,
+          prompt: getDemoPrompt(),
+          taskCardId: DEMO_CARD_ID,
+          messages: getDemoMessages(),
         });
       }
 
@@ -1861,10 +1912,42 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         });
       }
 
+      if (method === "GET" && path === "/api/hall/workspace-files") {
+        assertAllowedQueryParams(url.searchParams, ["taskCardId"], true);
+        const taskCardId = normalizeQueryString(url.searchParams.get("taskCardId"), "taskCardId", 180, false);
+        if (!taskCardId) throw new RequestValidationError("taskCardId is required.", 400);
+        const files = await listHallTaskWorkspaceFiles(taskCardId);
+        const workspacePath = join(HALL_WORKSPACES_DIR, taskCardId);
+        return writeJson(res, 200, { ok: true, taskCardId, workspacePath, files });
+      }
+
+      if (method === "POST" && path === "/api/hall/files") {
+        assertCollaborationMutationAuthorized(req, "/api/hall/files");
+        assertJsonContentType(req);
+        const raw = await readRawBody(req, HALL_FILE_UPLOAD_MAX_BYTES);
+        let parsed: unknown;
+        try { parsed = JSON.parse(raw || "{}") as unknown; } catch { throw new RequestValidationError("Invalid JSON body.", 400); }
+        const payload = expectObject(parsed, "hall file upload payload");
+        const dataUrl = requiredBoundedString(payload.dataUrl, "dataUrl", HALL_FILE_UPLOAD_MAX_BYTES * 2);
+        const fileName = optionalBoundedString(payload.fileName, "fileName", 160);
+        try {
+          const file = await writeHallFileFromDataUrl({ dataUrl, fileNameHint: fileName });
+          return writeJson(res, 200, { ok: true, file });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "File upload failed.";
+          throw new RequestValidationError(message, 400);
+        }
+      }
+
       if (method === "POST" && path === "/api/hall/messages") {
         assertCollaborationMutationAuthorized(req, "/api/hall/messages");
         assertJsonContentType(req);
         const payload = expectObject(await readJsonBody(req), "create hall message payload");
+        const fileAttachments = Array.isArray(payload.fileAttachments)
+          ? (payload.fileAttachments as Array<Record<string, unknown>>)
+              .filter((f) => f && typeof f.fileId === "string" && typeof f.storedFileName === "string")
+              .slice(0, 10)
+          : undefined;
         const result = await postHallMessage({
           hallId: optionalBoundedString(payload.hallId, "hallId", 120),
           taskCardId: optionalBoundedString(payload.taskCardId, "taskCardId", 180),
@@ -1873,6 +1956,7 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
           content: requiredBoundedString(payload.content, "content", 4000),
           authorParticipantId: optionalBoundedString(payload.authorParticipantId, "authorParticipantId", 160),
           authorLabel: optionalBoundedString(payload.authorLabel, "authorLabel", 120),
+          fileAttachments: fileAttachments as any,
         }, { toolClient });
         await appendOperationAudit({
           action: "hall_task_message",
@@ -1892,10 +1976,12 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
       }
 
       if (method === "GET" && path === "/api/hall/tasks") {
-        assertAllowedQueryParams(url.searchParams, ["stage"], true);
+        // The `stage` filter was removed along with the 5-state HallTaskStage
+        // machine. The endpoint now returns all visible task cards; the client
+        // can filter by status or "needs human review" as needed.
+        assertAllowedQueryParams(url.searchParams, [], true);
         const hall = await readCollaborationHall();
-        const stage = normalizeHallTaskStageQuery(url.searchParams.get("stage"));
-        const taskCards = hall.taskCards.filter((card) => !stage || card.stage === stage);
+        const taskCards = hall.taskCards;
         return writeJson(res, 200, {
           ok: true,
           hall: hall.hall,
@@ -1926,11 +2012,21 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         });
       }
 
-      if (method === "GET" && path.startsWith("/api/hall/tasks/") && !path.endsWith("/assign") && !path.endsWith("/review") && !path.endsWith("/handoff") && !path.endsWith("/execution-order") && !path.endsWith("/stop") && !path.endsWith("/archive") && !path.endsWith("/delete") && !path.endsWith("/evidence")) {
+      if (method === "GET" && path.startsWith("/api/hall/tasks/") && !path.endsWith("/assign") && !path.endsWith("/review") && !path.endsWith("/handoff") && !path.endsWith("/execution-order") && !path.endsWith("/stop") && !path.endsWith("/archive") && !path.endsWith("/delete") && !path.endsWith("/evidence") && !path.endsWith("/mark-human-reviewed")) {
         const taskId = decodeRouteParam(path, /^\/api\/hall\/tasks\/([^/]+)$/, "taskId");
         assertAllowedQueryParams(url.searchParams, ["projectId", "taskCardId"], true);
-        const projectId = normalizeQueryString(url.searchParams.get("projectId"), "projectId", 120, true);
         const taskCardId = normalizeQueryString(url.searchParams.get("taskCardId"), "taskCardId", 180, true);
+        if (taskCardId && isDemoTaskCard(taskCardId)) {
+          const demoCard = buildDemoTaskCard();
+          return writeJson(res, 200, {
+            ok: true,
+            taskCard: demoCard,
+            taskSummary: buildDemoTaskCardSummary(),
+            task: null,
+            messages: [],
+          });
+        }
+        const projectId = normalizeQueryString(url.searchParams.get("projectId"), "projectId", 120, true);
         const taskCardStore = await loadCollaborationTaskCardStore();
         const taskCard = resolveHallTaskCardRequest(taskCardStore, {
           taskId,
@@ -2126,6 +2222,27 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         });
         const result = await deleteHallTaskThread({
           taskCardId: taskCard.taskCardId,
+        });
+        return writeJson(res, 200, { ok: true, ...result });
+      }
+
+      if (method === "POST" && path.startsWith("/api/hall/tasks/") && path.endsWith("/mark-human-reviewed")) {
+        assertCollaborationMutationAuthorized(req, "/api/hall/tasks/:taskId/mark-human-reviewed");
+        assertJsonContentType(req);
+        const taskId = decodeRouteParam(path, /^\/api\/hall\/tasks\/([^/]+)\/mark-human-reviewed$/, "taskId");
+        const payload = expectObject(await readJsonBody(req), "hall mark-human-reviewed payload");
+        const projectId = optionalBoundedString(payload.projectId, "projectId", 120);
+        const taskCardId = optionalBoundedString(payload.taskCardId, "taskCardId", 180);
+        const taskCardStore = await loadCollaborationTaskCardStore();
+        const taskCard = resolveHallTaskCardRequest(taskCardStore, {
+          taskId,
+          projectId,
+          taskCardId,
+        });
+        const result = await markHallTaskHumanReviewed({
+          taskCardId: taskCard.taskCardId,
+          reviewedByParticipantId: optionalBoundedString(payload.reviewedByParticipantId, "reviewedByParticipantId", 160),
+          reviewedByLabel: optionalBoundedString(payload.reviewedByLabel, "reviewedByLabel", 120),
         });
         return writeJson(res, 200, { ok: true, ...result });
       }
@@ -7327,20 +7444,25 @@ async function renderHtml(
         )
       : undefined;
   const selectedHallTaskDetail =
-    selectedHallTaskCard
+    selectedHallTaskCard && !isDemoTaskCard(selectedHallTaskCard.taskCardId)
       ? await readCollaborationHallTaskDetail(selectedHallTaskCard.taskCardId)
       : undefined;
+  const demoCardForSSR = buildDemoTaskCard();
+  const demoSummaryForSSR = buildDemoTaskCardSummary();
   const collaborationHallWorkbench =
     needsHallChat && hallView
       ? renderCollaborationHall({
           language: options.language,
           hall: hallView.hall,
           hallSummary: hallView.hallSummary,
-          taskCards: hallView.taskCards.map((card) => ({
-            card,
-            summary: hallView.taskSummaries.find((summary) => summary.taskCardId === card.taskCardId),
-            task: snapshot.tasks.tasks.find((task) => task.projectId === card.projectId && task.taskId === card.taskId),
-          })),
+          taskCards: [
+            ...hallView.taskCards.map((card) => ({
+              card,
+              summary: hallView.taskSummaries.find((summary) => summary.taskCardId === card.taskCardId),
+              task: snapshot.tasks.tasks.find((task) => task.projectId === card.projectId && task.taskId === card.taskId),
+            })),
+            { card: demoCardForSSR as any, summary: demoSummaryForSSR as any, task: undefined },
+          ],
           messages: selectedHallTaskDetail?.messages ?? hallView.messages.slice(-160),
           selectedTaskCard: selectedHallTaskDetail?.taskCard ?? selectedHallTaskCard,
           selectedTaskSummary: selectedHallTaskDetail?.taskSummary ?? selectedHallTaskSummary,
@@ -7412,7 +7534,7 @@ async function renderHtml(
           <strong>${collaborationHandoffCount}</strong>
         </div>
         <div class="status-chip">
-          <span>${escapeHtml(t("Blocked", "卡住"))}</span>
+          <span>${escapeHtml(t("Needs human review", "需要人类审核"))}</span>
           <strong>${collaborationBlockedCount}</strong>
         </div>
         <div class="status-chip">
@@ -7445,7 +7567,7 @@ async function renderHtml(
       <div class="segment-switch collaboration-filter-bar" role="tablist" aria-label="${escapeHtml(t("Collaboration filters", "协作筛选"))}">
         <button class="segment-item active" type="button" data-collab-filter="all">${escapeHtml(t("All", "全部"))}</button>
         <button class="segment-item" type="button" data-collab-filter="active">${escapeHtml(t("In progress", "进行中"))}</button>
-        <button class="segment-item" type="button" data-collab-filter="blocked">${escapeHtml(t("Blocked", "卡住"))}</button>
+        <button class="segment-item" type="button" data-collab-filter="blocked">${escapeHtml(t("Needs human review", "需要人类审核"))}</button>
         <button class="segment-item" type="button" data-collab-filter="completed">${escapeHtml(t("Completed", "已完成"))}</button>
         <button class="segment-item" type="button" data-collab-filter="multi-agent">${escapeHtml(t("Multi-agent only", "只看多智能体"))}</button>
         <button class="segment-item" type="button" data-collab-filter="main-dispatched">${escapeHtml(t("Main dispatched", "只看 Main 派发"))}</button>
@@ -7957,7 +8079,7 @@ async function renderHtml(
       const key = 'openclaw:theme';
       const stored = (() => { try { return window.localStorage.getItem(key) || ''; } catch { return ''; } })();
       const prefersDark = (() => { try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; } catch { return false; } })();
-      const theme = (stored === 'dark' || stored === 'light') ? stored : (prefersDark ? 'dark' : 'light');
+      const theme = (stored === 'dark' || stored === 'light') ? stored : 'light';
       document.documentElement.dataset.theme = theme;
     })();
   </script>
@@ -12197,7 +12319,7 @@ async function resolveStaffRoleLabel(member: TeamMemberSnapshot, language: UiLan
     return pickUiText(language, "Main control and coordination", "主控与协调");
   }
 
-  if (key === "codex" || normalized.includes("codex")) {
+  if (key === "codex") {
     return pickUiText(language, "Coding automation", "自动化编码执行");
   }
 
@@ -12213,6 +12335,11 @@ async function resolveStaffRoleLabel(member: TeamMemberSnapshot, language: UiLan
   }
   if (explicit && (normalizeEvidenceText(explicit).includes("creator") || explicit.includes("创作"))) {
     return pickUiText(language, "High-value content creation", "高价值内容创作");
+  }
+
+  const parenMatch = member.displayName.match(/\(([^)]+)\)/);
+  if (parenMatch && parenMatch[1].trim().length > 0) {
+    return parenMatch[1].trim();
   }
 
   return pickUiText(language, "Role not defined in workspace", "工作区未写明职责");
@@ -15161,7 +15288,7 @@ function collaborationThreadStatusLabel(
 ): string {
   if (status === "active") return pickUiText(language, "In progress", "进行中");
   if (status === "handoff") return pickUiText(language, "Waiting handoff", "等待交接");
-  if (status === "blocked") return pickUiText(language, "Blocked", "卡住");
+  if (status === "blocked") return pickUiText(language, "Needs human review", "需要人类审核");
   return pickUiText(language, "Completed", "已完成");
 }
 
@@ -15198,8 +15325,8 @@ function collaborationThreadSummary(input: {
     }
     return pickUiText(
       input.language,
-      `${childLabel} is blocked and needs follow-up before the thread can move again.`,
-      `${childLabel} 当前卡住了，需要先跟进处理，这条协作线程才能继续。`,
+      `${childLabel} needs human review before the thread can move again.`,
+      `${childLabel} 当前需要人类审核，处理后这条协作线程才能继续。`,
     );
   }
   if (input.status === "active") {
@@ -15792,7 +15919,7 @@ function renderCollaborationFilterScript(language: UiLanguage = "zh"): string {
   const copy = {
     all: '${escapeHtml(pickUiText(language, "Showing all visible threads", "当前显示全部可见线程"))}',
     active: '${escapeHtml(pickUiText(language, "Showing in-progress collaboration", "当前显示进行中的协作"))}',
-    blocked: '${escapeHtml(pickUiText(language, "Showing blocked collaboration", "当前显示卡住的协作"))}',
+    blocked: '${escapeHtml(pickUiText(language, "Showing collaboration needing human review", "当前显示需要人类审核的协作"))}',
     completed: '${escapeHtml(pickUiText(language, "Showing completed collaboration", "当前显示已完成的协作"))}',
     multiAgent: '${escapeHtml(pickUiText(language, "Showing multi-agent collaboration only", "当前只看多智能体协作"))}',
     mainDispatched: '${escapeHtml(pickUiText(language, "Showing collaboration dispatched by Main", "当前只看 Main 派发的协作"))}',
@@ -19515,23 +19642,8 @@ function resolveHallTaskCardRequest(
   return matches[0];
 }
 
-function normalizeHallTaskStageQuery(value: string | null): "discussion" | "execution" | "review" | "blocked" | "completed" | undefined {
-  if (!value) return undefined;
-  const trimmed = value.trim();
-  if (
-    trimmed === "discussion" ||
-    trimmed === "execution" ||
-    trimmed === "review" ||
-    trimmed === "blocked" ||
-    trimmed === "completed"
-  ) {
-    return trimmed;
-  }
-  throw new RequestValidationError(
-    "stage must be one of: discussion, execution, review, blocked, completed",
-    400,
-  );
-}
+// Removed normalizeHallTaskStageQuery: the /api/hall/tasks ?stage= filter was
+// retired with the HallTaskStage machine.
 
 function normalizeRoomStageQuery(value: string | null): RoomStage | undefined {
   if (!value) return undefined;

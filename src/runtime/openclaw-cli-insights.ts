@@ -502,28 +502,42 @@ export function buildOpenClawCommandCandidates(
   return [...new Set(candidates.filter(Boolean))];
 }
 
+/**
+ * Build the environment for spawned `openclaw` CLI child processes.
+ *
+ * IMPORTANT: OPENCLAW_HOME is stripped from the forwarded env because the
+ * control center and the openclaw CLI interpret it differently:
+ *   - Control center: OPENCLAW_HOME = full path to the state dir (e.g. ~/.openclaw)
+ *   - OpenClaw CLI:   OPENCLAW_HOME = OS home equivalent; the CLI joins .openclaw itself
+ * Forwarding the control center's value causes the CLI to resolve a doubled
+ * path like ~/.openclaw/.openclaw/agents/.
+ * See: https://github.com/xiaolinfrank/openclaw-control-center/issues/2
+ */
 export function buildOpenClawCommandEnv(
   env: NodeJS.ProcessEnv = process.env,
   platformName: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
+  // Strip env vars whose semantics differ between the control center and the CLI.
+  const { OPENCLAW_HOME: _h, OPENCLAW_AGENT_ROOT: _a, ...sanitized } = env;
+
   if (platformName !== "win32") {
-    return { ...env };
+    return sanitized;
   }
 
-  const pathEntries = (env.PATH ?? "")
+  const pathEntries = (sanitized.PATH ?? "")
     .split(delimiter)
     .map((item) => item.trim())
     .filter(Boolean);
-  const npmPrefix = (env.npm_config_prefix ?? env.NPM_CONFIG_PREFIX ?? env.PREFIX ?? "").trim();
+  const npmPrefix = (sanitized.npm_config_prefix ?? sanitized.NPM_CONFIG_PREFIX ?? sanitized.PREFIX ?? "").trim();
   const joinPath = platformName === "win32" ? win32Path.join : join;
   const windowsBinRoots = [
-    (env.APPDATA ?? "").trim() ? joinPath((env.APPDATA ?? "").trim(), "npm") : "",
-    (env.USERPROFILE ?? "").trim() ? joinPath((env.USERPROFILE ?? "").trim(), "AppData", "Roaming", "npm") : "",
+    (sanitized.APPDATA ?? "").trim() ? joinPath((sanitized.APPDATA ?? "").trim(), "npm") : "",
+    (sanitized.USERPROFILE ?? "").trim() ? joinPath((sanitized.USERPROFILE ?? "").trim(), "AppData", "Roaming", "npm") : "",
     npmPrefix,
   ].filter(Boolean);
   const mergedPath = [...new Set([...windowsBinRoots, ...pathEntries])].join(delimiter);
   return {
-    ...env,
+    ...sanitized,
     PATH: mergedPath,
   };
 }

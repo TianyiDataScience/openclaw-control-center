@@ -2,6 +2,7 @@ import type { UiLanguage } from "../runtime/ui-preferences";
 import type {
   CollaborationHall,
   CollaborationHallSummary,
+  HallFileAttachment,
   HallMessage,
   HallParticipant,
   HallExecutionItem,
@@ -10,6 +11,7 @@ import type {
   ProjectTask,
   TaskArtifact,
 } from "../types";
+import { UI_TIMEZONE } from "../config";
 import { renderCollaborationHallTheme } from "./collaboration-hall-theme";
 
 interface HallTaskCardViewModel {
@@ -19,8 +21,14 @@ interface HallTaskCardViewModel {
 }
 
 const HALL_AVATAR_CATALOG = [
+  { keywords: ["turing", "图灵"], animal: "lion", accent: "#ff9966", asset: "turing-pm.png", customImage: "turing-pm.png" },
+  { keywords: ["codd", "科德"], animal: "dolphin", accent: "#73d4ff", asset: "codd-clinical-data.png", customImage: "codd-clinical-data.png" },
+  { keywords: ["linus", "林纳斯"], animal: "tiger", accent: "#ff8a7d", asset: "linus-dev.png", customImage: "linus-dev.png" },
+  { keywords: ["rosalind", "罗莎琳德"], animal: "panda", accent: "#9df2ff", asset: "rosalind-bioinfo.png", customImage: "rosalind-bioinfo.png" },
+  { keywords: ["ada", "阿达"], animal: "otter", accent: "#8ad1ff", asset: "ada-data-scientist.png", customImage: "ada-data-scientist.png" },
+  { keywords: ["florence", "弗洛伦斯"], animal: "monkey", accent: "#f4c542", asset: "florence-compliance.png", customImage: "florence-compliance.png" },
   { keywords: ["coq", "rooster", "cock"], animal: "rooster", accent: "#ffb85e", asset: "coq.png" },
-  { keywords: ["main", "lion"], animal: "lion", accent: "#ff9966", asset: "main.png" },
+  { keywords: ["main", "lion"], animal: "lion", accent: "#ff9966", asset: "main.png", customImage: "main.jpg" },
   { keywords: ["monkey"], animal: "monkey", accent: "#f4c542", asset: "monkey.png" },
   { keywords: ["otter"], animal: "otter", accent: "#8ad1ff", asset: "otter.png" },
   { keywords: ["pandas", "panda"], animal: "panda", accent: "#9df2ff", asset: "pandas.png" },
@@ -49,8 +57,8 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
   const hallHeadline = hallHeadlineText(input.hallSummary.headline, input.language, Boolean(input.selectedTaskCard));
   const threadTitle = input.selectedTaskCard?.title ?? t("Hall chat", "大厅群聊");
   const threadSubtitle = input.selectedTaskCard
-    ? `${input.selectedTaskCard.currentOwnerLabel ?? t("Waiting for owner", "等待 owner")} · ${stageLabel(input.selectedTaskCard.stage, input.language)}`
-    : t("Discussion, execution, handoff, and review should feel like one continuous chat.", "讨论、执行、交接和审核都应该像一条连续的群聊。");
+    ? formatCompactTimestamp(input.selectedTaskCard.updatedAt, input.language)
+    : t("A shared group chat where agents collaborate autonomously.", "智能体在群聊中自主协作。");
   const bootstrap = {
     hallId: input.hall.hallId,
     selectedTaskCardId: input.selectedTaskCard?.taskCardId,
@@ -64,7 +72,6 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
       projectId: item.card.projectId,
       taskId: item.card.taskId,
       title: item.card.title,
-      stage: item.card.stage,
       status: item.card.status,
       currentOwnerLabel: item.card.currentOwnerLabel,
       roomId: item.card.roomId,
@@ -104,7 +111,7 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
   };
 
   return `
-    <section class="card collaboration-hall-card is-context-collapsed" id="collaboration-hall" data-collaboration-hall-root>
+    <section class="card collaboration-hall-card is-context-open" id="collaboration-hall" data-collaboration-hall-root>
       <style>${renderCollaborationHallTheme()}</style>
       <div class="hall-shell">
         <div class="hall-toolbar">
@@ -150,15 +157,15 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
                     <button type="button" class="hall-menu-button hall-menu-button--danger" data-hall-delete-thread>${escapeHtml(t("Delete thread", "删除线程"))}</button>
                   </div>
                 </details>
-                <button type="button" class="hall-context-toggle" data-hall-toggle-context aria-pressed="false">${escapeHtml(t("Show context", "展开上下文"))}</button>
+                <button type="button" class="hall-context-toggle" data-hall-toggle-context aria-pressed="true">${escapeHtml(t("Hide context", "收起上下文"))}</button>
               </div>
             </div>
             <div class="hall-thread" data-hall-thread>${renderHallMessages(input.messages, input.language)}</div>
             <div class="hall-decision-panel" data-hall-decision-panel ${renderInitialDecisionPanel(input.selectedTaskCard, input.selectedTask, input.hall.participants, input.language) ? "" : "hidden"}>${renderInitialDecisionPanel(input.selectedTaskCard, input.selectedTask, input.hall.participants, input.language)}</div>
             <div class="hall-typing-strip" data-hall-typing-strip hidden></div>
             <div class="hall-composer-shell">
-              <div class="hall-handoff-panel" data-hall-handoff-panel hidden></div>
               <form class="hall-composer" data-hall-compose>
+                <div class="hall-composer-files" data-hall-file-preview hidden></div>
                 <div class="hall-composer-main">
                   <textarea
                     name="content"
@@ -168,16 +175,8 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
                     onkeyup="return window.__openclawHallHandleComposerKeyup ? window.__openclawHallHandleComposerKeyup(event) : true"
                   ></textarea>
                   <div class="hall-composer-actions">
-                    <details class="hall-action-menu">
-                      <summary class="hall-secondary-button hall-secondary-button--icon" title="${escapeHtml(t("Task actions", "任务动作"))}" aria-label="${escapeHtml(t("Task actions", "任务动作"))}">＋</summary>
-                      <div class="hall-action-menu-panel">
-                        <button type="button" class="hall-menu-button" data-hall-create-task>${escapeHtml(bootstrap.labels.sendTask)}</button>
-                        <button type="button" class="hall-menu-button" data-hall-approve>${escapeHtml(bootstrap.labels.approve)}</button>
-                        <button type="button" class="hall-menu-button" data-hall-reject>${escapeHtml(bootstrap.labels.reject)}</button>
-                        <button type="button" class="hall-menu-button" data-hall-handoff>${escapeHtml(bootstrap.labels.handoff)}</button>
-                      </div>
-                    </details>
-                    <button type="button" class="hall-secondary-button hall-secondary-button--icon" data-hall-stop-task title="${escapeHtml(t("Stop current task", "停止当前任务"))}" aria-label="${escapeHtml(t("Stop current task", "停止当前任务"))}" hidden>■</button>
+                    <input type="file" data-hall-file-input multiple accept="image/*,.pdf,.txt,.md,.json,.zip" style="position:absolute;clip:rect(0,0,0,0);width:1px;height:1px;overflow:hidden;border:0;padding:0;margin:-1px" />
+                    <button type="button" class="hall-secondary-button hall-secondary-button--icon" data-hall-attach-file title="${escapeHtml(t("Attach file", "附件"))}" aria-label="${escapeHtml(t("Attach file", "附件"))}">&#x1F4CE;</button>
                     <button type="submit" class="hall-button hall-button--send" data-hall-send-reply onclick="return window.__openclawHallSendReply ? window.__openclawHallSendReply(event) : true">${escapeHtml(bootstrap.labels.reply)}</button>
                   </div>
                 </div>
@@ -194,7 +193,7 @@ export function renderCollaborationHall(input: RenderCollaborationHallInput): st
                 <h3>${escapeHtml(t("Context", "上下文"))}</h3>
                 <div class="meta">${escapeHtml(t("Support the chat with owner, decision, evidence, and review state.", "这里只做群聊的辅助上下文：owner、决策、证据和审核状态。"))}</div>
               </div>
-              <button type="button" class="hall-context-toggle hall-context-toggle--inline" data-hall-toggle-context aria-pressed="false">${escapeHtml(t("Hide context", "收起上下文"))}</button>
+              <button type="button" class="hall-context-toggle hall-context-toggle--inline" data-hall-toggle-context aria-pressed="true">${escapeHtml(t("Hide context", "收起上下文"))}</button>
             </div>
             <div class="hall-detail-group">
               <h4>${escapeHtml(t("Team", "成员"))}</h4>
@@ -237,7 +236,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const textMultiTyping = ${JSON.stringify(pickUiText(language, "are typing…", "正在输入…"))};
   const textTypingNow = ${JSON.stringify(pickUiText(language, "Typing now", "正在输入"))};
   const textExecutingNow = ${JSON.stringify(pickUiText(language, "Executing", "执行中"))};
-  const textReviewingNow = ${JSON.stringify(pickUiText(language, "Reviewing", "审核中"))};
   const textQueuedNow = ${JSON.stringify(pickUiText(language, "Queued next", "排队中"))};
   const textIdleNow = ${JSON.stringify(pickUiText(language, "Ready", "待命"))};
   const textDiscussionResult = ${JSON.stringify(pickUiText(language, "Discussion result", "讨论结论"))};
@@ -247,14 +245,10 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const textSuggestedOrder = ${JSON.stringify(pickUiText(language, "Suggested order", "建议顺序"))};
   const textSuggestedFirstOwner = ${JSON.stringify(pickUiText(language, "Suggested first owner", "建议第一位执行者"))};
   const textCurrentOwner = ${JSON.stringify(pickUiText(language, "Current owner", "当前 owner"))};
-  const textStage = ${JSON.stringify(pickUiText(language, "Stage", "阶段"))};
   const textReadyToStart = ${JSON.stringify(pickUiText(language, "Ready to start", "待开始"))};
   const textStartExecutionPrefix = ${JSON.stringify(pickUiText(language, "Start execution with", "开始执行（"))};
   const textStartExecutionSuffix = ${JSON.stringify(pickUiText(language, ")", "）"))};
-  const textPlanExecutionOrder = ${JSON.stringify(pickUiText(language, "Plan execution order", "安排后续顺序"))};
-  const textAdjustExecutionOrder = ${JSON.stringify(pickUiText(language, "Adjust execution order", "调整执行顺序"))};
-  const textContinueDiscussion = ${JSON.stringify(pickUiText(language, "Continue discussion", "继续讨论"))};
-  const textContinueDiscussionSeed = ${JSON.stringify(pickUiText(language, "Let's keep this in discussion for a moment.", "我们先继续讨论这一步，不急着收口。"))};
+  const textSetExecutionOrder = ${JSON.stringify(pickUiText(language, "Set execution order", "设置执行顺序"))};
   const textNeedToken = ${JSON.stringify(pickUiText(language, "This action requires LOCAL_API_TOKEN.", "这个动作需要 LOCAL_API_TOKEN。"))};
   const textTokenPrompt = ${JSON.stringify(pickUiText(language, "Enter LOCAL_API_TOKEN to continue.", "请输入 LOCAL_API_TOKEN 以继续。"))};
   const textTokenRetryPrompt = ${JSON.stringify(pickUiText(language, "The local token was rejected. Enter LOCAL_API_TOKEN again to retry.", "本地令牌验证失败，请重新输入 LOCAL_API_TOKEN 以重试。"))};
@@ -289,14 +283,15 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const textShowDetails = ${JSON.stringify(pickUiText(language, "Show details", "展开详情"))};
   const textHideDetails = ${JSON.stringify(pickUiText(language, "Hide details", "收起详情"))};
   const textStopCurrent = ${JSON.stringify(pickUiText(language, "Stop current", "停止当前"))};
+  const textMarkHumanReviewed = ${JSON.stringify(pickUiText(language, "Mark as human-reviewed", "标记为已处理"))};
+  const textMarkedHumanReviewed = ${JSON.stringify(pickUiText(language, "Marked as human-reviewed.", "已标记为人类已处理。"))};
   const textArchiveThread = ${JSON.stringify(pickUiText(language, "Archive thread", "归档线程"))};
   const textDeleteThread = ${JSON.stringify(pickUiText(language, "Delete thread", "删除线程"))};
   const textArchiveConfirm = ${JSON.stringify(pickUiText(language, "Archive this thread and hide it from the left list?", "归档这个线程，并把它从左侧列表隐藏？"))};
   const textDeleteConfirm = ${JSON.stringify(pickUiText(language, "Delete this thread permanently? This will remove its hall history and linked room evidence.", "永久删除这个线程？这会移除它的大厅历史和关联房间证据。"))};
   const textArchived = ${JSON.stringify(pickUiText(language, "Thread archived.", "线程已归档。"))};
   const textDeleted = ${JSON.stringify(pickUiText(language, "Thread deleted.", "线程已删除。"))};
-  const textContinueDiscussionHint = ${JSON.stringify(pickUiText(language, "Continue the discussion in the composer below.", "继续在下方输入框里补充讨论。"))};
-  const textStopped = ${JSON.stringify(pickUiText(language, "Stopped the current chain and returned the thread to discussion.", "已停止当前链路，并把线程拉回讨论。"))};
+  const textStopped = ${JSON.stringify(pickUiText(language, "Stopped the current chain.", "已停止当前链路。"))};
   const textNewTaskDraft = ${JSON.stringify(pickUiText(language, "New task draft", "新任务草稿"))};
   const textNewTaskDraftHint = ${JSON.stringify(pickUiText(language, "Describe the request once here. When you press Enter, the hall will create a new thread and immediately start the discussion.", "把需求一次写在这里。你按 Enter 后，大厅会新建线程，并立即开始讨论。"))};
   const textThreadSwitched = ${JSON.stringify(pickUiText(language, "Switched to thread:", "已切换到线程："))};
@@ -309,7 +304,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const textOwnerLabel = ${JSON.stringify(pickUiText(language, "Owner", "当前 owner"))};
   const textCurrentTaskLabel = ${JSON.stringify(pickUiText(language, "Current step", "当前步骤"))};
   const textSuggestedFirstTask = ${JSON.stringify(pickUiText(language, "Suggested first step", "建议第一步"))};
-  const textExecutionStartHint = ${JSON.stringify(pickUiText(language, "After the order is ready, click start execution. Progress, results, and handoffs will continue in this thread.", "顺序排好后，点击“开始执行”就会正式进入执行；过程、结果和交接会持续写回这条线程。"))};
+  const textExecutionStartHint = ${JSON.stringify(pickUiText(language, "After the order is ready, click start execution. Progress, results, and handoffs will continue in this thread.", "\u987a\u5e8f\u6392\u597d\u540e\uff0c\u70b9\u51fb\u300c\u5f00\u59cb\u6267\u884c\u300d\u5c31\u4f1a\u6b63\u5f0f\u8fdb\u5165\u6267\u884c\uff1b\u8fc7\u7a0b\u3001\u7ed3\u679c\u548c\u4ea4\u63a5\u4f1a\u6301\u7eed\u5199\u56de\u8fd9\u6761\u7ebf\u7a0b\u3002"))};
   const textExecutionThreadHint = ${JSON.stringify(pickUiText(language, "Execution updates, results, and handoffs will keep appending to this same thread.", "执行中的过程、结果和交接都会继续写回这条线程。"))};
   const textEvidence = ${JSON.stringify(pickUiText(language, "Evidence", "证据"))};
   const textLinkedTask = ${JSON.stringify(pickUiText(language, "Linked task", "关联任务"))};
@@ -381,10 +376,99 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   let composerMode = selectedTaskCardId ? 'reply' : 'task';
   let threadAutoFollow = true;
   let pendingComposerSubmitAfterComposition = false;
-  const draftTtlMs = 30_000;
+  const draftTtlMs = 180_000;
   const threadFollowThresholdPx = 40;
 
+  /* ── Demo playback state ── */
+  const DEMO_CARD_PREFIX = 'demo:';
+  let isDemoMode = false;
+  let demoMessages = null;
+  let demoPlaybackRunning = false;
+  let demoPlaybackAbort = null;
+  const isDemoCard = (id) => typeof id === 'string' && id.startsWith(DEMO_CARD_PREFIX);
+  const hallFileInput = root.querySelector('[data-hall-file-input]');
+  const hallAttachButton = root.querySelector('[data-hall-attach-file]');
+  const hallFilePreview = root.querySelector('[data-hall-file-preview]');
+  const composerShell = root.querySelector('.hall-composer-shell');
+  let pendingFiles = [];
+  const HALL_FILE_MAX_BYTES = 20 * 1024 * 1024;
+
+  const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+  const addPendingFile = async (file) => {
+    if (file.size > HALL_FILE_MAX_BYTES) { setFlash(${JSON.stringify(pickUiText(language, "File too large (max 20 MB): ", "文件过大（最大 20 MB）："))} + file.name); return; }
+    if (pendingFiles.length >= 10) { setFlash(${JSON.stringify(pickUiText(language, "Max 10 files at a time.", "最多同时附加 10 个文件。"))}); return; }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      pendingFiles.push({ file, dataUrl });
+      renderPendingFiles();
+    } catch { setFlash(${JSON.stringify(pickUiText(language, "Failed to read file: ", "读取文件失败："))} + file.name); }
+  };
+
+  const renderPendingFiles = () => {
+    if (!hallFilePreview) return;
+    if (pendingFiles.length === 0) { hallFilePreview.hidden = true; return; }
+    hallFilePreview.hidden = false;
+    hallFilePreview.innerHTML = pendingFiles.map((item, index) => {
+      const isImage = item.file.type.startsWith('image/');
+      const thumbnail = isImage
+        ? '<img class="hall-file-thumb" src="' + esc(item.dataUrl.slice(0, 200000)) + '" />'
+        : '<span class="hall-file-icon">&#x1F4C4;</span>';
+      const sizeKB = Math.round(item.file.size / 1024);
+      return '<div class="hall-file-chip">' +
+        thumbnail +
+        '<span class="hall-file-chip-name">' + esc(item.file.name) + '</span>' +
+        '<span class="hall-file-chip-size">' + sizeKB + ' KB</span>' +
+        '<button type="button" class="hall-file-chip-remove" data-remove-index="' + index + '">&times;</button>' +
+      '</div>';
+    }).join('');
+  };
+
+  hallAttachButton?.addEventListener('click', () => hallFileInput?.click());
+  hallFileInput?.addEventListener('change', async () => {
+    for (const file of Array.from(hallFileInput.files || [])) { await addPendingFile(file); }
+    hallFileInput.value = '';
+  });
+  hallFilePreview?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-remove-index]');
+    if (!btn) return;
+    const index = Number(btn.dataset.removeIndex);
+    if (Number.isFinite(index) && index >= 0 && index < pendingFiles.length) {
+      pendingFiles.splice(index, 1);
+      renderPendingFiles();
+    }
+  });
+
+  composerShell?.addEventListener('dragover', (e) => { e.preventDefault(); composerShell.classList.add('hall-dragover'); });
+  composerShell?.addEventListener('dragleave', () => composerShell.classList.remove('hall-dragover'));
+  composerShell?.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    composerShell.classList.remove('hall-dragover');
+    for (const file of Array.from(e.dataTransfer?.files || [])) { await addPendingFile(file); }
+  });
+
   const esc = (value) => String(value || '').replace(/[&<>"']/g, (ch) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'": '&#39;' }[ch]));
+  const decodeToolPillPayload = (encoded) => {
+    if (!encoded) return null;
+    try {
+      const bin = atob(String(encoded));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      const json = new TextDecoder('utf-8').decode(bytes);
+      const parsed = JSON.parse(json);
+      if (!parsed || typeof parsed !== 'object') return null;
+      const out = {};
+      if (typeof parsed.i === 'string') out.i = parsed.i;
+      if (typeof parsed.o === 'string') out.o = parsed.o;
+      if (typeof parsed.e === 'number') out.e = parsed.e;
+      return out;
+    } catch (_e) { return null; }
+  };
   const decodeLegacyHtmlEntities = (value) => {
     let normalized = String(value || '');
     for (let pass = 0; pass < 2; pass += 1) {
@@ -401,6 +485,8 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   };
   const markdownLinkPattern = new RegExp('\\\\[([^\\\\]]+)\\\\]\\\\((https?:\\\\/\\\\/[^\\\\s)]+)\\\\)', 'g');
   const markdownImagePattern = new RegExp('!\\\\[([^\\\\]]*)\\\\]\\\\((https?:\\\\/\\\\/[^\\\\s)]+)\\\\)', 'g');
+  const autolinkPattern = new RegExp('&lt;(https?:\\\\/\\\\/[^\\\\s]+?)&gt;', 'gi');
+  const bareUrlPattern = new RegExp('(^|[\\\\s(>])(https?:\\\\/\\\\/[^\\\\s<>)\"\\']+)', 'g');
   const markdownStrongPattern = new RegExp('\\\\*\\\\*([^*]+)\\\\*\\\\*', 'g');
   const markdownEmphasisPattern = new RegExp('(^|\\\\s)\\\\*([^*]+)\\\\*(?=\\\\s|$)', 'g');
   const inlineCodePattern = new RegExp('\\x60([^\\x60]+)\\x60', 'g');
@@ -416,7 +502,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const bareImageUrlPattern = new RegExp('(^|[\\\\s(>])((https?:\\\\/\\\\/[^\\\\s<)]+))', 'g');
   const lineBreakTagPattern = new RegExp('<br\\\\s*\\\\/?>', 'gi');
   const hallStructuredPattern = new RegExp('<hall-structured>[\\\\s\\\\S]*?<\\\\/hall-structured>', 'gi');
-  const mentionPattern = new RegExp('(^|[\\\\s(>\\\\[\\\\{<,.;:!?\"\\\'“”‘’，。！？；：、）】」』》])@([A-Za-z0-9_\\\\-\\\\u4e00-\\\\u9fff]+)', 'g');
+  const mentionPattern = new RegExp('(^|[\\\\s(>\\\\[\\\\{<,.;:!?\"\\\'\u201c\u201d\u2018\u2019，。！？；：、）】」』》])@([A-Za-z0-9_\\\\-\\\\u4e00-\\\\u9fff]+)', 'g');
   const mentionAfterBreakPattern = new RegExp('(<br>)@([A-Za-z0-9_\\\\-\\\\u4e00-\\\\u9fff]+)', 'g');
   const normalizedTokenPattern = new RegExp('[^a-z0-9\\\\u4e00-\\\\u9fff]', 'g');
   const isRenderableImageUrl = (url) => /^https?:\\/\\/[^\\s<)]+?\\.(?:png|jpe?g|gif|webp|avif|svg)(?:[?#][^\\s<)]*)?$/i.test(url || '');
@@ -442,9 +528,22 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     html = html.replace(markdownLinkPattern, (_match, label, url) => (
       storeInlineBlock('<a href="' + url + '" target="_blank" rel="noreferrer">' + label + '</a>')
     ));
+    html = html.replace(autolinkPattern, (_match, url) => (
+      storeInlineBlock('<a href="' + url + '" target="_blank" rel="noreferrer">' + url + '</a>')
+    ));
     html = html.replace(bareImageUrlPattern, (match, prefix, url) => (
       isRenderableImageUrl(url) ? prefix + storeInlineBlock(renderInlineImage(url, '')) : match
     ));
+    html = html.replace(bareUrlPattern, (match, prefix, url) => {
+      let trimmed = url;
+      let tail = '';
+      while (trimmed.length > 0 && /[.,;:!?]$/.test(trimmed)) {
+        tail = trimmed.slice(-1) + tail;
+        trimmed = trimmed.slice(0, -1);
+      }
+      if (!trimmed) return match;
+      return prefix + storeInlineBlock('<a href="' + trimmed + '" target="_blank" rel="noreferrer">' + trimmed + '</a>') + tail;
+    });
     html = html.replace(inlineCodePattern, '<code>$1</code>');
     html = html.replace(markdownStrongPattern, '<strong>$1</strong>');
     html = html.replace(markdownEmphasisPattern, '$1<em>$2</em>');
@@ -453,6 +552,25 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     html = html.replace(mentionAfterBreakPattern, '$1<span class="hall-md-mention">@$2</span>');
     html = html.replace(inlinePlaceholderPattern, (_match, index) => inlineBlocks[Number(index)] || '');
     return html;
+  };
+  const fileNameExtRe = '\\\\.(?:json|yaml|yml|toml|html|scss|css|svelte|swift|vue|sdf|pdb|cif|mol2|tsx|mjs|cjs|jsx|cpp|hpp|sql|dart|conf|cfg|txt|xml|csv|log|ini|java|rust|svelte|rs|lua|sh|ts|js|py|go|rb|md|kt|c|h)';
+  const linkifyFilePathsInHtml = (html) => {
+    let out = html;
+    out = out.replace(new RegExp('<code>([\\\\w@.\\\\-]+' + fileNameExtRe + ')</code>', 'g'), (_match, fileName) => {
+      return '<a class=\"hall-md-file-path\" data-file-path=\"' + fileName + '\" title=\"' + fileName + '\">' + fileName + '</a>';
+    });
+    out = out.replace(new RegExp('(\\\\/[\\\\w.\\\\-]+\\\\/hall-workspaces\\\\/[\\\\w.\\\\-]+:[\\\\w.\\\\-]+\\\\/[\\\\w.\\\\\\/-]+' + fileNameExtRe + ')', 'g'), (_match, fullPath) => {
+      const colonIdx = fullPath.indexOf('hall-workspaces/');
+      const workspaceRelative = colonIdx >= 0 ? fullPath.slice(colonIdx + 'hall-workspaces/'.length) : fullPath;
+      const colonInRel = workspaceRelative.indexOf(':');
+      const filePart = colonInRel >= 0 ? workspaceRelative.slice(colonInRel + 1) : workspaceRelative;
+      return '<a class=\"hall-md-file-path\" data-file-path=\"' + filePart + '\" title=\"' + filePart + '\">' + fullPath + '</a>';
+    });
+    out = out.replace(new RegExp('(^|[\\\\s(>])((?:[\\\\w@.\\\\-]+\\\\/)+[\\\\w@.\\\\-]+' + fileNameExtRe + '(?::\\\\d+(?::\\\\d+)?)?)', 'g'), (_match, prefix, filePath) => {
+      const cleanPath = filePath.replace(/:\\d+(?::\\d+)?$/, '');
+      return prefix + '<a class=\"hall-md-file-path\" data-file-path=\"' + cleanPath + '\" title=\"' + filePath + '\">' + filePath + '</a>';
+    });
+    return out;
   };
   const renderMarkdownHtml = (value) => {
     const source = decodeLegacyHtmlEntities(value)
@@ -493,7 +611,64 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       parts.push('<blockquote>' + renderInlineMarkdown(quoteLines.join('<br>')) + '</blockquote>');
       quoteLines = [];
     };
-    lines.forEach((line) => {
+    const tableSeparatorCellPattern = new RegExp('^:?-+:?$');
+    const tablePipeLine = (value) => {
+      if (value === undefined) return null;
+      const t = value.trim();
+      if (t.length < 2 || t.charAt(0) !== '|' || t.charAt(t.length - 1) !== '|') return null;
+      return t;
+    };
+    const splitTableRow = (row) =>
+      row.replace(/^\\|/, '').replace(/\\|$/, '').split('|').map((c) => c.trim());
+    const tryParseTable = (sourceLines, startIndex) => {
+      const headerTrim = tablePipeLine(sourceLines[startIndex]);
+      if (!headerTrim) return null;
+      const sepTrim = tablePipeLine(sourceLines[startIndex + 1]);
+      if (!sepTrim) return null;
+      const sepCells = splitTableRow(sepTrim);
+      if (sepCells.length === 0 || !sepCells.every((c) => tableSeparatorCellPattern.test(c))) return null;
+      const headerCells = splitTableRow(headerTrim);
+      if (headerCells.length !== sepCells.length) return null;
+      const aligns = sepCells.map((c) => {
+        const left = c.charAt(0) === ':';
+        const right = c.charAt(c.length - 1) === ':';
+        if (left && right) return 'center';
+        if (right) return 'right';
+        if (left) return 'left';
+        return '';
+      });
+      const bodyRows = [];
+      let cursor = startIndex + 2;
+      while (cursor < sourceLines.length) {
+        const rowTrim = tablePipeLine(sourceLines[cursor]);
+        if (!rowTrim) break;
+        bodyRows.push(splitTableRow(rowTrim));
+        cursor++;
+      }
+      const colCount = headerCells.length;
+      const cellHtml = (text, align, isHeader) => {
+        const tag = isHeader ? 'th' : 'td';
+        const styleAttr = align ? ' style="text-align:' + align + '"' : '';
+        return '<' + tag + styleAttr + '>' + renderInlineMarkdown(text) + '</' + tag + '>';
+      };
+      const headHtml = '<thead><tr>' + headerCells
+        .map((c, idx) => cellHtml(c, aligns[idx] || '', true))
+        .join('') + '</tr></thead>';
+      let bodyHtml = '';
+      if (bodyRows.length > 0) {
+        bodyHtml = '<tbody>' + bodyRows.map((row) => {
+          const padded = [];
+          for (let k = 0; k < colCount; k++) padded.push(row[k] != null ? row[k] : '');
+          return '<tr>' + padded.map((c, idx) => cellHtml(c, aligns[idx] || '', false)).join('') + '</tr>';
+        }).join('') + '</tbody>';
+      }
+      return {
+        html: '<table class="hall-md-table">' + headHtml + bodyHtml + '</table>',
+        consumed: cursor - startIndex,
+      };
+    };
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      const line = lines[lineIdx];
       const trimmed = line.trim();
       const ul = trimmed.match(unorderedListPattern);
       const ol = trimmed.match(orderedListPattern);
@@ -503,20 +678,29 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         flushParagraph();
         flushList();
         flushQuote();
-        return;
+        continue;
       }
       if (quote) {
         flushParagraph();
         flushList();
         quoteLines.push(quote[1]);
-        return;
+        continue;
       }
       if (heading) {
         flushParagraph();
         flushList();
         flushQuote();
         flushHeading(Math.min(heading[1].length, 6), heading[2]);
-        return;
+        continue;
+      }
+      const table = tryParseTable(lines, lineIdx);
+      if (table) {
+        flushParagraph();
+        flushList();
+        flushQuote();
+        parts.push(table.html);
+        lineIdx += table.consumed - 1;
+        continue;
       }
       flushQuote();
       if (ul) {
@@ -524,33 +708,58 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         if (listType && listType !== 'ul') flushList();
         listType = 'ul';
         listItems.push(ul[1]);
-        return;
+        continue;
       }
       if (ol) {
         flushParagraph();
         if (listType && listType !== 'ol') flushList();
         listType = 'ol';
         listItems.push(ol[1]);
-        return;
+        continue;
       }
       flushList();
       paragraph.push(trimmed);
-    });
+    }
     flushParagraph();
     flushList();
     flushQuote();
     let html = parts.join('');
     html = html.replace(codePlaceholderPattern, (_match, index) => codeBlocks[Number(index)] || '');
+    html = html.replace(/\\[\\[tool:([^\\]|]+)(?:\\|([^\\]|]*))?(?:\\|~([A-Za-z0-9+/=]*))?\\]\\]/g, (_match, name, detail, encoded) => {
+      const parsed = decodeToolPillPayload(encoded);
+      const isError = parsed && parsed.e === 1;
+      const statusClass = isError ? 'is-error' : 'is-completed';
+      const mark = isError ? '\\u26a0' : '\\u2713';
+      const tooltip = detail ? ' title="' + esc(detail) + '"' : '';
+      const dataParts = [];
+      if (parsed && parsed.i) dataParts.push(' data-tool-input="' + esc(parsed.i) + '"');
+      if (parsed && parsed.o) dataParts.push(' data-tool-output="' + esc(parsed.o) + '"');
+      if (parsed && (parsed.i || parsed.o)) dataParts.push(' data-tool-name="' + esc(name) + '"');
+      if (isError) dataParts.push(' data-tool-error="1"');
+      if (parsed && (parsed.i || parsed.o)) dataParts.push(' data-tool-expandable="1"');
+      return '<span class="hall-tool-pill ' + statusClass + '"' + tooltip + dataParts.join('') + '>' + mark + ' ' + esc(name) + '</span>';
+    });
+    html = linkifyFilePathsInHtml(html);
     return html;
   };
-  const renderArtifactFooterHtml = (artifactRefs) => {
+  const renderArtifactFooterHtml = (artifactRefs, fileAttachments) => {
     if (!Array.isArray(artifactRefs) || artifactRefs.length === 0) return '';
+    const fileMap = new Map();
+    if (Array.isArray(fileAttachments)) {
+      fileAttachments.forEach((f) => { if (f && f.fileId) fileMap.set(f.fileId, f); });
+    }
     return artifactRefs
       .filter((artifact) => artifact && artifact.location)
       .map((artifact) => {
         const label = String(artifact.label || artifact.location || '').trim();
         const type = String(artifact.type || 'other').trim();
         const href = esc(String(artifact.location || '').trim());
+        const fileMeta = artifact.artifactId ? fileMap.get(artifact.artifactId) : null;
+        if (fileMeta && typeof fileMeta.mimeType === 'string' && fileMeta.mimeType.startsWith('image/')) {
+          return '<a class="hall-file-preview" href="' + href + '" target="_blank" rel="noreferrer">' +
+            '<img class="hall-file-img" src="' + href + '" alt="' + esc(label) + '" loading="lazy" />' +
+          '</a>';
+        }
         return '<a class="hall-artifact-chip" href="' + href + '" target="_blank" rel="noreferrer">' +
           '<span class="hall-artifact-chip-kind">' + esc(type) + '</span>' +
           '<span class="hall-artifact-chip-label">' + esc(label) + '</span>' +
@@ -558,14 +767,21 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       })
       .join('');
   };
-  const renderArtifactChips = (artifactRefs) => renderArtifactFooterHtml(artifactRefs);
-  const stageLabel = (stage) => ({
-    discussion: ${JSON.stringify(pickUiText(language, "Discussion", "讨论中"))},
-    execution: ${JSON.stringify(pickUiText(language, "Execution", "执行中"))},
-    review: ${JSON.stringify(pickUiText(language, "Review", "审核中"))},
-    blocked: ${JSON.stringify(pickUiText(language, "Blocked", "卡住"))},
-    completed: ${JSON.stringify(pickUiText(language, "Completed", "已完成"))},
-  }[stage] || stage || '');
+  const renderArtifactChips = (artifactRefs, fileAttachments) => renderArtifactFooterHtml(artifactRefs, fileAttachments);
+  const needsHumanReview = (taskCard) => {
+    if (!taskCard || taskCard.archivedAt || taskCard.status === 'done' || taskCard.humanReviewedAt) return false;
+    const lastAgentAt = Date.parse(taskCard.lastAgentActivityAt || '') || 0;
+    if (!lastAgentAt) return false;
+    return (Date.now() - lastAgentAt) > 10 * 60 * 1000;
+  };
+  const activityLabel = (taskCard) => {
+    if (!taskCard) return '';
+    if (taskCard.status === 'done') return ${JSON.stringify(pickUiText(language, "Completed", "已完成"))};
+    if (taskCard.archivedAt) return ${JSON.stringify(pickUiText(language, "Archived", "已归档"))};
+    if (needsHumanReview(taskCard)) return ${JSON.stringify(pickUiText(language, "Needs human review", "需要人类审核"))};
+    if (taskCard.executionLock && !taskCard.executionLock.releasedAt) return ${JSON.stringify(pickUiText(language, "In progress", "进行中"))};
+    return ${JSON.stringify(pickUiText(language, "Active", "活跃"))};
+  };
   const kindLabel = (kind) => ({
     task: ${JSON.stringify(pickUiText(language, "Task", "任务"))},
     proposal: ${JSON.stringify(pickUiText(language, "Proposal", "方案"))},
@@ -578,11 +794,12 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     chat: ${JSON.stringify(pickUiText(language, "Chat", "对话"))},
   }[kind] || kind || '');
   const roleLabel = (role) => ({
-    planner: 'Planner',
-    coder: 'Coder',
-    reviewer: 'Reviewer',
-    manager: 'Manager',
-    generalist: ${JSON.stringify(pickUiText(language, "Generalist", "通用"))},
+    planner: ${JSON.stringify(pickUiText(language, "Executor", "执行者"))},
+    coder: ${JSON.stringify(pickUiText(language, "Executor", "执行者"))},
+    reviewer: ${JSON.stringify(pickUiText(language, "Executor", "执行者"))},
+    manager: ${JSON.stringify(pickUiText(language, "Agent Manager", "智能体管理者"))},
+    observer: ${JSON.stringify(pickUiText(language, "Observer & Manager", "观察者与管理者"))},
+    generalist: ${JSON.stringify(pickUiText(language, "Executor", "执行者"))},
   }[role] || role || '');
   const avatarCatalog = ${JSON.stringify(HALL_AVATAR_CATALOG)};
   const compactTimestamp = (value) => {
@@ -610,12 +827,18 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   };
   const hallAvatarMarkup = (label, className) => {
     const avatar = deriveHallAvatar(label);
-    return '<div class="' + esc(className) + ' hall-agent-avatar" style="--agent-accent:' + esc(avatar.accent) + ';" data-animal="' + esc(avatar.animal) + '" aria-hidden="true"><div class="agent-stage"><canvas class="agent-pixel-canvas" width="128" height="128"></canvas></div></div>';
+    const stageInner = avatar.customImage
+      ? '<img class="agent-avatar-img" src="/avatars/' + esc(avatar.customImage) + '" alt="" loading="lazy" />'
+      : '<canvas class="agent-pixel-canvas" width="128" height="128"></canvas>';
+    return '<div class="' + esc(className) + ' hall-agent-avatar" style="--agent-accent:' + esc(avatar.accent) + ';" data-animal="' + esc(avatar.animal) + '" aria-hidden="true"><div class="agent-stage">' + stageInner + '</div></div>';
   };
   const paintHallPixelAvatars = (container) => {
     if (!container || !window.__openclawPixelAvatar) return;
     const els = Array.from(container.querySelectorAll('.hall-agent-avatar'));
-    els.forEach((el) => window.__openclawPixelAvatar.renderElement(el));
+    els.forEach((el) => {
+      if (el.querySelector('.agent-avatar-img')) return;
+      window.__openclawPixelAvatar.renderElement(el);
+    });
   };
 
   const setFlash = (message) => {
@@ -702,7 +925,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     executionPlannerOpen = false;
     textarea?.focus?.();
     textarea?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
-    setFlash(textContinueDiscussionHint);
     renderVisibleThread();
     return false;
   };
@@ -728,7 +950,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const syncStopButton = () => {
     if (!(stopButton instanceof HTMLButtonElement)) return;
     const taskCard = currentTaskCard();
-    stopButton.hidden = !taskCard || taskCard.stage === 'completed';
+    stopButton.hidden = !taskCard || taskCard.status === 'done';
     stopButton.title = textStopCurrent;
     stopButton.setAttribute('aria-label', textStopCurrent);
   };
@@ -860,18 +1082,10 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         : (taskCard?.title || ${JSON.stringify(pickUiText(language, "Collaboration Hall", "协作大厅"))});
     }
     if (threadSubtitleNode instanceof HTMLElement) {
-      const decisionMeta = taskCard ? decisionCardOwnerMeta(taskCard) : null;
-      const taskMeta = taskCard
-        ? [
-            (decisionMeta?.label || ${JSON.stringify(pickUiText(language, "Waiting for owner", "等待 owner"))}),
-            decisionCardStageText(taskCard),
-            taskCard.updatedAt ? compactTimestamp(taskCard.updatedAt) : '',
-          ].filter(Boolean).join(' · ')
-        : '';
       threadSubtitleNode.textContent = isNewTaskMode
         ? ${JSON.stringify(pickUiText(language, "Write the request here and press Enter to create it.", "在这里写下需求，按 Enter 直接创建。"))}
         : (taskCard
-            ? taskMeta
+            ? (taskCard.updatedAt ? compactTimestamp(taskCard.updatedAt) : '')
             : hallHeadlineText(bootstrap?.hallSummary?.headline || ''));
     }
     if (archiveThreadButton instanceof HTMLButtonElement) {
@@ -901,12 +1115,9 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     });
     return removed;
   };
-  const syntheticDiscussionDrafts = (taskCard) => {
-    if (!taskCard || taskCard.stage !== 'discussion') return [];
-    return [];
-  };
   const syntheticExecutionHandoffDraft = (taskCard, persistedThreadMessages) => {
-    if (!taskCard || taskCard.stage !== 'execution' || !taskCard.currentOwnerParticipantId) return [];
+    if (!taskCard || !taskCard.currentOwnerParticipantId) return [];
+    if (!(taskCard.executionLock && !taskCard.executionLock.releasedAt)) return [];
     const ownerParticipantId = String(taskCard.currentOwnerParticipantId || '').trim();
     if (!ownerParticipantId) return [];
     const updatedAt = Date.parse(taskCard.updatedAt || taskCard.createdAt || '') || 0;
@@ -947,7 +1158,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     if (!selectedTaskCardId) return [];
     const taskCard = currentTaskCard();
     if (!taskCard) return [];
-    if (taskCard.stage === 'discussion') return syntheticDiscussionDrafts(taskCard);
     return syntheticExecutionHandoffDraft(taskCard, persistedThreadMessages);
   };
   const visibleDrafts = () => {
@@ -1009,9 +1219,10 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     }
     const taskCard = currentTaskCard();
     if (taskCard?.currentOwnerParticipantId === participantId) {
-      if (taskCard.stage === 'review') return { state: 'reviewing', label: textReviewingNow, rank: 1 };
-      if (taskCard.stage === 'execution') return { state: 'executing', label: textExecutingNow, rank: 1 };
-      return { state: 'active', label: stageLabel(taskCard.stage), rank: 2 };
+      if (taskCard.executionLock && !taskCard.executionLock.releasedAt) {
+        return { state: 'executing', label: textExecutingNow, rank: 1 };
+      }
+      return { state: 'active', label: activityLabel(taskCard), rank: 2 };
     }
     if ((taskCard?.plannedExecutionOrder || []).includes(participantId)) {
       return { state: 'queued', label: textQueuedNow, rank: 3 };
@@ -1047,8 +1258,8 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     if (taskCard?.currentOwnerLabel && hasLockedActiveExecution(taskCard)) {
       const currentTask = decisionCardStepMeta(taskCard).task;
       toolbarMetaNote.textContent = currentTask
-        ? (taskCard.currentOwnerLabel + ' ' + (taskCard.stage === 'review' ? textReviewingNow : textExecutingNow) + ' · ' + currentTask)
-        : (taskCard.currentOwnerLabel + ' ' + (taskCard.stage === 'review' ? textReviewingNow : textExecutingNow));
+        ? (taskCard.currentOwnerLabel + ' ' + textExecutingNow + ' · ' + currentTask)
+        : (taskCard.currentOwnerLabel + ' ' + textExecutingNow);
       return;
     }
     toolbarMetaNote.textContent = (bootstrap.participants || []).length + ' ' + ${JSON.stringify(pickUiText(language, "agents live in this hall.", "个 agent 正在大厅里。"))};
@@ -1113,7 +1324,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     });
   };
   const syncExecutionOrderDraft = (taskCard) => {
-    const currentExecutionParticipantId = (taskCard?.stage === 'execution' || taskCard?.stage === 'blocked')
+    const currentExecutionParticipantId = (taskCard?.executionLock && !taskCard.executionLock.releasedAt)
       ? String(taskCard.currentExecutionItem?.participantId || taskCard.currentOwnerParticipantId || '').trim()
       : '';
     const baseOrder = Array.isArray(taskCard?.plannedExecutionOrder) ? taskCard.plannedExecutionOrder.slice() : [];
@@ -1232,7 +1443,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     };
     renderHandoffPanel();
   };
-  const hasLockedActiveExecution = (taskCard) => Boolean(taskCard) && (taskCard.stage === 'execution' || taskCard.stage === 'blocked');
+  const hasLockedActiveExecution = (taskCard) => Boolean(taskCard && taskCard.executionLock && !taskCard.executionLock.releasedAt);
   const firstPlannedOwnerId = (taskCard) => {
     if (!taskCard) return '';
     return String(taskCard.plannedExecutionOrder?.[0] || taskCard.plannedExecutionItems?.[0]?.participantId || '').trim();
@@ -1243,7 +1454,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     return (taskCard.plannedExecutionItems || []).find((item) => item.participantId === participantId) || null;
   };
   const hasPendingStartablePlan = (taskCard) => Boolean(taskCard) && !hasLockedActiveExecution(taskCard) && Boolean(firstPlannedOwnerId(taskCard));
-  const decisionCardStageText = (taskCard) => hasPendingStartablePlan(taskCard) ? textReadyToStart : stageLabel(taskCard.stage);
   const decisionCardOwnerMeta = (taskCard) => {
     if (!taskCard) return { heading: textCurrentOwner, label: '' };
     if (hasPendingStartablePlan(taskCard)) {
@@ -1285,10 +1495,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     return '';
   };
   const shouldShowDecisionPrimaryAction = (taskCard) => hasPendingStartablePlan(taskCard);
-  const decisionSecondaryOrderLabel = (taskCard) => {
-    if (!taskCard) return textPlanExecutionOrder;
-    return taskCard.stage === 'discussion' ? textPlanExecutionOrder : textAdjustExecutionOrder;
-  };
+  const decisionSecondaryOrderLabel = () => textSetExecutionOrder;
   const moveExecutionOrderDraft = (participantId, direction) => {
     const index = executionOrderDraft.indexOf(participantId);
     if (index < 0) return;
@@ -1308,21 +1515,22 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     }
     taskList.innerHTML = taskCards.map((item) => {
       const selected = item.taskCardId === selectedTaskCardId;
-      const ownerLabel = item.currentOwnerLabel || textWaitingOwner;
       const preview = item.headline || '';
-      return '<button type="button" class="hall-task-card' + (selected ? ' is-selected' : '') + '" data-task-card-id="' + esc(item.taskCardId) + '" data-project-id="' + esc(item.projectId) + '" data-task-id="' + esc(item.taskId) + '"' + (selected ? ' aria-current="page"' : '') + '>' +
+      const isDemo = isDemoCard(item.taskCardId);
+      const demoBadge = isDemo ? '<span class="hall-demo-badge">DEMO</span>' : '';
+      return '<button type="button" class="hall-task-card' + (selected ? ' is-selected' : '') + (isDemo ? ' is-demo' : '') + '" data-task-card-id="' + esc(item.taskCardId) + '" data-project-id="' + esc(item.projectId) + '" data-task-id="' + esc(item.taskId) + '"' + (selected ? ' aria-current="page"' : '') + '>' +
         '<div class="hall-task-card-row">' +
-          hallAvatarMarkup(ownerLabel || item.taskId || item.title, 'hall-task-card-avatar') +
+          hallAvatarMarkup(item.title || item.taskId, 'hall-task-card-avatar') +
           '<div class="hall-task-card-copy">' +
-            '<div class="hall-task-title-row"><strong class="hall-task-title">' + esc(item.title) + '</strong><span class="hall-task-timestamp">' + esc(compactTimestamp(item.updatedAt)) + '</span></div>' +
+            '<div class="hall-task-title-row"><strong class="hall-task-title">' + demoBadge + esc(item.title) + '</strong><span class="hall-task-timestamp">' + esc(compactTimestamp(item.updatedAt)) + '</span></div>' +
             '<div class="hall-task-preview' + (preview ? '' : ' is-empty') + '">' + esc(preview) + '</div>' +
-            '<div class="hall-task-meta">' + esc(ownerLabel) + ' · ' + esc(stageLabel(item.stage)) + '</div>' +
           '</div>' +
         '</div>' +
         '</button>';
     }).join('');
     taskList.querySelectorAll('[data-task-card-id]').forEach((button) => {
       button.addEventListener('click', () => {
+        const prevDemo = isDemoMode;
         selectedTaskCardId = button.getAttribute('data-task-card-id') || '';
         selectedTaskProjectId = button.getAttribute('data-project-id') || '';
         selectedTaskId = button.getAttribute('data-task-id') || '';
@@ -1330,6 +1538,14 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         closeHandoffPanel();
         executionPlannerOpen = false;
         selectedTaskDetailPayload = null;
+        /* Demo mode toggle */
+        if (isDemoCard(selectedTaskCardId)) {
+          hallMessages = [];
+          hallDrafts = new Map();
+          enterDemoMode();
+        } else if (prevDemo) {
+          exitDemoMode();
+        }
         syncTaskUrl(selectedTaskCardId);
         renderTaskList(hallTaskCards);
         renderThreadHeader();
@@ -1340,7 +1556,9 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         if (button instanceof HTMLElement) button.focus();
         if (thread instanceof HTMLElement) thread.scrollTop = 0;
         setFlash(textThreadSwitched + ' ' + (button.querySelector('.hall-task-title')?.textContent?.trim() || ''));
-        void loadTaskDetail();
+        if (!isDemoCard(selectedTaskCardId)) {
+          void loadTaskDetail();
+        }
       });
     });
     paintHallPixelAvatars(taskList);
@@ -1367,8 +1585,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       || hasDiscussionOutcome
       || taskCard?.currentOwnerParticipantId
       || taskCard?.currentExecutionItem
-      || taskCard?.discussionCycle?.closedAt
-      || (taskCard && taskCard.stage !== 'discussion')
+      || (taskCard?.executionLock && !taskCard.executionLock.releasedAt)
       || hasExecutionPlan
     );
     const shouldHideWhileDiscussionContinues = activeDrafts.length > 0 && !hasExecutionEntryPoint;
@@ -1386,10 +1603,11 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     const compactSummaryText = taskCard.decision || taskCard.proposal || taskCard.latestSummary || taskCard.description || '';
     const isExpanded = decisionExpanded;
     const primaryButtonLabel = decisionPrimaryButtonLabel(taskCard);
-    const orderButtonLabel = decisionSecondaryOrderLabel(taskCard);
+    const orderButtonLabel = decisionSecondaryOrderLabel();
     const taskArtifacts = payload?.task?.artifacts || [];
+    const activityText = hasPendingStartablePlan(taskCard) ? textReadyToStart : activityLabel(taskCard);
     const summaryStats = [
-      textStage + '：' + decisionCardStageText(taskCard),
+      activityText,
       ownerMeta.label ? ownerMeta.heading + '：' + ownerMeta.label : '',
       stepMeta.task ? stepMeta.heading + '：' + stepMeta.task : '',
     ].filter(Boolean);
@@ -1512,13 +1730,15 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
                   ? '<button type="button" class="hall-button" data-hall-start-execution onclick="return window.__openclawHallAssignOwner ? window.__openclawHallAssignOwner() : false">' + esc(primaryButtonLabel) + '</button>'
                   : '') +
                 '<button type="button" class="hall-secondary-button hall-secondary-button--accent" data-hall-plan-order onclick="return window.__openclawHallSetExecutionOrder ? window.__openclawHallSetExecutionOrder() : false">' + esc(orderButtonLabel) + '</button>' +
-                '<button type="button" class="hall-secondary-button" data-hall-continue-discussion onclick="return window.__openclawHallContinueDiscussion ? window.__openclawHallContinueDiscussion() : false">' + esc(textContinueDiscussion) + '</button>' +
+                (needsHumanReview(taskCard)
+                  ? '<button type="button" class="hall-secondary-button" data-hall-mark-human-reviewed onclick="return window.__openclawHallMarkHumanReviewed ? window.__openclawHallMarkHumanReviewed() : false">' + esc(textMarkHumanReviewed) + '</button>'
+                  : '') +
               '</div>' +
-              '<div class="hall-decision-helper">' + esc((hasPendingStartablePlan(taskCard) || taskCard.stage === 'discussion')
-                ? (firstPlannedOwnerId(taskCard)
-                  ? textExecutionStartHint
-                  : textPlannerHint)
-                : textExecutionThreadHint) + '</div>' +
+              '<div class="hall-decision-helper">' + esc(hasPendingStartablePlan(taskCard)
+                ? (firstPlannedOwnerId(taskCard) ? textExecutionStartHint : textPlannerHint)
+                : ((taskCard.executionLock && !taskCard.executionLock.releasedAt)
+                  ? textExecutionThreadHint
+                  : textPlannerHint)) + '</div>' +
               plannerPanel +
             '</section>'
     );
@@ -1572,7 +1792,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     const comparableMessageText = (content) => String(content || '')
       .replace(/<br\\s*\\/?>/gi, '\\n')
       .replace(/<[^>]+>/g, ' ')
-      .replace(/(^|[\\s(>\\[\\{<,.;:!?\\"'“”‘’，。！？；：、）】」』》])@([A-Za-z0-9_\\\\-\\u4e00-\\u9fff]+)/g, '$1')
+      .replace(/(^|[\\s(>\\[\\{<,.;:!?\\"\'\u201c\u201d\u2018\u2019，。！？；：、）】」』》])@([A-Za-z0-9_\\\\-\\u4e00-\\u9fff]+)/g, '$1')
       .replace(/\\s+/g, ' ')
       .trim()
       .toLowerCase();
@@ -1613,18 +1833,22 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
           : 'agent';
       const footer = [];
       if (message && message.payload && Array.isArray(message.payload.artifactRefs) && message.payload.artifactRefs.length > 0) {
-        footer.push(renderArtifactFooterHtml(message.payload.artifactRefs));
+        footer.push(renderArtifactFooterHtml(message.payload.artifactRefs, message.payload.fileAttachments));
       }
       if (message.isDraft) {
         footer.push('<span class="hall-kind-pill">' + esc(textStreaming) + '</span>');
       }
+      const modelLabelRaw = message && message.payload && typeof message.payload.model === 'string' ? message.payload.model.trim() : '';
+      const modelPillMarkup = modelLabelRaw
+        ? '<span class="hall-model-pill" title="' + esc(modelLabelRaw) + '">' + esc(modelLabelRaw) + '</span>'
+        : '';
       const messageMarkup = '<article class="hall-message" data-kind="' + esc(message.kind) + '" data-author-type="' + esc(authorType) + '">' +
         '<div class="hall-message-row">' +
           hallAvatarMarkup(message.authorLabel || 'Agent', 'hall-message-avatar') +
           '<div class="hall-message-bubble">' +
             '<div class="hall-message-head">' +
-              '<div class="hall-message-author"><strong>' + esc(message.authorLabel) + '</strong><span class="hall-kind-pill">' + esc(kindLabel(message.kind)) + '</span></div>' +
-              '<div class="hall-message-meta">' + esc(message.createdAt || '') + '</div>' +
+              '<div class="hall-message-author"><strong>' + esc(message.authorLabel) + '</strong><span class="hall-kind-pill">' + esc(kindLabel(message.kind)) + '</span>' + modelPillMarkup + '</div>' +
+              '<div class="hall-message-meta" title="' + esc(message.createdAt || '') + '">' + esc(compactTimestamp(message.createdAt)) + '</div>' +
             '</div>' +
             '<div class="hall-message-body">' + renderMarkdownHtml(message.content) + '</div>' +
             (footer.length > 0 ? '<div class="hall-message-footer">' + footer.join('') + '</div>' : '') +
@@ -1702,12 +1926,12 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const draftMessages = () => visibleDrafts()
     .map((draft) => {
       const content = sanitizeDraftVisibleText(draft.content || '');
-      if (!content) return null;
+      if (!content && !(draft.toolCalls && draft.toolCalls.length)) return null;
       return {
         kind: draft.messageKind || 'chat',
         authorLabel: draft.authorLabel || draft.authorParticipantId || 'Agent',
         authorSemanticRole: draft.authorSemanticRole,
-        content,
+        content: content || '',
         createdAt: draft.createdAt || '',
         projectId: draft.projectId,
         taskId: draft.taskId,
@@ -1715,6 +1939,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         roomId: draft.roomId,
         mentionTargets: [],
         isDraft: true,
+        toolCalls: draft.toolCalls || [],
       };
     })
     .filter(Boolean);
@@ -1789,55 +2014,123 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       '</div>';
   };
 
+  const renderParallelGroupsDetailSection = (taskCard, _participants) => {
+    const groups = taskCard?.parallelGroups;
+    if (!Array.isArray(groups) || groups.length === 0) return '';
+    const activeGroups = groups.filter((g) => g.status === 'active' || (g.status === 'settled' && g.settledAt && Date.now() - Date.parse(g.settledAt) < 5 * 60 * 1000));
+    if (activeGroups.length === 0) return '';
+    const statusBadge = (status) => {
+      const colors = { pending: '#9ca3af', running: '#3b82f6', completed: '#22c55e', failed: '#ef4444' };
+      const labels = { pending: 'Pending', running: 'Running', completed: 'Done', failed: 'Failed' };
+      const color = colors[status] || '#9ca3af';
+      return '<span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:11px;font-weight:500;border:1px solid ' + color + ';color:' + color + ';">' + esc(labels[status] || status) + '</span>';
+    };
+    const slotRows = activeGroups.flatMap((g) =>
+      g.slots.map((slot) =>
+        '<div class="hall-detail-meta" style="margin-top:4px;">' +
+          statusBadge(slot.status) + ' ' +
+          '<strong>' + esc(participantLabel(slot.participantId)) + '</strong>: ' +
+          esc(slot.task.length > 80 ? slot.task.slice(0, 80) + '...' : slot.task) +
+        '</div>'
+      )
+    ).join('');
+    const totalSlots = activeGroups.reduce((sum, g) => sum + g.slots.length, 0);
+    const completedSlots = activeGroups.reduce((sum, g) => sum + g.slots.filter((s) => s.status === 'completed' || s.status === 'failed').length, 0);
+    return '<div class="hall-detail-group"><h4>Parallel Dispatch (' + completedSlots + '/' + totalSlots + ')</h4>' + slotRows + '</div>';
+  };
+
+  let detailScrollTarget = -1;
+
   const renderDetail = (payload) => {
     payload = withFreshestTaskCard(payload);
     if (!detail) return;
+    const prevCardId = detail.getAttribute('data-current-card') || '';
+    const scrollBefore = contextPane ? contextPane.scrollTop : 0;
     const taskCard = payload?.taskCard;
     const taskSummary = payload?.taskSummary;
     const task = payload?.task;
     if (!taskCard) {
       detail.innerHTML = '<div class="hall-empty">' + esc(textSelectTaskToInspect) + '</div>';
+      detailScrollTarget = -1;
+      detail.style.minHeight = '';
       return;
     }
     const ownerMeta = decisionCardOwnerMeta(taskCard);
     const stepMeta = decisionCardStepMeta(taskCard);
     const currentTaskValue = String(stepMeta.task || '-').trim() || '-';
     const plannedQueueLabels = (taskCard.plannedExecutionOrder || []).map((participantId) => participantLabel(participantId)).join(' → ') || '-';
-    const executionFeedHint = (hasPendingStartablePlan(taskCard) || taskCard.stage === 'discussion')
-      ? (firstPlannedOwnerId(taskCard)
-        ? textExecutionStartHint
-        : textPlannerHint)
-      : textExecutionThreadHint;
+    const executionFeedHint = hasPendingStartablePlan(taskCard)
+      ? (firstPlannedOwnerId(taskCard) ? textExecutionStartHint : textPlannerHint)
+      : ((taskCard.executionLock && !taskCard.executionLock.releasedAt)
+        ? textExecutionThreadHint
+        : textPlannerHint);
     const roomLink = taskCard.roomId
       ? '<a class="hall-thread-link" href="?section=collaboration&roomId=' + encodeURIComponent(taskCard.roomId) + '">' + esc(textOpenDetailThread) + '</a>'
       : '';
+    const participantNames = (bootstrap.participants || []).map((p) => p.displayName).join(' · ');
+    detail.style.minHeight = detail.offsetHeight + 'px';
     detail.innerHTML =
       '<div class="hall-detail-list">' +
-        '<div class="hall-detail-group"><h4>' + esc(textExecutionPlan) + '</h4>' +
-          '<div class="hall-detail-meta"><span class="hall-stage-pill">' + esc(decisionCardStageText(taskCard)) + '</span> <span class="hall-stage-pill">' + esc(taskCard.status) + '</span></div>' +
-          '<div class="hall-detail-meta" style="margin-top:8px;">' + esc(ownerMeta.heading) + ': ' + esc(ownerMeta.label || '-') + '</div>' +
-          '<div class="hall-detail-meta">' + esc(stepMeta.heading) + ': ' + esc(currentTaskValue) + '</div>' +
-          '<div class="hall-detail-meta">' + esc(textQueuedOwners) + ': ' + esc(plannedQueueLabels) + '</div>' +
-          '<div class="hall-detail-meta">' + esc((hasPendingStartablePlan(taskCard) || taskCard.stage === 'discussion') ? textNextAction : textExecutionFeed) + ': ' + esc(executionFeedHint) + '</div>' +
-          '<div class="hall-detail-actions hall-decision-actions">' +
-            (shouldShowDecisionPrimaryAction(taskCard)
-              ? '<button type="button" class="hall-button" onclick="return window.__openclawHallAssignOwner ? window.__openclawHallAssignOwner() : false">' + esc(textStartExecutionPrefix + (ownerMeta.label || '-') + textStartExecutionSuffix) + '</button>'
-              : '') +
-            '<button type="button" class="hall-secondary-button hall-secondary-button--accent" onclick="return window.__openclawHallSetExecutionOrder ? window.__openclawHallSetExecutionOrder() : false">' + esc(taskCard.stage === 'discussion' ? textPlanExecutionOrder : textAdjustExecutionOrder) + '</button>' +
-            '<button type="button" class="hall-secondary-button" data-hall-continue-discussion onclick="return window.__openclawHallContinueDiscussion ? window.__openclawHallContinueDiscussion() : false">' + esc(textContinueDiscussion) + '</button>' +
-          '</div>' +
+        '<div class="hall-detail-group"><h4>' + esc(taskCard.title || 'Thread') + '</h4>' +
+          '<div class="hall-detail-meta">' + esc(taskCard.description || '-') + '</div>' +
         '</div>' +
-        '<div class="hall-detail-group"><h4>' + esc(textEvidence) + '</h4>' +
-          '<div class="hall-detail-meta">' + esc(textLinkedTask) + ': ' + esc(task ? (task.projectId + ':' + task.taskId) : taskCard.projectId + ':' + taskCard.taskId) + '</div>' +
-          '<div class="hall-detail-meta">' + esc(textLinkedRoom) + ': ' + esc(taskCard.roomId || '-') + '</div>' +
-          '<div class="hall-detail-meta" style="margin-top:8px;">' + roomLink + '</div>' +
-        '</div>' +
+        renderParallelGroupsDetailSection(taskCard, bootstrap.participants || []) +
         '<div class="hall-detail-group"><h4>' + esc(textTaskArtifacts) + '</h4>' +
           ((task?.artifacts || []).length > 0
             ? '<div class="hall-artifact-list">' + renderArtifactChips(task.artifacts) + '</div>'
             : '<div class="hall-detail-meta">' + esc(textNoArtifactsYet) + '</div>') +
         '</div>' +
+        '<div class="hall-detail-group"><h4>' + esc(${JSON.stringify(pickUiText(language, "Workspace Files", "工作区文件"))}) + '</h4>' +
+          '<div class="hall-workspace-files" data-hall-workspace-files>' +
+            '<div class="hall-detail-meta">' + esc(${JSON.stringify(pickUiText(language, "Loading...", "加载中..."))}) + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="hall-detail-group"><h4>Participants</h4>' +
+          '<div class="hall-detail-meta">' + esc(participantNames) + '</div>' +
+        '</div>' +
       '</div>';
+    const nextCardId = taskCard?.taskCardId || '';
+    detail.setAttribute('data-current-card', nextCardId);
+    if (nextCardId && prevCardId === nextCardId) {
+      detailScrollTarget = scrollBefore;
+      if (contextPane) contextPane.scrollTop = scrollBefore;
+    } else {
+      detailScrollTarget = -1;
+      detail.style.minHeight = '';
+    }
+    if (selectedTaskCardId) { loadWorkspaceFiles(selectedTaskCardId); }
+  };
+
+  const loadWorkspaceFiles = async (taskCardId) => {
+    const container = root.querySelector('[data-hall-workspace-files]');
+    if (!container) return;
+    try {
+      const res = await callJson('/api/hall/workspace-files?taskCardId=' + encodeURIComponent(taskCardId));
+      const files = Array.isArray(res?.files) ? res.files : [];
+      if (files.length === 0) {
+        container.innerHTML = '<div class="hall-detail-meta">' + esc(${JSON.stringify(pickUiText(language, "No files yet.", "还没有文件。"))}) + '</div>';
+      } else {
+        container.innerHTML = files
+          .filter((f) => !f.isDirectory)
+          .map((f) => {
+            const sizeKB = Math.round((f.sizeBytes || 0) / 1024);
+            const href = '/hall-workspace-files/' + encodeURIComponent(taskCardId) + '/' + encodeURIComponent(f.relativePath);
+            const isImage = /\.(png|jpe?g|webp|gif)$/i.test(f.relativePath);
+            return '<a class="hall-workspace-file-item" href="' + esc(href) + '" target="_blank" rel="noreferrer">' +
+              '<span class="hall-workspace-file-name">' + esc(f.relativePath) + '</span>' +
+              '<span class="hall-workspace-file-meta">' + sizeKB + ' KB</span>' +
+              (isImage ? '<img class="hall-workspace-file-thumb" src="' + esc(href) + '" loading="lazy" />' : '') +
+            '</a>';
+          }).join('');
+      }
+    } catch {
+      container.innerHTML = '<div class="hall-detail-meta">' + esc(${JSON.stringify(pickUiText(language, "Failed to load workspace files.", "加载工作区文件失败。"))}) + '</div>';
+    }
+    detail.style.minHeight = '';
+    if (contextPane && detailScrollTarget >= 0) {
+      contextPane.scrollTop = detailScrollTarget;
+      detailScrollTarget = -1;
+    }
   };
 
   const extractErrorMessage = (payload) => {
@@ -1894,6 +2187,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   };
 
   const loadHall = async (quiet = false) => {
+    if (demoPlaybackRunning) return;
     if (hallReloadInFlight) return;
     hallReloadInFlight = true;
     try {
@@ -1993,6 +2287,27 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         renderVisibleThread();
         return;
       }
+      if (event.type === 'draft_tool_update' && event.draftId) {
+        const draft = hallDrafts.get(event.draftId);
+        if (!draft) return;
+        if (!draft.toolCalls) draft.toolCalls = [];
+        const toolName = String(event.toolName || '');
+        const toolStatus = String(event.toolStatus || 'running');
+        if (toolStatus === 'completed' || toolStatus === 'error') {
+          const existing = [...draft.toolCalls].reverse().find((t) => t.toolName === toolName && t.toolStatus === 'running');
+          if (existing) {
+            existing.toolStatus = toolStatus;
+            existing.endedAt = event.createdAt || new Date().toISOString();
+          } else {
+            draft.toolCalls.push({ toolName, toolStatus, startedAt: event.createdAt || new Date().toISOString(), endedAt: event.createdAt || new Date().toISOString() });
+          }
+        } else {
+          draft.toolCalls.push({ toolName, toolStatus, startedAt: event.createdAt || new Date().toISOString() });
+        }
+        hallDrafts.set(event.draftId, draft);
+        renderVisibleThread();
+        return;
+      }
       if ((event.type === 'draft_complete' || event.type === 'draft_abort') && event.draftId) {
         const draft = hallDrafts.get(event.draftId);
         if (event.type === 'draft_complete' && draft) {
@@ -2025,8 +2340,8 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     activeThreadPollTimer = window.setInterval(() => {
       if (document.hidden) return;
       if (!selectedTaskCardId) return;
-      const stage = String(currentTaskCard()?.stage || '');
-      if (!stage || !['discussion', 'execution', 'blocked', 'review'].includes(stage)) return;
+      const taskCard = currentTaskCard();
+      if (!taskCard || taskCard.status === 'done' || taskCard.archivedAt) return;
       if (hallReloadInFlight) return;
       if (isExecutionPlannerEditing()) return;
       void loadHall(true).catch(() => {});
@@ -2039,6 +2354,11 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       renderDetail(null);
       renderDecisionPanel(null);
       renderVisibleThread();
+      return;
+    }
+    if (isDemoCard(selectedTaskCardId)) {
+      renderDetail(null);
+      renderDecisionPanel(null);
       return;
     }
     syncSelectedTaskRefs();
@@ -2076,6 +2396,226 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     renderToolbarMetaNote();
   };
 
+  /* ── Demo playback engine ── */
+  const demoChunkContent = (content) => {
+    const trimmed = String(content || '').trim();
+    if (!trimmed) return [''];
+    const chunks = [];
+    let current = '';
+    for (const token of trimmed.split(/(\\s+)/).filter(Boolean)) {
+      if (token.length > 48) {
+        if (current) { chunks.push(current); current = ''; }
+        for (let i = 0; i < token.length; i += 32) chunks.push(token.slice(i, i + 32));
+        continue;
+      }
+      if ((current + token).length > 48 && current) {
+        chunks.push(current);
+        current = token;
+        continue;
+      }
+      current += token;
+    }
+    if (current) chunks.push(current);
+    return chunks.length > 0 ? chunks : [trimmed];
+  };
+
+  const demoSleep = (ms) => new Promise((resolve) => {
+    const id = window.setTimeout(resolve, ms);
+    if (demoPlaybackAbort) {
+      const prev = demoPlaybackAbort;
+      demoPlaybackAbort = () => { window.clearTimeout(id); prev(); };
+    }
+  });
+
+  const loadDemoData = async () => {
+    if (demoMessages) return demoMessages;
+    const res = await fetch('/api/hall/demo/data');
+    const json = await res.json();
+    demoMessages = json.messages || [];
+    return demoMessages;
+  };
+
+  const enterDemoMode = () => {
+    isDemoMode = true;
+    if (!(textarea instanceof HTMLTextAreaElement)) return;
+    loadDemoData().then((msgs) => {
+      const prompt = msgs[0]?.content || '';
+      textarea.value = prompt;
+      textarea.readOnly = true;
+      textarea.style.opacity = '0.85';
+      autoResizeComposer();
+      if (sendButton instanceof HTMLElement) {
+        sendButton.textContent = labels.reply || ${JSON.stringify(pickUiText(language, "Send reply", "发送回复"))};
+      }
+    });
+  };
+
+  const exitDemoMode = () => {
+    isDemoMode = false;
+    demoPlaybackRunning = false;
+    if (demoPlaybackAbort) { demoPlaybackAbort(); demoPlaybackAbort = null; }
+    if (!(textarea instanceof HTMLTextAreaElement)) return;
+    textarea.readOnly = false;
+    textarea.style.opacity = '';
+    textarea.value = '';
+    autoResizeComposer();
+    if (sendButton instanceof HTMLElement) {
+      sendButton.textContent = labels.reply || 'Send reply';
+    }
+  };
+
+  const runDemoPlayback = async () => {
+    if (demoPlaybackRunning) return;
+    demoPlaybackRunning = true;
+    threadAutoFollow = true;
+    let aborted = false;
+    demoPlaybackAbort = () => { aborted = true; };
+
+    const msgs = await loadDemoData();
+    if (!msgs || msgs.length === 0) { demoPlaybackRunning = false; return; }
+
+    if (sendButton instanceof HTMLElement) {
+      sendButton.disabled = true;
+    }
+    if (textarea instanceof HTMLTextAreaElement) {
+      textarea.value = '';
+      autoResizeComposer();
+    }
+
+    /* Message 0 is the operator's prompt — show it immediately as persisted */
+    const operatorMsg = msgs[0];
+    hallMessages.push({
+      messageId: operatorMsg.messageId,
+      kind: operatorMsg.kind,
+      authorLabel: operatorMsg.authorLabel,
+      authorParticipantId: operatorMsg.authorParticipantId,
+      authorSemanticRole: operatorMsg.authorSemanticRole,
+      content: operatorMsg.content,
+      taskCardId: selectedTaskCardId,
+      projectId: operatorMsg.projectId,
+      taskId: operatorMsg.taskId,
+      roomId: selectedTaskCardId,
+      createdAt: new Date().toISOString(),
+      payload: {},
+    });
+    renderVisibleThread();
+    await demoSleep(600);
+
+    /* Messages 1+ are agent replies — stream each with typewriter effect */
+    for (let i = 1; i < msgs.length; i++) {
+      if (aborted) break;
+      const msg = msgs[i];
+      const draftId = 'demo-draft-' + i;
+      const now = () => new Date().toISOString();
+
+      /* draft_start */
+      hallDrafts.set(draftId, {
+        draftId,
+        createdAt: now(),
+        lastDeltaAt: now(),
+        authorLabel: msg.authorLabel || 'Agent',
+        authorParticipantId: msg.authorParticipantId,
+        authorSemanticRole: msg.authorSemanticRole,
+        messageKind: msg.kind || 'status',
+        taskCardId: selectedTaskCardId,
+        projectId: msg.projectId,
+        taskId: msg.taskId,
+        roomId: selectedTaskCardId,
+        content: '',
+        toolCalls: [],
+      });
+      renderVisibleThread();
+      await demoSleep(200);
+      if (aborted) break;
+
+      /* Tool calls: show them progressively early in the message */
+      const toolCalls = msg.toolCalls || [];
+      const toolCount = toolCalls.length;
+      const chunks = demoChunkContent(msg.content);
+      const totalChunks = chunks.length;
+      const toolInsertInterval = toolCount > 0 ? Math.max(1, Math.floor(totalChunks * 0.15 / toolCount)) : 0;
+      let nextToolIndex = 0;
+
+      /* draft_delta — typewriter effect */
+      for (let c = 0; c < totalChunks; c++) {
+        if (aborted) break;
+        const draft = hallDrafts.get(draftId);
+        if (!draft) break;
+
+        /* Insert tool calls at spaced intervals near the beginning */
+        if (nextToolIndex < toolCount && toolInsertInterval > 0 && c > 0 && c % toolInsertInterval === 0) {
+          const tc = toolCalls[nextToolIndex];
+          if (!draft.toolCalls) draft.toolCalls = [];
+          draft.toolCalls.push({ toolName: tc.toolName, toolStatus: 'running', startedAt: now() });
+          hallDrafts.set(draftId, draft);
+          renderVisibleThread();
+          await demoSleep(150);
+          if (aborted) break;
+          /* Complete the tool call after a short delay */
+          const runningTool = [...draft.toolCalls].reverse().find((t) => t.toolName === tc.toolName && t.toolStatus === 'running');
+          if (runningTool) {
+            runningTool.toolStatus = tc.toolStatus || 'completed';
+            runningTool.endedAt = now();
+          }
+          hallDrafts.set(draftId, draft);
+          nextToolIndex++;
+        }
+
+        draft.content = (draft.content || '') + chunks[c];
+        draft.lastDeltaAt = now();
+        hallDrafts.set(draftId, draft);
+        renderVisibleThread();
+
+        /* Adaptive delay: shorter for short chunks, tiny pause for natural flow */
+        const chunkLen = chunks[c].length;
+        const delay = chunkLen > 30 ? 18 : chunkLen > 15 ? 14 : 10;
+        await demoSleep(delay);
+      }
+      if (aborted) break;
+
+      /* Complete remaining tool calls */
+      const draft = hallDrafts.get(draftId);
+      if (draft) {
+        while (nextToolIndex < toolCount) {
+          const tc = toolCalls[nextToolIndex];
+          if (!draft.toolCalls) draft.toolCalls = [];
+          draft.toolCalls.push({ toolName: tc.toolName, toolStatus: tc.toolStatus || 'completed', startedAt: now(), endedAt: now() });
+          nextToolIndex++;
+        }
+        hallDrafts.set(draftId, draft);
+      }
+
+      /* draft_complete — move to persisted messages */
+      hallDrafts.delete(draftId);
+      hallMessages.push({
+        messageId: msg.messageId,
+        kind: msg.kind,
+        authorLabel: msg.authorLabel,
+        authorParticipantId: msg.authorParticipantId,
+        authorSemanticRole: msg.authorSemanticRole,
+        content: msg.content,
+        taskCardId: selectedTaskCardId,
+        projectId: msg.projectId,
+        taskId: msg.taskId,
+        roomId: selectedTaskCardId,
+        createdAt: now(),
+        payload: { toolCalls: toolCalls.length > 0 ? toolCalls : undefined },
+      });
+      renderVisibleThread();
+
+      /* Pause between messages — longer for dense content */
+      const pauseMs = msg.content.length > 500 ? 800 : 500;
+      await demoSleep(pauseMs);
+    }
+
+    /* Playback finished */
+    demoPlaybackRunning = false;
+    demoPlaybackAbort = null;
+    if (sendButton instanceof HTMLElement) {
+      sendButton.disabled = false;
+    }
+  };
+
   const createTask = async () => {
     if (!(textarea instanceof HTMLTextAreaElement)) return;
     const content = textarea.value.trim();
@@ -2097,19 +2637,39 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   const postReply = async () => {
     if (!(textarea instanceof HTMLTextAreaElement)) return;
     const content = textarea.value.trim();
-    if (!content) return;
+    if (!content && pendingFiles.length === 0) return;
+    const fileAttachments = [];
+    for (const item of pendingFiles) {
+      try {
+        const result = await callMutationJson('/api/hall/files', {
+          method: 'POST',
+          body: JSON.stringify({ dataUrl: item.dataUrl, fileName: item.file.name }),
+        });
+        if (result && result.file) fileAttachments.push(result.file);
+      } catch (err) {
+        setFlash(${JSON.stringify(pickUiText(language, "Upload failed: ", "上传失败："))} + (err instanceof Error ? err.message : item.file.name));
+        return;
+      }
+    }
     await callMutationJson('/api/hall/messages', {
       method: 'POST',
       body: JSON.stringify({
         taskCardId: selectedTaskCardId || undefined,
-        content,
+        content: content || ${JSON.stringify(pickUiText(language, "(attached file)", "(附件)"))},
+        fileAttachments: fileAttachments.length > 0 ? fileAttachments : undefined,
       }),
     });
     textarea.value = '';
+    pendingFiles = [];
+    renderPendingFiles();
     autoResizeComposer();
     await loadHall();
   };
   const submitComposer = async () => {
+    if (isDemoMode) {
+      await runDemoPlayback();
+      return;
+    }
     if (composerMode === 'task') {
       await createTask();
       return;
@@ -2127,7 +2687,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     const chosenParticipantId = String(
       participantIdOverride
       || (
-        taskCard && taskCard.stage !== 'execution'
+        taskCard && !(taskCard.executionLock && !taskCard.executionLock.releasedAt)
           ? (taskCard.plannedExecutionOrder?.[0] || taskCard.currentOwnerParticipantId || executionOrderDraft[0] || '')
           : ''
       )
@@ -2150,7 +2710,7 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
         participantId: participant.participantId,
       }),
     });
-    if (taskCard?.stage === 'discussion' && executionOrderDraft.length > 0 && executionOrderDraft[0] !== participant.participantId) {
+    if (taskCard && !(taskCard.executionLock && !taskCard.executionLock.releasedAt) && executionOrderDraft.length > 0 && executionOrderDraft[0] !== participant.participantId) {
       const reordered = [participant.participantId, ...executionOrderDraft.filter((id) => id !== participant.participantId)];
       executionOrderDraft = reordered;
       executionItemsDraft = buildExecutionItemsDraft(taskCard, reordered, executionItemsDraft);
@@ -2203,9 +2763,10 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     const refreshedTaskCard = currentTaskCard();
     const plannedOwnerId = refreshedTaskCard?.plannedExecutionOrder?.[0];
     const plannedOwnerLabel = plannedOwnerId ? participantLabel(plannedOwnerId) : '';
+    const lockActive = Boolean(refreshedTaskCard?.executionLock && !refreshedTaskCard.executionLock.releasedAt);
     setFlash(
-      refreshedTaskCard?.stage !== 'execution' && plannedOwnerLabel
-        ? ('顺序排好了。下一步点“开始执行（' + plannedOwnerLabel + '）”。')
+      !lockActive && plannedOwnerLabel
+        ? ('顺序排好了。下一步点"开始执行（' + plannedOwnerLabel + '）"。')
         : ${JSON.stringify(pickUiText(language, "The queue is updated. Let the current owner finish this pass first.", "后续顺序已更新，先让当前 owner 把这一棒走完。"))},
     );
   };
@@ -2289,50 +2850,6 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     return false;
   };
   window.__openclawHallFocusComposer = () => focusComposer();
-  window.__openclawHallContinueDiscussion = () => {
-    syncSelectedTaskRefs();
-    const taskCard = selectedTaskDetailPayload?.taskCard;
-    if (!(textarea instanceof HTMLTextAreaElement)) {
-      focusComposer();
-      return false;
-    }
-    if (!taskCard || taskCard.stage === 'discussion') {
-      if (!textarea.value.trim()) {
-        textarea.value = textContinueDiscussionSeed;
-        autoResizeComposer();
-      }
-      focusComposer();
-      return false;
-    }
-    const reopen = async () => {
-      if (taskCard.stage === 'execution' || taskCard.stage === 'blocked') {
-        await callMutationJson('/api/hall/tasks/' + encodeURIComponent(selectedTaskId) + '/stop', {
-          method: 'POST',
-          body: JSON.stringify({
-            taskCardId: selectedTaskCardId,
-            projectId: selectedTaskProjectId,
-            note: textContinueDiscussionSeed,
-          }),
-        });
-        await loadHall(true);
-      } else {
-        await callMutationJson('/api/hall/messages', {
-          method: 'POST',
-          body: JSON.stringify({
-            taskCardId: selectedTaskCardId || undefined,
-            content: textContinueDiscussionSeed,
-          }),
-        });
-        await loadHall();
-      }
-      textarea.value = '';
-      autoResizeComposer();
-      focusComposer();
-      setFlash('已切回讨论，可以继续追问。');
-    };
-    void reopen().catch((error) => setFlash(error instanceof Error ? error.message : String(error)));
-    return false;
-  };
   window.__openclawHallToggleDecisionDetails = () => {
     decisionExpanded = !decisionExpanded;
     renderVisibleThread();
@@ -2377,6 +2894,26 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
     });
     setFlash(textStopped);
     await loadHall();
+  };
+  const markHumanReviewed = async () => {
+    syncSelectedTaskRefs();
+    if (!selectedTaskId || !selectedTaskCardId) {
+      setFlash(${JSON.stringify(pickUiText(language, "Select a task thread first.", "先选中一个任务线程。"))});
+      return;
+    }
+    await callMutationJson('/api/hall/tasks/' + encodeURIComponent(selectedTaskId) + '/mark-human-reviewed', {
+      method: 'POST',
+      body: JSON.stringify({
+        taskCardId: selectedTaskCardId,
+        projectId: selectedTaskProjectId,
+      }),
+    });
+    setFlash(textMarkedHumanReviewed);
+    await loadHall(true);
+  };
+  window.__openclawHallMarkHumanReviewed = () => {
+    void markHumanReviewed().catch((error) => setFlash(error instanceof Error ? error.message : String(error)));
+    return false;
   };
   const archiveCurrentThread = async () => {
     syncSelectedTaskRefs();
@@ -2526,6 +3063,138 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       patchExecutionItemDraft(handoffToParticipantId, { handoffToParticipantId: target.value || '' });
     }
   };
+  const handleFilePathClick = (event) => {
+    const link = event.target.closest && event.target.closest('.hall-md-file-path');
+    if (!link) return;
+    event.preventDefault();
+    const filePath = link.getAttribute('data-file-path');
+    if (!filePath || !selectedTaskCardId) return;
+    const relativePath = filePath.replace(/^\\//, '');
+    const href = '/hall-workspace-files/' + encodeURIComponent(selectedTaskCardId) + '/' + encodeURIComponent(relativePath);
+    window.open(href, '_blank', 'noreferrer');
+  };
+  thread?.addEventListener('click', handleFilePathClick);
+
+  // --- Tool pill expand/collapse popover ---------------------------------
+  let activeToolPopover = null;
+  let activeToolPill = null;
+  const closeToolPopover = () => {
+    if (activeToolPopover && activeToolPopover.parentNode) {
+      activeToolPopover.parentNode.removeChild(activeToolPopover);
+    }
+    if (activeToolPill) {
+      activeToolPill.classList.remove('is-open');
+    }
+    activeToolPopover = null;
+    activeToolPill = null;
+  };
+  const positionToolPopover = (pill, popover) => {
+    const rect = pill.getBoundingClientRect();
+    const popRect = popover.getBoundingClientRect();
+    const scrollX = window.pageXOffset || document.documentElement.scrollLeft || 0;
+    const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
+    let left = rect.left + scrollX;
+    const right = left + popRect.width;
+    const viewportRight = scrollX + document.documentElement.clientWidth - 16;
+    if (right > viewportRight) left = Math.max(scrollX + 12, viewportRight - popRect.width);
+    let top = rect.bottom + scrollY + 6;
+    const viewportBottom = scrollY + document.documentElement.clientHeight - 16;
+    if (top + popRect.height > viewportBottom) {
+      const aboveTop = rect.top + scrollY - popRect.height - 6;
+      if (aboveTop > scrollY + 12) top = aboveTop;
+    }
+    popover.style.left = left + 'px';
+    popover.style.top = top + 'px';
+  };
+  const buildToolPopover = (pill) => {
+    const input = pill.getAttribute('data-tool-input') || '';
+    const output = pill.getAttribute('data-tool-output') || '';
+    const name = pill.getAttribute('data-tool-name') || pill.textContent.replace(/^[▸✓⚠\s]+/, '');
+    const isError = pill.getAttribute('data-tool-error') === '1';
+    const popover = document.createElement('div');
+    popover.className = 'hall-tool-popover';
+    const sections = [];
+    const escLocal = (v) => String(v || '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    const inputLabel = ${JSON.stringify(pickUiText(language, "Input", "传入参数"))};
+    const outputLabel = ${JSON.stringify(pickUiText(language, "Output", "执行结果"))};
+    const copyLabel = ${JSON.stringify(pickUiText(language, "Copy", "复制"))};
+    const copiedLabel = ${JSON.stringify(pickUiText(language, "Copied", "已复制"))};
+    const emptyLabel = ${JSON.stringify(pickUiText(language, "(empty)", "(空)"))};
+    const mkSection = (labelText, value, errorClass) => {
+      if (!value) {
+        return '<div class="hall-tool-popover-section"><div class="hall-tool-popover-label">'
+          + escLocal(labelText) + '</div><div class="hall-tool-popover-empty">'
+          + escLocal(emptyLabel) + '</div></div>';
+      }
+      return '<div class="hall-tool-popover-section"><div class="hall-tool-popover-label">'
+        + escLocal(labelText)
+        + '<button type="button" class="hall-tool-popover-copy" data-tool-copy>'
+        + escLocal(copyLabel) + '</button></div>'
+        + '<pre class="hall-tool-popover-pre' + (errorClass ? ' is-error' : '') + '">'
+        + escLocal(value) + '</pre></div>';
+    };
+    popover.innerHTML = mkSection(inputLabel, input, false) + mkSection(outputLabel, output, isError);
+    popover.addEventListener('click', (e) => {
+      const target = e.target;
+      if (target && target.matches && target.matches('[data-tool-copy]')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const pre = target.closest('.hall-tool-popover-section')?.querySelector('.hall-tool-popover-pre');
+        const text = pre ? pre.textContent : '';
+        if (text && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => {
+            const original = target.textContent;
+            target.textContent = copiedLabel;
+            setTimeout(() => { target.textContent = original; }, 1200);
+          }).catch(() => {});
+        }
+      } else {
+        e.stopPropagation();
+      }
+    });
+    return popover;
+  };
+  const handleToolPillClick = (event) => {
+    const target = event.target;
+    if (!target || !target.closest) return;
+    const pill = target.closest('.hall-tool-pill[data-tool-expandable="1"]');
+    if (!pill) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (pill === activeToolPill) {
+      closeToolPopover();
+      return;
+    }
+    closeToolPopover();
+    const popover = buildToolPopover(pill);
+    document.body.appendChild(popover);
+    activeToolPopover = popover;
+    activeToolPill = pill;
+    pill.classList.add('is-open');
+    positionToolPopover(pill, popover);
+  };
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (activeToolPopover && target && target.closest && target.closest('.hall-tool-popover')) return;
+    if (target && target.closest && target.closest('.hall-tool-pill[data-tool-expandable="1"]')) {
+      handleToolPillClick(event);
+      return;
+    }
+    closeToolPopover();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeToolPopover();
+  });
+  window.addEventListener('resize', closeToolPopover);
+  window.addEventListener('scroll', (event) => {
+    if (!activeToolPopover) return;
+    const target = event.target;
+    // Ignore scrolls that originate inside the popover (its own body or nested <pre>).
+    if (target && target.nodeType === 1 && (target === activeToolPopover || activeToolPopover.contains(target))) return;
+    // Also ignore Document-level scroll events whose target is the document itself
+    // when the popover is using its own internal scroll (position:absolute sits with page).
+    closeToolPopover();
+  }, true);
   decisionPanel?.addEventListener('click', handleDecisionInteraction);
   thread?.addEventListener('click', handleDecisionInteraction);
   decisionPanel?.addEventListener('input', handleDecisionInputs);
@@ -2580,10 +3249,13 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
       setContextOpen(root.classList.contains('is-context-collapsed'));
     });
   });
-  setContextOpen(false);
+  setContextOpen(true);
   renderThreadHeader();
   syncComposerMode();
   autoResizeComposer();
+  if (thread instanceof HTMLElement) {
+    thread.scrollTop = thread.scrollHeight;
+  }
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && root.classList.contains('is-context-open')) {
       setContextOpen(false);
@@ -2611,9 +3283,9 @@ export function renderCollaborationHallForSmoke(language: UiLanguage = "zh"): st
     hallId: "main",
     title: "Collaboration Hall",
     participants: [
-      { participantId: "lead", agentId: "lead", displayName: "Lead", semanticRole: "manager", active: true, aliases: ["Lead"] },
-      { participantId: "builder", agentId: "builder", displayName: "Builder", semanticRole: "coder", active: true, aliases: ["Builder"] },
-      { participantId: "reviewer", agentId: "reviewer", displayName: "Reviewer", semanticRole: "reviewer", active: true, aliases: ["Reviewer"] },
+      { participantId: "lead", agentId: "lead", displayName: "Turing", semanticRole: "manager", active: true, aliases: ["Turing"] },
+      { participantId: "builder", agentId: "builder", displayName: "Linus", semanticRole: "coder", active: true, aliases: ["Linus"] },
+      { participantId: "reviewer", agentId: "reviewer", displayName: "Rosalind", semanticRole: "reviewer", active: true, aliases: ["Rosalind"] },
     ],
     taskCardIds: ["demo"],
     messageIds: ["demo-message"],
@@ -2630,13 +3302,12 @@ export function renderCollaborationHallForSmoke(language: UiLanguage = "zh"): st
     roomId: "collaboration-hall:demo-task",
     title: "Build the public collaboration hall",
     description: "Replace the task-room-first collaboration UI with one shared hall timeline.",
-    stage: "discussion",
     status: "todo",
     createdByParticipantId: "operator",
     currentOwnerParticipantId: "builder",
-    currentOwnerLabel: "Builder",
+    currentOwnerLabel: "Linus",
     proposal: "Use the hall as the main timeline and keep the linked room as evidence only.",
-    decision: "Lead should assign the first execution pass to Builder.",
+    decision: "Turing should assign the first execution pass to Linus.",
     doneWhen: "The hall, task cards, execution lock, and review flow all render in one page.",
     plannedExecutionOrder: ["builder", "reviewer"],
     plannedExecutionItems: [
@@ -2653,7 +3324,7 @@ export function renderCollaborationHallForSmoke(language: UiLanguage = "zh"): st
         handoffWhen: "Close once the required fixes are explicit and the next owner is clear.",
       },
     ],
-    latestSummary: "Builder is ready to implement the first slice.",
+    latestSummary: "Linus is ready to implement the first slice.",
     blockers: [],
     requiresInputFrom: [],
     mentionedParticipantIds: [],
@@ -2666,11 +3337,11 @@ export function renderCollaborationHallForSmoke(language: UiLanguage = "zh"): st
     hall,
     hallSummary: {
       hallId: hall.hallId,
-      headline: "Lead aligned the first build slice and is about to assign execution.",
+      headline: "Turing aligned the first build slice and is about to assign execution.",
       activeTaskCount: 1,
       waitingReviewCount: 0,
-      blockedTaskCount: 0,
-      currentSpeakerLabel: "Lead",
+      needsHumanReviewCount: 0,
+      currentSpeakerLabel: "Turing",
       updatedAt: hall.updatedAt,
     },
     taskCards: [
@@ -2681,9 +3352,8 @@ export function renderCollaborationHallForSmoke(language: UiLanguage = "zh"): st
           projectId: taskCard.projectId,
           taskId: taskCard.taskId,
           headline: "Use a shared hall timeline and a linked evidence thread.",
-          currentOwnerLabel: "Builder",
+          currentOwnerLabel: "Linus",
           nextAction: "Assign the first execution owner.",
-          stage: taskCard.stage,
           blockerCount: 0,
           updatedAt: taskCard.updatedAt,
         },
@@ -2709,9 +3379,8 @@ export function renderCollaborationHallForSmoke(language: UiLanguage = "zh"): st
       projectId: taskCard.projectId,
       taskId: taskCard.taskId,
       headline: "Lead aligned the first build slice and is about to assign execution.",
-      currentOwnerLabel: "Builder",
+      currentOwnerLabel: "Linus",
       nextAction: "Assign the first execution owner.",
-      stage: taskCard.stage,
       blockerCount: 0,
       updatedAt: taskCard.updatedAt,
     },
@@ -2776,8 +3445,7 @@ function renderTaskCards(
   return taskCards
     .map((item) => {
       const selected = item.card.taskCardId === selectedTaskCardId;
-      const ownerLabel = item.card.currentOwnerLabel ?? pickUiText(language, "Waiting for owner", "等待 owner");
-      const preview = item.summary?.headline ?? item.card.latestSummary ?? item.card.description;
+      const preview = item.summary?.headline ?? item.card.latestSummary ?? item.card.description ?? "";
       const updatedLabel = formatCompactTimestamp(item.card.updatedAt, language);
       return `
         <button
@@ -2789,14 +3457,13 @@ function renderTaskCards(
           ${selected ? 'aria-current="page"' : ""}
         >
           <div class="hall-task-card-row">
-            ${renderHallPixelAvatar(ownerLabel, "hall-task-card-avatar")}
+            ${renderHallPixelAvatar(item.card.title || item.card.taskId, "hall-task-card-avatar")}
             <div class="hall-task-card-copy">
               <div class="hall-task-title-row">
                 <strong class="hall-task-title">${escapeHtml(item.card.title)}</strong>
                 <span class="hall-task-timestamp">${escapeHtml(updatedLabel)}</span>
               </div>
               <div class="hall-task-preview">${escapeHtml(preview)}</div>
-              <div class="hall-task-meta">${escapeHtml(ownerLabel)} · ${escapeHtml(stageLabel(item.card.stage, language))}</div>
             </div>
           </div>
         </button>
@@ -2846,7 +3513,7 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
   const comparableMessageText = (content: string | undefined): string => String(content || "")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
-    .replace(/(^|[\s(>\[\{<,.;:!?"'“”‘’，。！？；：、）】」』》])@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g, "$1")
+    .replace(/(^|[\s(>\[\{<,.;:!?"'\u201c\u201d\u2018\u2019，。！？；：、）】」』》])@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g, "$1")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
@@ -2889,8 +3556,12 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
           : "agent";
       const chips: string[] = [];
       if (message.payload?.artifactRefs?.length) {
-        chips.push(renderArtifactChips(message.payload.artifactRefs));
+        chips.push(renderArtifactChips(message.payload.artifactRefs, message.payload.fileAttachments));
       }
+      const modelLabel = message.payload?.model?.trim();
+      const modelPill = modelLabel
+        ? `<span class="hall-model-pill" title="${escapeHtml(modelLabel)}">${escapeHtml(modelLabel)}</span>`
+        : "";
       return `
         <article class="hall-message" data-kind="${escapeHtml(message.kind)}" data-author-type="${escapeHtml(authorType)}">
           <div class="hall-message-row">
@@ -2900,8 +3571,9 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
                 <div class="hall-message-author">
                   <strong>${escapeHtml(message.authorLabel)}</strong>
                   <span class="hall-kind-pill">${escapeHtml(messageKindLabel(message.kind, language))}</span>
+                  ${modelPill}
                 </div>
-                <div class="hall-message-meta">${escapeHtml(message.createdAt)}</div>
+                <div class="hall-message-meta" title="${escapeHtml(message.createdAt)}">${escapeHtml(formatCompactTimestamp(message.createdAt, language))}</div>
               </div>
               <div class="hall-message-body">${renderMarkdown(message.content)}</div>
               ${chips.length > 0 ? `<div class="hall-message-footer">${chips.join("")}</div>` : ""}
@@ -2915,7 +3587,7 @@ function renderHallMessages(messages: HallMessage[], language: UiLanguage): stri
 
 function hasLockedHallExecution(taskCard: HallTaskCard | undefined): boolean {
   if (!taskCard) return false;
-  return taskCard.stage === "execution" || taskCard.stage === "blocked";
+  return Boolean(taskCard.executionLock && !taskCard.executionLock.releasedAt);
 }
 
 function firstPlannedHallOwnerId(taskCard: HallTaskCard | undefined): string | undefined {
@@ -2961,12 +3633,81 @@ function describeHallDecisionCardState(
   const currentOwnerId = String(taskCard.currentOwnerParticipantId || "").trim();
   return {
     hasPendingStartablePlan,
-    stageText: stageLabel(taskCard.stage, language),
+    stageText: resolveHallActivityLabel(taskCard, language),
     ownerHeading: pickUiText(language, "Current owner", "当前 OWNER"),
     ownerLabel: taskCard.currentOwnerLabel || (currentOwnerId ? participantLabel(currentOwnerId) : ""),
     stepHeading: pickUiText(language, "Current step", "当前步骤"),
     stepText: String(taskCard.currentExecutionItem?.task || "").trim(),
   };
+}
+
+// Lightweight replacement for the old stageLabel(). Without an explicit stage
+// machine, we derive an activity label from the task status, execution lock,
+// and "needs human review" detector. Used only for server-rendered summaries.
+function resolveHallActivityLabel(taskCard: HallTaskCard, language: UiLanguage): string {
+  if (taskCard.status === "done") return pickUiText(language, "Completed", "已完成");
+  if (taskCard.archivedAt) return pickUiText(language, "Archived", "已归档");
+  if (hallTaskNeedsHumanReview(taskCard)) return pickUiText(language, "Needs human review", "需要人类审核");
+  if (taskCard.executionLock && !taskCard.executionLock.releasedAt) return pickUiText(language, "In progress", "进行中");
+  return pickUiText(language, "Active", "活跃");
+}
+
+// Duplicate of runtime needsHumanReview to avoid a runtime→UI dep cycle.
+// Kept in sync with HUMAN_REVIEW_IDLE_WINDOW_MS.
+function hallTaskNeedsHumanReview(card: HallTaskCard, nowMs: number = Date.now()): boolean {
+  if (card.archivedAt) return false;
+  if (card.status === "done") return false;
+  if (card.humanReviewedAt) return false;
+  const lastAgentAt = Date.parse(card.lastAgentActivityAt ?? "") || 0;
+  if (!lastAgentAt) return false;
+  return (nowMs - lastAgentAt) > 10 * 60 * 1000;
+}
+
+function renderServerParallelGroupsSection(
+  taskCard: HallTaskCard,
+  participantMap: Map<string, string>,
+  language: UiLanguage,
+): string {
+  const groups = taskCard.parallelGroups;
+  if (!groups || groups.length === 0) return "";
+  const activeGroups = groups.filter((g) =>
+    g.status === "active" || (g.status === "settled" && g.settledAt && Date.now() - Date.parse(g.settledAt) < 5 * 60 * 1000),
+  );
+  if (activeGroups.length === 0) return "";
+
+  const statusBadge = (status: string): string => {
+    const colorMap: Record<string, string> = { pending: "#9ca3af", running: "#3b82f6", completed: "#22c55e", failed: "#ef4444" };
+    const labelMap: Record<string, string> = {
+      pending: pickUiText(language, "Pending", "等待中"),
+      running: pickUiText(language, "Running", "执行中"),
+      completed: pickUiText(language, "Done", "已完成"),
+      failed: pickUiText(language, "Failed", "失败"),
+    };
+    const color = colorMap[status] ?? "#9ca3af";
+    return `<span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:11px;font-weight:500;border:1px solid ${color};color:${color};">${escapeHtml(labelMap[status] ?? status)}</span>`;
+  };
+
+  const slotRows = activeGroups
+    .flatMap((g) => g.slots)
+    .map((slot) => {
+      const name = participantMap.get(slot.participantId) ?? slot.participantId;
+      const taskText = slot.task.length > 80 ? `${slot.task.slice(0, 80)}…` : slot.task;
+      return `<div class="hall-detail-meta" style="margin-top:4px;">${statusBadge(slot.status)} <strong>${escapeHtml(name)}</strong>: ${escapeHtml(taskText)}</div>`;
+    })
+    .join("");
+
+  const totalSlots = activeGroups.reduce((sum, g) => sum + g.slots.length, 0);
+  const completedSlots = activeGroups.reduce(
+    (sum, g) => sum + g.slots.filter((s) => s.status === "completed" || s.status === "failed").length,
+    0,
+  );
+
+  return `
+    <div class="hall-detail-group">
+      <h4>${escapeHtml(pickUiText(language, "Parallel Dispatch", "并行调度"))} (${completedSlots}/${totalSlots})</h4>
+      ${slotRows}
+    </div>
+  `;
 }
 
 function renderHallDetail(
@@ -2979,161 +3720,45 @@ function renderHallDetail(
   if (!selectedTaskCard) {
     return `<div class="hall-empty">${escapeHtml(pickUiText(language, "Select a task card to inspect ownership, decision, and evidence.", "选中一张任务卡后，这里会显示 owner、决策和证据信息。"))}</div>`;
   }
-  const participantMap = new Map(participants.map((participant) => [participant.participantId, participant.displayName]));
-  const decisionState = describeHallDecisionCardState(selectedTaskCard, participants, language);
-  const participantNames = participants.map((participant) => participant.displayName).join(" · ");
-  const queueLabels = (selectedTaskCard.plannedExecutionOrder || [])
-    .map((participantId) => participantMap.get(participantId) || participantId)
-    .join(" → ");
-  const currentExecutionTask = decisionState.stepText || "-";
-  const showPrimaryAction = decisionState.hasPendingStartablePlan;
+  const participantMap = new Map(participants.map((p) => [p.participantId, p.displayName]));
+  const participantNames = participants.map((p) => p.displayName).join(" \u00b7 ");
   const taskArtifacts = selectedTask?.artifacts ?? [];
-  const detailPrimaryLabel = decisionState.ownerLabel
-    ? (language === "zh"
-      ? `${pickUiText(language, "Start execution with", "开始执行（")}${decisionState.ownerLabel}${pickUiText(language, ")", "）")}`
-      : `${pickUiText(language, "Start execution", "开始执行当前计划")} · ${decisionState.ownerLabel}`)
-    : "";
-  return `
-    <div class="hall-detail-list">
-      <div class="hall-detail-group">
-        <h4>${escapeHtml(pickUiText(language, "Execution plan", "执行计划"))}</h4>
-        <div class="hall-detail-meta"><span class="hall-stage-pill">${escapeHtml(decisionState.stageText)}</span> <span class="hall-stage-pill">${escapeHtml(selectedTaskCard.status)}</span></div>
-        <div class="hall-detail-meta" style="margin-top:8px;">${escapeHtml(decisionState.ownerHeading)}: ${escapeHtml(decisionState.ownerLabel || pickUiText(language, "Unassigned", "未指派"))}</div>
-        <div class="hall-detail-meta">${escapeHtml(decisionState.stepHeading)}: ${escapeHtml(currentExecutionTask)}</div>
-        <div class="hall-detail-meta">${escapeHtml(pickUiText(language, "Queued owners", "后续顺序"))}: ${escapeHtml(queueLabels || "-")}</div>
-        <div class="hall-detail-meta">${escapeHtml(decisionState.hasPendingStartablePlan ? pickUiText(language, "Next action", "下一步") : pickUiText(language, "Execution feed", "执行日志"))}: ${escapeHtml(decisionState.hasPendingStartablePlan ? (firstPlannedHallOwnerId(selectedTaskCard) ? pickUiText(language, "Click start execution to let the first owner begin. Progress, results, and handoffs will continue in the hall timeline.", "点击“开始执行”后，第一位执行者会正式开始；过程、结果和交接会持续写回大厅时间线。") : pickUiText(language, "Plan the execution order first. Then you can start the first owner from the same card.", "先安排执行顺序，再从同一张卡里开始执行第一位。")) : pickUiText(language, "Stay in this thread to watch status updates, results, handoffs, and review.", "留在这条线程里就能持续看到状态、结果、交接和审核。"))}</div>
-        <div class="hall-detail-actions hall-decision-actions">
-          ${showPrimaryAction ? `<button type="button" class="hall-button" data-hall-start-execution onclick="return window.__openclawHallAssignOwner ? window.__openclawHallAssignOwner() : false">${escapeHtml(detailPrimaryLabel)}</button>` : ""}
-          <button type="button" class="hall-secondary-button hall-secondary-button--accent" data-hall-plan-order onclick="return window.__openclawHallSetExecutionOrder ? window.__openclawHallSetExecutionOrder() : false">${escapeHtml(pickUiText(language, selectedTaskCard.stage === "discussion" ? "Plan execution order" : "Adjust execution order", selectedTaskCard.stage === "discussion" ? "安排后续顺序" : "调整执行顺序"))}</button>
-          <button type="button" class="hall-secondary-button" data-hall-continue-discussion onclick="return window.__openclawHallContinueDiscussion ? window.__openclawHallContinueDiscussion() : false">${escapeHtml(pickUiText(language, "Continue discussion", "继续讨论"))}</button>
-        </div>
-      </div>
-      <div class="hall-detail-group">
-        <h4>${escapeHtml(pickUiText(language, "Linked evidence", "关联证据"))}</h4>
-        <div class="hall-detail-meta">${escapeHtml(pickUiText(language, "Task", "任务"))}: ${escapeHtml(selectedTask ? `${selectedTask.projectId}:${selectedTask.taskId}` : `${selectedTaskCard.projectId}:${selectedTaskCard.taskId}`)}</div>
-        <div class="hall-detail-meta">${escapeHtml(pickUiText(language, "Room", "详情线程"))}: ${escapeHtml(selectedTaskCard.roomId ?? "-")}</div>
-        ${selectedTaskCard.roomId ? `<div class="hall-detail-meta" style="margin-top:8px;"><a class="hall-thread-link" href="?section=collaboration&roomId=${encodeURIComponent(selectedTaskCard.roomId)}">${escapeHtml(pickUiText(language, "Open detail thread", "打开详情线程"))}</a></div>` : ""}
-      </div>
-      <div class="hall-detail-group">
-        <h4>${escapeHtml(pickUiText(language, "Artifacts", "产物"))}</h4>
-        ${taskArtifacts.length > 0
-          ? `<div class="hall-artifact-list">${renderArtifactChips(taskArtifacts)}</div>`
-          : `<div class="hall-detail-meta">${escapeHtml(pickUiText(language, "No artifacts yet.", "还没有产物。"))}</div>`}
-      </div>
-      <div class="hall-detail-group">
-        <h4>${escapeHtml(pickUiText(language, "Participants", "参与者"))}</h4>
-        <div class="hall-detail-meta">${escapeHtml(participantNames)}</div>
-      </div>
-    </div>
-  `;
+  const t = (en: string, zh: string) => pickUiText(language, en, zh);
+  return [
+    '<div class="hall-detail-list">',
+    '<div class="hall-detail-group">',
+    "<h4>" + escapeHtml(selectedTaskCard.title || t("Thread", "\u7ebf\u7a0b")) + "</h4>",
+    '<div class="hall-detail-meta">' + escapeHtml(selectedTaskCard.description || "-") + "</div>",
+    "</div>",
+    renderServerParallelGroupsSection(selectedTaskCard, participantMap, language),
+    '<div class="hall-detail-group">',
+    "<h4>" + escapeHtml(t("Artifacts", "\u4ea7\u7269")) + "</h4>",
+    taskArtifacts.length > 0
+      ? '<div class="hall-artifact-list">' + renderArtifactChips(taskArtifacts) + "</div>"
+      : '<div class="hall-detail-meta">' + escapeHtml(t("No artifacts yet.", "\u8fd8\u6ca1\u6709\u4ea7\u7269\u3002")) + "</div>",
+    "</div>",
+    '<div class="hall-detail-group">',
+    '<div class="hall-detail-group">',
+    "<h4>" + escapeHtml(t("Workspace Files", "\u5de5\u4f5c\u533a\u6587\u4ef6")) + "</h4>",
+    '<div class="hall-workspace-files" data-hall-workspace-files>',
+    '<div class="hall-detail-meta">' + escapeHtml(t("Select a thread to view workspace files.", "\u9009\u4e2d\u7ebf\u7a0b\u540e\u67e5\u770b\u5de5\u4f5c\u533a\u6587\u4ef6\u3002")) + "</div>",
+    "</div>",
+    "</div>",
+    "<h4>" + escapeHtml(t("Participants", "\u53c2\u4e0e\u8005")) + "</h4>",
+    '<div class="hall-detail-meta">' + escapeHtml(participantNames) + "</div>",
+    "</div>",
+    "</div>",
+  ].join("\n    ");
 }
 
 function renderInitialDecisionPanel(
-  selectedTaskCard: HallTaskCard | undefined,
-  selectedTask: ProjectTask | undefined,
-  participants: HallParticipant[],
-  language: UiLanguage,
+  _selectedTaskCard: HallTaskCard | undefined,
+  _selectedTask: ProjectTask | undefined,
+  _participants: HallParticipant[],
+  _language: UiLanguage,
 ): string {
-  if (!selectedTaskCard) return "";
-  const hasDiscussionOutcome = Boolean(
-    String(selectedTaskCard.proposal || "").trim()
-    || String(selectedTaskCard.latestSummary || "").trim(),
-  );
-  const hasExecutionPlan = (selectedTaskCard.plannedExecutionOrder || []).length > 0 || (selectedTaskCard.plannedExecutionItems || []).length > 0;
-  const hasVisibleDecision = Boolean(
-    selectedTaskCard.decision
-    || selectedTaskCard.doneWhen
-    || hasDiscussionOutcome
-    || selectedTaskCard.currentOwnerParticipantId
-    || selectedTaskCard.currentExecutionItem
-    || selectedTaskCard.discussionCycle?.closedAt
-    || selectedTaskCard.stage !== "discussion"
-    || hasExecutionPlan
-  );
-  if (!hasVisibleDecision) return "";
-  const participantMap = new Map(participants.map((participant) => [participant.participantId, participant.displayName]));
-  const participantLabel = (participantId: string): string => participantMap.get(participantId) || participantId;
-  const queueLabels = (selectedTaskCard.plannedExecutionOrder || []).map((participantId) => participantLabel(participantId));
-  const actionItems = (selectedTaskCard.plannedExecutionItems || []).length > 0
-    ? (selectedTaskCard.plannedExecutionItems || [])
-    : (selectedTaskCard.plannedExecutionOrder || []).map((participantId, index, list) => ({
-        itemId: `${selectedTaskCard.taskCardId}:${participantId}:${index}`,
-        participantId,
-        task: "",
-        handoffToParticipantId: list[index + 1],
-        handoffWhen: "",
-      }));
-  const decisionState = describeHallDecisionCardState(selectedTaskCard, participants, language);
-  const compactSummaryText = selectedTaskCard.decision || selectedTaskCard.proposal || selectedTaskCard.latestSummary || selectedTaskCard.description || "";
-  const isExpanded = false;
-  const taskArtifacts = selectedTask?.artifacts ?? [];
-  const showPrimaryAction = decisionState.hasPendingStartablePlan && Boolean(decisionState.ownerLabel);
-  const primaryButtonLabel = decisionState.ownerLabel
-    ? (language === "zh"
-      ? `${pickUiText(language, "Start execution with", "开始执行（")}${decisionState.ownerLabel}${pickUiText(language, ")", "）")}`
-      : `${pickUiText(language, "Start execution", "Start execution")} · ${decisionState.ownerLabel}`)
-    : "";
-  const orderButtonLabel = pickUiText(
-    language,
-    selectedTaskCard.stage === "discussion" ? "Plan execution order" : "Adjust execution order",
-    selectedTaskCard.stage === "discussion" ? "安排后续顺序" : "调整执行顺序",
-  );
-  const summaryStats = [
-    `${pickUiText(language, "Stage", "阶段")}：${decisionState.stageText}`,
-    decisionState.ownerLabel ? `${decisionState.ownerHeading}：${decisionState.ownerLabel}` : "",
-    decisionState.stepText ? `${decisionState.stepHeading}：${decisionState.stepText}` : "",
-  ].filter(Boolean);
-  const actionItemMarkup = actionItems.length > 0
-    ? `<div class="hall-decision-row"><strong>${escapeHtml(pickUiText(language, "Action items", "行动项"))}</strong><span>${
-        actionItems.map((item, index) => {
-          const nextParticipantLabel = item.handoffToParticipantId ? participantLabel(item.handoffToParticipantId) : "";
-          const lines = [
-            `${index + 1}. ${participantLabel(item.participantId)}：${item.task || pickUiText(language, "Continue this execution step", "继续这一执行步骤")}`,
-          ];
-          if (nextParticipantLabel) lines.push(`${pickUiText(language, "Then hand off to", "然后交给")} @${nextParticipantLabel}`);
-          if (item.handoffWhen) lines.push(`${pickUiText(language, "When", "交接条件")}：${item.handoffWhen}`);
-          return escapeHtml(lines.join(" · "));
-        }).join("<br/>")
-      }</span></div>`
-    : "";
-  return (
-          `<section class="hall-decision-card ${isExpanded ? "is-expanded" : "is-collapsed"}" data-hall-current-console="initial">` +
-            `<div class="hall-decision-top">` +
-              `<div class="hall-decision-copy">` +
-                `<div class="hall-decision-label">${escapeHtml(pickUiText(language, "Discussion result", "讨论结论"))}</div>` +
-                `<div class="hall-decision-title-row">` +
-                  `<div class="hall-decision-inline-summary" title="${escapeHtml(compactSummaryText || selectedTaskCard.title || "")}">${escapeHtml(compactSummaryText || selectedTaskCard.title || "")}</div>` +
-                  `<button type="button" class="hall-secondary-button hall-secondary-button--compact hall-decision-toggle" onclick="return window.__openclawHallToggleDecisionDetails ? window.__openclawHallToggleDecisionDetails() : false">${escapeHtml(isExpanded ? pickUiText(language, "Hide details", "收起详情") : pickUiText(language, "Show details", "展开详情"))}</button>` +
-                `</div>` +
-                (summaryStats.length > 0
-                  ? `<div class="hall-decision-summary hall-decision-summary--compact">${summaryStats
-                    .map((item) => `<span class="hall-decision-meta-line-item" title="${escapeHtml(item)}">${escapeHtml(item)}</span>`)
-                    .join("<span class=\"hall-decision-meta-sep\">·</span>")}</div>`
-                  : "") +
-              `</div>` +
-            `</div>` +
-            (isExpanded ? (
-              `<div class="hall-decision-body">` +
-                `<div class="hall-decision-row"><strong>${escapeHtml(pickUiText(language, "Thread", "线程"))}</strong><span title="${escapeHtml(selectedTaskCard.title || "")}">${escapeHtml(selectedTaskCard.title || "-")}</span></div>` +
-                (selectedTaskCard.decision ? `<div class="hall-decision-row"><strong>${escapeHtml(pickUiText(language, "Decision", "决策"))}</strong><span title="${escapeHtml(selectedTaskCard.decision)}">${escapeHtml(selectedTaskCard.decision)}</span></div>` : "") +
-                (selectedTaskCard.doneWhen ? `<div class="hall-decision-row"><strong>${escapeHtml(pickUiText(language, "Done when", "完成标准"))}</strong><span title="${escapeHtml(selectedTaskCard.doneWhen)}">${escapeHtml(selectedTaskCard.doneWhen)}</span></div>` : "") +
-                (queueLabels.length > 0 ? `<div class="hall-decision-row"><strong>${escapeHtml(pickUiText(language, "Execution order", "执行顺序"))}</strong><span>${escapeHtml(queueLabels.join(" → "))}</span></div>` : "") +
-                actionItemMarkup +
-                (taskArtifacts.length > 0 ? `<div class="hall-decision-row"><strong>${escapeHtml(pickUiText(language, "Artifacts", "产物"))}</strong><div class="hall-artifact-list">${renderArtifactChips(taskArtifacts)}</div></div>` : "") +
-              `</div>`
-            ) : "") +
-            `<div class="hall-decision-actions">` +
-              (showPrimaryAction ? `<button type="button" class="hall-button" data-hall-start-execution onclick="return window.__openclawHallAssignOwner ? window.__openclawHallAssignOwner() : false">${escapeHtml(primaryButtonLabel)}</button>` : "") +
-              `<button type="button" class="hall-secondary-button hall-secondary-button--accent" data-hall-plan-order onclick="return window.__openclawHallSetExecutionOrder ? window.__openclawHallSetExecutionOrder() : false">${escapeHtml(orderButtonLabel)}</button>` +
-              `<button type="button" class="hall-secondary-button" data-hall-continue-discussion onclick="return window.__openclawHallContinueDiscussion ? window.__openclawHallContinueDiscussion() : false">${escapeHtml(pickUiText(language, "Continue discussion", "继续讨论"))}</button>` +
-            `</div>` +
-            `<div class="hall-decision-helper">${escapeHtml(decisionState.hasPendingStartablePlan
-              ? (decisionState.ownerLabel
-                ? pickUiText(language, "Order first, then start. Handoffs stay in this thread.", "先排顺序，再开始执行。交接会继续写回这条线程。")
-                : pickUiText(language, "Plan the order first, then start the first owner here.", "先安排顺序，再从这里开始第一位。"))
-              : pickUiText(language, "Stay in this thread for updates, handoffs, and review.", "留在这条线程里看更新、交接和审核。"))}</div>` +
-          `</section>`
-  );
+  // Decision panel removed — group chat model has no workflow stages
+  return "";
 }
 
 function renderMentionChips(participants: HallParticipant[], language: UiLanguage): string {
@@ -3175,13 +3800,10 @@ function renderParticipantRoster(participants: HallParticipant[], language: UiLa
 }
 
 
-function stageLabel(stage: HallTaskCard["stage"], language: UiLanguage): string {
-  if (stage === "discussion") return pickUiText(language, "Discussion", "讨论中");
-  if (stage === "execution") return pickUiText(language, "Execution", "执行中");
-  if (stage === "review") return pickUiText(language, "Review", "审核中");
-  if (stage === "blocked") return pickUiText(language, "Blocked", "卡住");
-  return pickUiText(language, "Completed", "已完成");
-}
+// Removed stageLabel(stage, language): the 5-state HallTaskStage machine is
+// gone. Server and client now derive the label from status + executionLock
+// + needs-human-review (resolveHallActivityLabel on the server, activityLabel
+// in the embedded script).
 
 function messageKindLabel(kind: HallMessage["kind"], language: UiLanguage): string {
   if (kind === "task") return pickUiText(language, "Task", "任务");
@@ -3196,11 +3818,9 @@ function messageKindLabel(kind: HallMessage["kind"], language: UiLanguage): stri
 }
 
 function roleLabel(role: HallParticipant["semanticRole"], language: UiLanguage): string {
-  if (role === "planner") return pickUiText(language, "Planner", "策划");
-  if (role === "coder") return pickUiText(language, "Coder", "执行");
-  if (role === "reviewer") return pickUiText(language, "Reviewer", "审核");
-  if (role === "manager") return pickUiText(language, "Manager", "经理");
-  return pickUiText(language, "Generalist", "通用");
+  if (role === "manager") return pickUiText(language, "Agent Manager", "智能体管理者");
+  if (role === "observer") return pickUiText(language, "Observer & Manager", "观察者与管理者");
+  return pickUiText(language, "Executor", "执行者");
 }
 
 function pickUiText(language: UiLanguage, en: string, zh: string): string {
@@ -3230,18 +3850,21 @@ function initialsForName(value: string): string {
 
 function renderHallPixelAvatar(label: string, className: string): string {
   const identity = resolveHallAvatarIdentity(label);
+  if (identity.customImage) {
+    return `<div class="${escapeHtml(className)} hall-agent-avatar" style="--agent-accent:${escapeHtml(identity.accent)};" data-animal="${escapeHtml(identity.animal)}" aria-hidden="true"><div class="agent-stage"><img class="agent-avatar-img" src="/avatars/${escapeHtml(identity.customImage)}" alt="" loading="lazy" /></div></div>`;
+  }
   return `<div class="${escapeHtml(className)} hall-agent-avatar" style="--agent-accent:${escapeHtml(identity.accent)};" data-animal="${escapeHtml(identity.animal)}" aria-hidden="true"><div class="agent-stage"><canvas class="agent-pixel-canvas" width="128" height="128"></canvas></div></div>`;
 }
 
-function resolveHallAvatarIdentity(input: string): { animal: string; accent: string; asset: string } {
+function resolveHallAvatarIdentity(input: string): { animal: string; accent: string; asset: string; customImage?: string } {
   const normalized = input.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, "");
   for (const entry of HALL_AVATAR_CATALOG) {
     if (entry.keywords.some((keyword) => normalized.includes(keyword))) {
-      return { animal: entry.animal, accent: entry.accent, asset: entry.asset };
+      return { animal: entry.animal, accent: entry.accent, asset: entry.asset, customImage: "customImage" in entry ? entry.customImage : undefined };
     }
   }
   const fallback = HALL_AVATAR_CATALOG[Math.abs(stableHallHash(normalized || "default")) % HALL_AVATAR_CATALOG.length];
-  return { animal: fallback.animal, accent: fallback.accent, asset: fallback.asset };
+  return { animal: fallback.animal, accent: fallback.accent, asset: fallback.asset, customImage: "customImage" in fallback ? fallback.customImage : undefined };
 }
 
 function stableHallHash(input: string): number {
@@ -3256,18 +3879,24 @@ function formatCompactTimestamp(value: string | undefined, language: UiLanguage)
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  const now = new Date();
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
+  const locale = language === "zh" ? "zh-CN" : "en-US";
+  const dayKey = (input: Date) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: UI_TIMEZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(input);
+  const sameDay = dayKey(date) === dayKey(new Date());
   if (sameDay) {
-    return date.toLocaleTimeString(language === "zh" ? "zh-CN" : "en-US", {
+    return date.toLocaleTimeString(locale, {
+      timeZone: UI_TIMEZONE,
       hour: "2-digit",
       minute: "2-digit",
     });
   }
-  return date.toLocaleDateString(language === "zh" ? "zh-CN" : "en-US", {
+  return date.toLocaleDateString(locale, {
+    timeZone: UI_TIMEZONE,
     month: "short",
     day: "numeric",
   });
@@ -3325,7 +3954,7 @@ function renderMarkdown(value: string): string {
     html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     html = html.replace(/(^|\s)\*([^*]+)\*(?=\s|$)/g, "$1<em>$2</em>");
-    html = html.replace(/(^|[\s(>\[\{<,.;:!?"'“”‘’，。！？；：、）】」』》])@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g, '$1<span class="hall-md-mention">@$2</span>');
+    html = html.replace(/(^|[\s(>\[\{<,.;:!?"'\u201c\u201d\u2018\u2019，。！？；：、）】」』》])@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g, '$1<span class="hall-md-mention">@$2</span>');
     html = html.replace(/(<br>)@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g, '$1<span class="hall-md-mention">@$2</span>');
     html = html.replace(inlinePlaceholderPattern, (_match, index) => inlineBlocks[Number(index)] || "");
     return html;
@@ -3349,7 +3978,69 @@ function renderMarkdown(value: string): string {
   const flushHeading = (level: number, content: string) => {
     parts.push(`<h${level}>${renderInline(content)}</h${level}>`);
   };
-  for (const line of lines) {
+  const splitTableRow = (row: string): string[] =>
+    row.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  const tablePipeLine = (value: string | undefined): string | null => {
+    if (value === undefined) return null;
+    const t = value.trim();
+    if (t.length < 2 || t.charAt(0) !== "|" || t.charAt(t.length - 1) !== "|") return null;
+    return t;
+  };
+  const tableSeparatorCellPattern = /^:?-+:?$/;
+  const tryParseTable = (
+    sourceLines: string[],
+    startIndex: number,
+  ): { html: string; consumed: number } | null => {
+    const headerTrim = tablePipeLine(sourceLines[startIndex]);
+    if (!headerTrim) return null;
+    const sepTrim = tablePipeLine(sourceLines[startIndex + 1]);
+    if (!sepTrim) return null;
+    const sepCells = splitTableRow(sepTrim);
+    if (sepCells.length === 0 || !sepCells.every((c) => tableSeparatorCellPattern.test(c))) return null;
+    const headerCells = splitTableRow(headerTrim);
+    if (headerCells.length !== sepCells.length) return null;
+    const aligns = sepCells.map((c) => {
+      const left = c.startsWith(":");
+      const right = c.endsWith(":");
+      if (left && right) return "center";
+      if (right) return "right";
+      if (left) return "left";
+      return "";
+    });
+    const bodyRows: string[][] = [];
+    let cursor = startIndex + 2;
+    while (cursor < sourceLines.length) {
+      const rowTrim = tablePipeLine(sourceLines[cursor]);
+      if (!rowTrim) break;
+      bodyRows.push(splitTableRow(rowTrim));
+      cursor++;
+    }
+    const colCount = headerCells.length;
+    const cellHtml = (text: string, align: string, isHeader: boolean): string => {
+      const tag = isHeader ? "th" : "td";
+      const styleAttr = align ? ` style="text-align:${align}"` : "";
+      return `<${tag}${styleAttr}>${renderInline(text)}</${tag}>`;
+    };
+    const headHtml = `<thead><tr>${headerCells
+      .map((c, idx) => cellHtml(c, aligns[idx] || "", true))
+      .join("")}</tr></thead>`;
+    let bodyHtml = "";
+    if (bodyRows.length > 0) {
+      bodyHtml = `<tbody>${bodyRows
+        .map((row) => {
+          const padded: string[] = [];
+          for (let k = 0; k < colCount; k++) padded.push(row[k] ?? "");
+          return `<tr>${padded.map((c, idx) => cellHtml(c, aligns[idx] || "", false)).join("")}</tr>`;
+        })
+        .join("")}</tbody>`;
+    }
+    return {
+      html: `<table class="hall-md-table">${headHtml}${bodyHtml}</table>`,
+      consumed: cursor - startIndex,
+    };
+  };
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
     const trimmed = line.trim();
     const ul = trimmed.match(/^[-*]\s+(.+)$/);
     const ol = trimmed.match(/^\d+\.\s+(.+)$/);
@@ -3372,6 +4063,15 @@ function renderMarkdown(value: string): string {
       flushList();
       flushQuote();
       flushHeading(Math.min(heading[1].length, 6), heading[2]);
+      continue;
+    }
+    const table = tryParseTable(lines, lineIdx);
+    if (table) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      parts.push(table.html);
+      lineIdx += table.consumed - 1;
       continue;
     }
     flushQuote();
@@ -3398,20 +4098,66 @@ function renderMarkdown(value: string): string {
   let html = parts.join("");
   html = html.replace(/@@CODEBLOCK(\d+)@@/g, (_match, index) => codeBlocks[Number(index)] || "");
   html = html.replace(inlinePlaceholderPattern, (_match, index) => inlineBlocks[Number(index)] || "");
+  html = html.replace(
+    /\[\[tool:([^\]|]+)(?:\|([^\]|]*))?(?:\|~([A-Za-z0-9+/=]*))?\]\]/g,
+    (_match, name, detail, encoded) => {
+      const parsed = decodeToolPillPayload(encoded);
+      const isError = parsed?.e === 1;
+      const statusClass = isError ? "is-error" : "is-completed";
+      const mark = isError ? "\u26a0" : "\u2713";
+      const titleAttr = detail ? ` title="${escapeHtml(detail)}"` : "";
+      const dataAttrs: string[] = [];
+      if (parsed?.i) dataAttrs.push(`data-tool-input="${escapeHtml(parsed.i)}"`);
+      if (parsed?.o) dataAttrs.push(`data-tool-output="${escapeHtml(parsed.o)}"`);
+      if (parsed?.i || parsed?.o) dataAttrs.push(`data-tool-name="${escapeHtml(String(name))}"`);
+      if (isError) dataAttrs.push(`data-tool-error="1"`);
+      const expandable = parsed?.i || parsed?.o ? " data-tool-expandable=\"1\"" : "";
+      const attrs = (dataAttrs.length ? " " + dataAttrs.join(" ") : "") + expandable;
+      return `<span class="hall-tool-pill ${statusClass}"${titleAttr}${attrs}>${mark} ${escapeHtml(name)}</span>`;
+    },
+  );
   return html;
 }
 
-function renderArtifactChips(artifactRefs: TaskArtifact[] | undefined): string {
+function renderArtifactChips(artifactRefs: TaskArtifact[] | undefined, fileAttachments?: HallFileAttachment[]): string {
   if (!artifactRefs || artifactRefs.length === 0) return "";
+  const fileMap = new Map<string, HallFileAttachment>();
+  if (fileAttachments) {
+    for (const f of fileAttachments) {
+      if (f?.fileId) fileMap.set(f.fileId, f);
+    }
+  }
   return artifactRefs
     .filter((artifact) => artifact?.location)
     .map((artifact) => {
       const label = escapeHtml((artifact.label || artifact.location || "").trim());
       const href = escapeHtml((artifact.location || "").trim());
       const kind = escapeHtml((artifact.type || "other").trim());
+      const fileMeta = artifact.artifactId ? fileMap.get(artifact.artifactId) : undefined;
+      if (fileMeta && fileMeta.mimeType?.startsWith("image/")) {
+        return `<a class="hall-file-preview" href="${href}" target="_blank" rel="noreferrer"><img class="hall-file-img" src="${href}" alt="${label}" loading="lazy" /></a>`;
+      }
       return `<a class="hall-artifact-chip" href="${href}" target="_blank" rel="noreferrer"><span class="hall-artifact-chip-kind">${kind}</span><span class="hall-artifact-chip-label">${label}</span></a>`;
     })
     .join("");
+}
+
+function decodeToolPillPayload(
+  encoded: string | undefined,
+): { i?: string; o?: string; e?: number } | null {
+  if (!encoded) return null;
+  try {
+    const json = Buffer.from(encoded, "base64").toString("utf8");
+    const parsed = JSON.parse(json) as { i?: unknown; o?: unknown; e?: unknown };
+    if (!parsed || typeof parsed !== "object") return null;
+    const out: { i?: string; o?: string; e?: number } = {};
+    if (typeof parsed.i === "string") out.i = parsed.i;
+    if (typeof parsed.o === "string") out.o = parsed.o;
+    if (typeof parsed.e === "number") out.e = parsed.e;
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 function escapeHtml(value: string): string {

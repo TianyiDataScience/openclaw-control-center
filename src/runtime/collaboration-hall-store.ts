@@ -11,7 +11,6 @@ import type {
   HallMessageKind,
   HallParticipant,
   HallTaskCard,
-  HallTaskStage,
   MentionTarget,
 } from "../types";
 
@@ -48,7 +47,6 @@ const HALL_MESSAGE_KINDS: HallMessageKind[] = [
   "result",
   "system",
 ];
-const HALL_TASK_STAGES: HallTaskStage[] = ["discussion", "execution", "review", "blocked", "completed"];
 const HALL_MESSAGE_CONTENT_MAX_CHARS = Number.POSITIVE_INFINITY;
 
 export class CollaborationHallStoreValidationError extends Error {
@@ -71,7 +69,6 @@ export interface CreateHallTaskCardInput {
   roomId?: string;
   title: string;
   description: string;
-  stage?: HallTaskStage;
   status?: HallTaskCard["status"];
   createdByParticipantId: string;
   currentOwnerParticipantId?: string;
@@ -94,7 +91,6 @@ export interface UpdateHallTaskCardInput {
   roomId?: string | null;
   title?: string;
   description?: string;
-  stage?: HallTaskStage;
   status?: HallTaskCard["status"];
   currentOwnerParticipantId?: string | null;
   currentOwnerLabel?: string | null;
@@ -108,9 +104,13 @@ export interface UpdateHallTaskCardInput {
   decision?: string | null;
   doneWhen?: string | null;
   latestSummary?: string | null;
-  discussionCycle?: HallTaskCard["discussionCycle"] | null;
   executionLock?: HallTaskCard["executionLock"] | null;
   sessionKeys?: string[];
+  parallelGroups?: HallTaskCard["parallelGroups"] | null;
+  originalAssignerParticipantId?: string | null;
+  autoRoundsByAgent?: Record<string, number> | null;
+  humanReviewedAt?: string | null;
+  lastAgentActivityAt?: string | null;
   archivedAt?: string | null;
   archivedByParticipantId?: string | null;
   archivedByLabel?: string | null;
@@ -268,11 +268,10 @@ export function listHallMessages(
 
 export function listHallTaskCards(
   store: CollaborationTaskCardStoreSnapshot,
-  options?: { hallId?: string; stage?: HallTaskStage; includeArchived?: boolean },
+  options?: { hallId?: string; includeArchived?: boolean },
 ): HallTaskCard[] {
   return store.taskCards
     .filter((card) => !options?.hallId || card.hallId === options.hallId)
-    .filter((card) => !options?.stage || card.stage === options.stage)
     .filter((card) => options?.includeArchived === true || !card.archivedAt)
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
 }
@@ -321,7 +320,6 @@ export async function createHallTaskCard(input: CreateHallTaskCardInput): Promis
     roomId: payload.roomId,
     title: payload.title,
     description: payload.description,
-    stage: payload.stage ?? "discussion",
     status: payload.status ?? "todo",
     createdByParticipantId: payload.createdByParticipantId,
     currentOwnerParticipantId: payload.currentOwnerParticipantId,
@@ -365,7 +363,21 @@ export async function createHallTaskCard(input: CreateHallTaskCardInput): Promis
   return { hallPath, path, taskCard };
 }
 
-export async function updateHallTaskCard(input: UpdateHallTaskCardInput): Promise<{ path: string; taskCard: HallTaskCard }> {
+/**
+ * Serialization chain for task card writes.
+ * Prevents lost updates when multiple parallel agents complete simultaneously
+ * and try to update the same task card (load-modify-save race).
+ * Single Node.js process — a promise chain is sufficient.
+ */
+let taskCardWriteChain: Promise<unknown> = Promise.resolve();
+
+export function updateHallTaskCard(input: UpdateHallTaskCardInput): Promise<{ path: string; taskCard: HallTaskCard }> {
+  const result = taskCardWriteChain.then(() => updateHallTaskCardUnsafe(input));
+  taskCardWriteChain = result.catch(() => undefined);
+  return result;
+}
+
+async function updateHallTaskCardUnsafe(input: UpdateHallTaskCardInput): Promise<{ path: string; taskCard: HallTaskCard }> {
   const payload = validateUpdateHallTaskCardInput(input);
   const taskCardStore = await loadCollaborationTaskCardStore();
   const taskCard = getHallTaskCard(taskCardStore, payload.taskCardId);
@@ -377,7 +389,6 @@ export async function updateHallTaskCard(input: UpdateHallTaskCardInput): Promis
   if (payload.roomId !== undefined) taskCard.roomId = payload.roomId ?? undefined;
   if (payload.title !== undefined) taskCard.title = payload.title;
   if (payload.description !== undefined) taskCard.description = payload.description;
-  if (payload.stage !== undefined) taskCard.stage = payload.stage;
   if (payload.status !== undefined) taskCard.status = payload.status;
   if (payload.currentOwnerParticipantId !== undefined) {
     taskCard.currentOwnerParticipantId = payload.currentOwnerParticipantId ?? undefined;
@@ -395,9 +406,17 @@ export async function updateHallTaskCard(input: UpdateHallTaskCardInput): Promis
   if (payload.decision !== undefined) taskCard.decision = payload.decision ?? undefined;
   if (payload.doneWhen !== undefined) taskCard.doneWhen = payload.doneWhen ?? undefined;
   if (payload.latestSummary !== undefined) taskCard.latestSummary = payload.latestSummary ?? undefined;
-  if (payload.discussionCycle !== undefined) taskCard.discussionCycle = payload.discussionCycle ?? undefined;
   if (payload.executionLock !== undefined) taskCard.executionLock = payload.executionLock ?? undefined;
+  if (payload.parallelGroups !== undefined) taskCard.parallelGroups = payload.parallelGroups ?? undefined;
+  if (payload.humanReviewedAt !== undefined) taskCard.humanReviewedAt = payload.humanReviewedAt ?? undefined;
+  if (payload.lastAgentActivityAt !== undefined) taskCard.lastAgentActivityAt = payload.lastAgentActivityAt ?? undefined;
   if (payload.sessionKeys !== undefined) taskCard.sessionKeys = payload.sessionKeys;
+  if (payload.originalAssignerParticipantId !== undefined) {
+    taskCard.originalAssignerParticipantId = payload.originalAssignerParticipantId ?? undefined;
+  }
+  if (payload.autoRoundsByAgent !== undefined) {
+    taskCard.autoRoundsByAgent = payload.autoRoundsByAgent ?? undefined;
+  }
   if (payload.archivedAt !== undefined) taskCard.archivedAt = payload.archivedAt ?? undefined;
   if (payload.archivedByParticipantId !== undefined) {
     taskCard.archivedByParticipantId = payload.archivedByParticipantId ?? undefined;
@@ -528,7 +547,20 @@ export async function deleteHallMessagesForTaskCard(
   return { hallPath, path, removedCount };
 }
 
-export async function appendHallMessage(input: AppendHallMessageInput): Promise<{ path: string; hallPath: string; message: HallMessage }> {
+/**
+ * Serialization chain for hall message writes.
+ * Same rationale as taskCardWriteChain — prevents lost updates
+ * when parallel agents append messages concurrently.
+ */
+let hallMessageWriteChain: Promise<unknown> = Promise.resolve();
+
+export function appendHallMessage(input: AppendHallMessageInput): Promise<{ path: string; hallPath: string; message: HallMessage }> {
+  const result = hallMessageWriteChain.then(() => appendHallMessageUnsafe(input));
+  hallMessageWriteChain = result.catch(() => undefined);
+  return result;
+}
+
+async function appendHallMessageUnsafe(input: AppendHallMessageInput): Promise<{ path: string; hallPath: string; message: HallMessage }> {
   const payload = validateAppendHallMessageInput(input);
   const [hallStore, messageStore] = await Promise.all([
     loadCollaborationHallStore(),
@@ -598,7 +630,6 @@ function validateCreateHallTaskCardInput(input: CreateHallTaskCardInput): Create
   const taskCardId = optionalString(input.taskCardId, "taskCardId", 180, issues);
   const currentOwnerParticipantId = optionalString(input.currentOwnerParticipantId, "currentOwnerParticipantId", 160, issues);
   const currentOwnerLabel = optionalString(input.currentOwnerLabel, "currentOwnerLabel", 120, issues);
-  const stage = optionalHallTaskStage(input.stage, "stage", issues);
   const status = optionalTaskStatus(input.status, "status", issues);
   const blockers = optionalStringArray(input.blockers, "blockers", 240, issues);
   const requiresInputFrom = optionalStringArray(input.requiresInputFrom, "requiresInputFrom", 120, issues);
@@ -623,7 +654,6 @@ function validateCreateHallTaskCardInput(input: CreateHallTaskCardInput): Create
     roomId,
     title,
     description,
-    stage,
     status,
     createdByParticipantId,
     currentOwnerParticipantId,
@@ -664,7 +694,6 @@ function validateUpdateHallTaskCardInput(input: UpdateHallTaskCardInput): Update
       : input.currentOwnerLabel === null
         ? null
         : optionalString(input.currentOwnerLabel, "currentOwnerLabel", 120, issues);
-  const stage = input.stage === undefined ? undefined : optionalHallTaskStage(input.stage, "stage", issues);
   const status = input.status === undefined ? undefined : optionalTaskStatus(input.status, "status", issues);
   const blockers = input.blockers === undefined ? undefined : optionalStringArray(input.blockers, "blockers", 240, issues);
   const requiresInputFrom =
@@ -730,6 +759,18 @@ function validateUpdateHallTaskCardInput(input: UpdateHallTaskCardInput): Update
         : optionalString(input.archivedByLabel, "archivedByLabel", 120, issues);
   const sessionKeys =
     input.sessionKeys === undefined ? undefined : optionalStringArray(input.sessionKeys, "sessionKeys", 240, issues);
+  const originalAssignerParticipantId =
+    input.originalAssignerParticipantId === undefined
+      ? undefined
+      : input.originalAssignerParticipantId === null
+        ? null
+        : optionalString(input.originalAssignerParticipantId, "originalAssignerParticipantId", 160, issues);
+  const autoRoundsByAgent =
+    input.autoRoundsByAgent === undefined
+      ? undefined
+      : input.autoRoundsByAgent === null
+        ? null
+        : validateAutoRoundsByAgent(input.autoRoundsByAgent, issues);
 
   if (issues.length > 0) {
     throw new CollaborationHallStoreValidationError("Invalid hall task card patch payload.", issues);
@@ -743,7 +784,6 @@ function validateUpdateHallTaskCardInput(input: UpdateHallTaskCardInput): Update
     roomId,
     currentOwnerParticipantId,
     currentOwnerLabel,
-    stage,
     status,
     blockers,
     requiresInputFrom,
@@ -759,7 +799,33 @@ function validateUpdateHallTaskCardInput(input: UpdateHallTaskCardInput): Update
     archivedByParticipantId,
     archivedByLabel,
     sessionKeys,
+    originalAssignerParticipantId,
+    autoRoundsByAgent,
   };
+}
+
+function validateAutoRoundsByAgent(
+  input: unknown,
+  issues: string[],
+): Record<string, number> | undefined {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    issues.push("autoRoundsByAgent");
+    return undefined;
+  }
+  const result: Record<string, number> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    const trimmedKey = String(key || "").trim();
+    if (!trimmedKey || trimmedKey.length > 160) {
+      issues.push("autoRoundsByAgent");
+      return undefined;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1_000_000) {
+      issues.push("autoRoundsByAgent");
+      return undefined;
+    }
+    result[trimmedKey] = Math.floor(value);
+  }
+  return result;
 }
 
 function validateArchiveHallTaskCardInput(input: ArchiveHallTaskCardInput): ArchiveHallTaskCardInput {
@@ -909,14 +975,16 @@ function normalizeTaskCard(input: unknown): HallTaskCard | undefined {
   const taskId = asNonEmptyString(root.taskId);
   const title = asNonEmptyString(root.title);
   const description = asNonEmptyString(root.description);
-  const stage = asHallTaskStage(root.stage);
   const status = asTaskStatus(root.status);
   const createdByParticipantId = asNonEmptyString(root.createdByParticipantId);
   const createdAt = normalizeIsoString(root.createdAt);
   const updatedAt = normalizeIsoString(root.updatedAt);
-  if (!hallId || !taskCardId || !projectId || !taskId || !title || !description || !stage || !status || !createdByParticipantId || !createdAt || !updatedAt) {
+  if (!hallId || !taskCardId || !projectId || !taskId || !title || !description || !status || !createdByParticipantId || !createdAt || !updatedAt) {
     return undefined;
   }
+  // Legacy fields `stage` and `discussionCycle` are intentionally ignored here;
+  // old runtime/collaboration-task-cards.json files retain them but the runtime
+  // no longer persists or reads them.
   return {
     hallId,
     taskCardId,
@@ -925,7 +993,6 @@ function normalizeTaskCard(input: unknown): HallTaskCard | undefined {
     roomId: asNonEmptyString(root.roomId),
     title,
     description,
-    stage,
     status,
     createdByParticipantId,
     currentOwnerParticipantId: asNonEmptyString(root.currentOwnerParticipantId),
@@ -941,8 +1008,11 @@ function normalizeTaskCard(input: unknown): HallTaskCard | undefined {
     plannedExecutionItems: normalizeExecutionItems(root.plannedExecutionItems),
     currentExecutionItem: normalizeExecutionItem(root.currentExecutionItem),
     sessionKeys: toStringArray(root.sessionKeys, 240),
-    discussionCycle: normalizeDiscussionCycle(root.discussionCycle),
     executionLock: normalizeExecutionLock(root.executionLock),
+    originalAssignerParticipantId: asNonEmptyString(root.originalAssignerParticipantId),
+    autoRoundsByAgent: normalizeAutoRoundsByAgent(root.autoRoundsByAgent),
+    lastAgentActivityAt: normalizeIsoString(root.lastAgentActivityAt),
+    humanReviewedAt: normalizeIsoString(root.humanReviewedAt),
     archivedAt: normalizeIsoString(root.archivedAt),
     archivedByParticipantId: asNonEmptyString(root.archivedByParticipantId),
     archivedByLabel: asNonEmptyString(root.archivedByLabel),
@@ -981,21 +1051,16 @@ function normalizeHallMessage(input: unknown): HallMessage | undefined {
   };
 }
 
-function normalizeDiscussionCycle(input: unknown): HallTaskCard["discussionCycle"] | undefined {
-  const root = asObject(input);
-  if (!root) return undefined;
-  const cycleId = asNonEmptyString(root.cycleId);
-  const openedAt = normalizeIsoString(root.openedAt);
-  const openedByParticipantId = asNonEmptyString(root.openedByParticipantId);
-  if (!cycleId || !openedAt || !openedByParticipantId) return undefined;
-  return {
-    cycleId,
-    openedAt,
-    openedByParticipantId,
-    expectedParticipantIds: toStringArray(root.expectedParticipantIds, 160),
-    completedParticipantIds: toStringArray(root.completedParticipantIds, 160),
-    closedAt: normalizeIsoString(root.closedAt),
-  };
+function normalizeAutoRoundsByAgent(input: unknown): Record<string, number> | undefined {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return undefined;
+  const result: Record<string, number> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    const trimmedKey = String(key || "").trim();
+    if (!trimmedKey || trimmedKey.length > 160) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) continue;
+    result[trimmedKey] = Math.floor(value);
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function normalizeExecutionItems(input: unknown): HallTaskCard["plannedExecutionItems"] {
@@ -1230,13 +1295,6 @@ function optionalTaskStatus(value: HallTaskCard["status"] | undefined, field: st
   return undefined;
 }
 
-function optionalHallTaskStage(value: HallTaskStage | undefined, field: string, issues: string[]): HallTaskStage | undefined {
-  if (value === undefined) return undefined;
-  if (HALL_TASK_STAGES.includes(value)) return value;
-  issues.push(field);
-  return undefined;
-}
-
 function optionalHallMessageKind(value: HallMessageKind | undefined, field: string, issues: string[]): HallMessageKind | undefined {
   if (value === undefined) return undefined;
   if (HALL_MESSAGE_KINDS.includes(value)) return value;
@@ -1264,14 +1322,8 @@ function asHallMessageKind(value: unknown): HallMessageKind | undefined {
     : undefined;
 }
 
-function asHallTaskStage(value: unknown): HallTaskStage | undefined {
-  return typeof value === "string" && HALL_TASK_STAGES.includes(value as HallTaskStage)
-    ? (value as HallTaskStage)
-    : undefined;
-}
-
 function asHallSemanticRole(value: unknown): HallParticipant["semanticRole"] | undefined {
-  return value === "planner" || value === "coder" || value === "reviewer" || value === "manager" || value === "generalist"
+  return value === "planner" || value === "coder" || value === "reviewer" || value === "manager" || value === "observer" || value === "generalist"
     ? value
     : undefined;
 }

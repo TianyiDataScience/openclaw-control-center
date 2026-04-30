@@ -681,15 +681,14 @@ async function loadRuntimeUsageData(): Promise<RuntimeUsageData> {
   let agentDirs: Array<{ name: string; path: string }> = [];
   try {
     const entries = await readdir(OPENCLAW_AGENTS_DIR, { withFileTypes: true });
-    agentDirs = entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
-        name: entry.name,
-        path: join(OPENCLAW_AGENTS_DIR, entry.name),
-      }));
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      agentDirs.push({ name: entry.name, path: join(OPENCLAW_AGENTS_DIR, entry.name) });
+    }
   } catch {
-    return out;
+    // directory not found — skip
   }
+  if (agentDirs.length === 0) return out;
 
   const lookbackLowerBoundMs = Date.now() - (RUNTIME_USAGE_LOOKBACK_DAYS - 1) * DAY_MS;
   const sessionById = new Map<string, RuntimeSessionContext>();
@@ -810,7 +809,7 @@ async function loadRuntimeUsageEventsForAgent(
     };
   }
 
-  const sessionFiles = fileNames.filter((name) => name.endsWith(".jsonl"));
+  const sessionFiles = fileNames.filter((name) => name.endsWith(".jsonl") || name.includes(".jsonl.reset."));
   if (sessionFiles.length === 0) {
     return {
       events,
@@ -829,7 +828,8 @@ async function loadRuntimeUsageEventsForAgent(
 
       const raw = await readFile(filePath, "utf8");
       const lines = raw.replace(/\r/g, "").split("\n");
-      let sessionId = fileName.slice(0, -".jsonl".length);
+      const jsonlIdx = fileName.indexOf(".jsonl");
+      let sessionId = jsonlIdx >= 0 ? fileName.slice(0, jsonlIdx) : fileName;
       const fileEvents: RuntimeUsageEvent[] = [];
 
       for (const line of lines) {

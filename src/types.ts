@@ -43,8 +43,7 @@ export type ProjectState = "planned" | "active" | "blocked" | "done";
 export type RoomStage = "intake" | "discussion" | "assigned" | "executing" | "review" | "completed";
 export type MessageKind = "chat" | "proposal" | "decision" | "handoff" | "status" | "result";
 export type RoomParticipantRole = "human" | "planner" | "coder" | "reviewer" | "manager";
-export type HallSemanticRole = "planner" | "coder" | "reviewer" | "manager" | "generalist";
-export type HallTaskStage = "discussion" | "execution" | "review" | "blocked" | "completed";
+export type HallSemanticRole = "planner" | "coder" | "reviewer" | "manager" | "observer" | "generalist";
 export type HallMessageKind =
   | "chat"
   | "task"
@@ -56,13 +55,21 @@ export type HallMessageKind =
   | "result"
   | "system";
 
-export type TaskArtifactType = "code" | "doc" | "link" | "other";
+export type TaskArtifactType = "code" | "doc" | "link" | "file" | "other";
 
 export interface TaskArtifact {
   artifactId: string;
   type: TaskArtifactType;
   label: string;
   location: string;
+}
+
+export interface HallFileAttachment {
+  fileId: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  storedFileName: string;
 }
 
 export interface RollbackPlan {
@@ -227,15 +234,6 @@ export interface HallParticipant {
   isHuman?: boolean;
 }
 
-export interface TaskDiscussionCycle {
-  cycleId: string;
-  openedAt: string;
-  openedByParticipantId: string;
-  expectedParticipantIds: string[];
-  completedParticipantIds: string[];
-  closedAt?: string;
-}
-
 export interface HallMessagePayload {
   projectId?: string;
   taskId?: string;
@@ -249,13 +247,22 @@ export interface HallMessagePayload {
   nextOwnerParticipantId?: string;
   reviewOutcome?: "approved" | "rejected";
   taskStatus?: TaskState;
-  taskStage?: HallTaskStage;
   status?: string;
   handoff?: StructuredHandoffPacket;
   artifactRefs?: TaskArtifact[];
+  fileAttachments?: HallFileAttachment[];
+  toolCalls?: Array<{
+    toolName: string;
+    toolStatus: string;
+    detail?: string;
+    input?: string;
+    output?: string;
+    isError?: boolean;
+  }>;
   sessionKey?: string;
   sourceSessionKey?: string;
   sourceTool?: string;
+  model?: string;
 }
 
 export interface HallMessage {
@@ -284,7 +291,6 @@ export interface HallTaskCard {
   roomId?: string;
   title: string;
   description: string;
-  stage: HallTaskStage;
   status: TaskState;
   createdByParticipantId: string;
   currentOwnerParticipantId?: string;
@@ -300,8 +306,23 @@ export interface HallTaskCard {
   plannedExecutionItems: HallExecutionItem[];
   currentExecutionItem?: HallExecutionItem;
   sessionKeys: string[];
-  discussionCycle?: TaskDiscussionCycle;
   executionLock?: ExecutionLock;
+  parallelGroups?: HallParallelGroup[];
+  // First human or main-agent who assigned work on this card. Agents finishing
+  // a sub-task are prompted to @-report here instead of the peer who just
+  // messaged them, which breaks A→B→A ping-pong.
+  originalAssignerParticipantId?: string;
+  // Auto-chain / observer dispatch counts per agent within the current
+  // human-initiated round. Reset when an operator posts. When a count hits
+  // AUTO_ROUND_BLOCK_THRESHOLD, the card auto-pauses into "blocked" status and
+  // needs human review before any further auto-dispatch.
+  autoRoundsByAgent?: Record<string, number>;
+  // Last time any agent posted to this thread. Used to compute "needs human review"
+  // (thread idle for > HUMAN_REVIEW_IDLE_WINDOW_MS with no pending dispatch).
+  lastAgentActivityAt?: string;
+  // Set when an operator marks the thread as human-reviewed; cleared when a new
+  // agent message lands. Suppresses the "needs human review" signal.
+  humanReviewedAt?: string;
   archivedAt?: string;
   archivedByParticipantId?: string;
   archivedByLabel?: string;
@@ -315,6 +336,29 @@ export interface HallExecutionItem {
   task: string;
   handoffToParticipantId?: string;
   handoffWhen?: string;
+}
+
+export type HallParallelSlotStatus = "pending" | "running" | "completed" | "failed";
+
+export interface HallParallelSlot {
+  slotId: string;
+  participantId: string;
+  task: string;
+  status: HallParallelSlotStatus;
+  result?: string;
+  sessionKey?: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface HallParallelGroup {
+  groupId: string;
+  initiatorParticipantId: string;
+  slots: HallParallelSlot[];
+  status: "active" | "settled";
+  createdAt: string;
+  settledAt?: string;
 }
 
 export interface CollaborationHall {
@@ -335,7 +379,10 @@ export interface CollaborationHallSummary {
   headline: string;
   activeTaskCount: number;
   waitingReviewCount: number;
-  blockedTaskCount: number;
+  // Threads that have been idle past the review window and are not marked
+  // as human-reviewed. Replaces the old `blockedTaskCount` which was driven
+  // by regex heuristics on agent text.
+  needsHumanReviewCount: number;
   currentSpeakerLabel?: string;
   updatedAt: string;
 }
@@ -347,7 +394,6 @@ export interface HallTaskSummary {
   headline: string;
   currentOwnerLabel?: string;
   nextAction: string;
-  stage: HallTaskStage;
   blockerCount: number;
   updatedAt: string;
 }

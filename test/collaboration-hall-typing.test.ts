@@ -241,7 +241,6 @@ test("hall runtime dispatch shows typing before slow history bootstrap finishes"
         taskId: "task",
         title: "我想要做一个视频 介绍我的群聊功能",
         description: "我想要做一个视频 介绍我的群聊功能",
-        stage: "discussion",
         status: "todo",
         plannedExecutionOrder: [],
         plannedExecutionItems: [],

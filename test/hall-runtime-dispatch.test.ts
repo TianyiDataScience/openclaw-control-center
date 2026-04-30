@@ -16,176 +16,6 @@ const THUMBNAIL_HALL_2_URL = pathToFileURL(join(OPENCLAW_WORKSPACE, "thumbnail-h
 const THUMBNAIL_HALL_3_URL = pathToFileURL(join(OPENCLAW_WORKSPACE, "thumbnail-hall-3.html")).toString();
 const THUMBNAIL_HOOK_1_URL = pathToFileURL(join(PANDAS_WORKSPACE, "control-center", "tmp", "thumbnail-hook-1.html")).toString();
 
-test("workspace persona summary reuses existing agent files instead of hall-only config", () => {
-  const monkeyPersona = summarizeWorkspacePersonaFromFiles(MONKEY_WORKSPACE);
-  const pandasPersona = summarizeWorkspacePersonaFromFiles(PANDAS_WORKSPACE);
-  const coqPersona = summarizeWorkspacePersonaFromFiles(COQ_WORKSPACE);
-
-  assert.match(monkeyPersona, /(YouTube|视频转长文|价值提炼器)/);
-  assert.match(pandasPersona, /(编码与实现|工程实现|验证驱动)/);
-  assert.match(coqPersona, /(每日新闻|趋势简报|早晚报主编)/);
-});
-
-test("shared hall guide is injected into discussion and execution prompts from an override path", async () => {
-  const tempDir = await mkdtemp(join(tmpdir(), "hall-rules-guide-"));
-  const hallRulesPath = join(tempDir, "custom-hall.md");
-  const previousRulesPath = process.env.OPENCLAW_HALL_RULES_PATH;
-  const capturedPrompts: string[] = [];
-
-  await writeFile(
-    hallRulesPath,
-    [
-      "# Shared Hall Rules",
-      "- Push useful disagreement when it sharpens the output.",
-      "- Reviewer only raises must-fix issues before optional polish.",
-    ].join("\n"),
-    "utf8",
-  );
-
-  try {
-    process.env.OPENCLAW_HALL_RULES_PATH = hallRulesPath;
-
-    const client = {
-      sessionsHistory: async () => ({ history: [] }),
-      agentRun: async (request: { sessionKey?: string; message: string }) => {
-        capturedPrompts.push(request.message);
-        return {
-          ok: true,
-          text: "第一版先锁住了。",
-          rawText: "",
-          sessionKey: request.sessionKey,
-        };
-      },
-    } as never;
-
-    await dispatchHallRuntimeTurn({
-      client,
-      hall: {
-        hallId: "hall",
-        participants: [],
-        updatedAt: new Date().toISOString(),
-      } as never,
-      taskCard: {
-        taskCardId: "discussion-card",
-        hallId: "hall",
-        projectId: "project",
-        taskId: "task-global-discussion",
-        title: "我想录一个群聊功能视频",
-        description: "先讨论整体讲法",
-        stage: "discussion",
-        status: "todo",
-        createdByParticipantId: "operator",
-        blockers: [],
-        requiresInputFrom: [],
-        mentionedParticipantIds: [],
-        plannedExecutionOrder: [],
-        plannedExecutionItems: [],
-        sessionKeys: [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      } as never,
-      participant: {
-        participantId: "coq",
-        agentId: "coq",
-        displayName: "Coq-每日新闻",
-        semanticRole: "planner",
-        aliases: [],
-        active: true,
-      } as never,
-      triggerMessage: {
-        hallId: "hall",
-        messageId: "trigger-discussion",
-        kind: "task",
-        authorParticipantId: "operator",
-        authorLabel: "Operator",
-        content: "先给我一个整体方向",
-        createdAt: new Date().toISOString(),
-      } as never,
-      mode: "discussion",
-    });
-
-    await dispatchHallRuntimeTurn({
-      client,
-      hall: {
-        hallId: "hall",
-        participants: [
-          {
-            participantId: "monkey",
-            agentId: "monkey",
-            displayName: "Monkey",
-            semanticRole: "coder",
-            aliases: [],
-            active: true,
-          },
-        ],
-        updatedAt: new Date().toISOString(),
-      } as never,
-      taskCard: {
-        taskCardId: "execution-card",
-        hallId: "hall",
-        projectId: "project",
-        taskId: "task-global-execution",
-        title: "我想录一个群聊功能视频",
-        description: "开始写开头",
-        stage: "execution",
-        status: "doing",
-        createdByParticipantId: "operator",
-        currentOwnerParticipantId: "monkey",
-        currentOwnerLabel: "Monkey",
-        blockers: [],
-        requiresInputFrom: [],
-        mentionedParticipantIds: [],
-        plannedExecutionOrder: [],
-        plannedExecutionItems: [
-          {
-            itemId: "step-1",
-            participantId: "monkey",
-            task: "Write three spoken openings",
-          },
-        ],
-        currentExecutionItem: {
-          itemId: "step-1",
-          participantId: "monkey",
-          task: "Write three spoken openings",
-        },
-        sessionKeys: [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      } as never,
-      participant: {
-        participantId: "monkey",
-        agentId: "monkey",
-        displayName: "Monkey",
-        semanticRole: "coder",
-        aliases: [],
-        active: true,
-      } as never,
-      triggerMessage: {
-        hallId: "hall",
-        messageId: "trigger-execution",
-        kind: "decision",
-        authorParticipantId: "operator",
-        authorLabel: "Operator",
-        content: "开始执行",
-        createdAt: new Date().toISOString(),
-      } as never,
-      mode: "execution",
-    });
-  } finally {
-    if (previousRulesPath === undefined) delete process.env.OPENCLAW_HALL_RULES_PATH;
-    else process.env.OPENCLAW_HALL_RULES_PATH = previousRulesPath;
-    await rm(tempDir, { recursive: true, force: true });
-  }
-
-  assert.equal(capturedPrompts.length, 2);
-  for (const prompt of capturedPrompts) {
-    assert.match(prompt, /Shared hall collaboration guide/i);
-    assert.match(prompt, /Push useful disagreement when it sharpens the output\./);
-    assert.match(prompt, /Reviewer only raises must-fix issues before optional polish\./);
-  }
-  assert.match(capturedPrompts[1], /Your current execution item: Write three spoken openings/);
-});
-
 test("brand-new hall threads use a thread-scoped runtime session instead of the shared hall agent session", async () => {
   const observedSessionKeys: string[] = [];
   await dispatchHallRuntimeTurn({
@@ -216,7 +46,6 @@ test("brand-new hall threads use a thread-scoped runtime session instead of the 
       taskId: "task-123",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
       status: "todo",
       plannedExecutionOrder: [],
       plannedExecutionItems: [],
@@ -281,7 +110,6 @@ test("legacy shared hall agent sessions are ignored in favor of a thread-scoped 
       taskId: "task-456",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
       status: "todo",
       plannedExecutionOrder: [],
       plannedExecutionItems: [],
@@ -346,7 +174,6 @@ test("existing thread-scoped runtime sessions are preserved for continuity insid
       taskId: "task-789",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
       status: "todo",
       plannedExecutionOrder: [],
       plannedExecutionItems: [],
@@ -381,68 +208,6 @@ test("existing thread-scoped runtime sessions are preserved for continuity insid
   );
 });
 
-test("brand-new hall thread prompts tell the participant to ignore any unseen earlier thread context", async () => {
-  let capturedPrompt = "";
-  await dispatchHallRuntimeTurn({
-    client: {
-      sessionsHistory: async () => ({ history: [] }),
-      agentRun: async (request: { sessionKey?: string; message: string }) => {
-        capturedPrompt = request.message;
-        return {
-          ok: true,
-          text: "先把第一版要证明的价值锁住。",
-          rawText: "",
-          sessionKey: request.sessionKey,
-        };
-      },
-    } as never,
-    hall: {
-      hallId: "hall",
-      participants: [],
-      updatedAt: new Date().toISOString(),
-    } as never,
-    taskCard: {
-      taskCardId: "card",
-      hallId: "hall",
-      projectId: "project",
-      taskId: "task-321",
-      title: "我想要做一个视频 介绍我的群聊功能",
-      description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
-      status: "todo",
-      plannedExecutionOrder: [],
-      plannedExecutionItems: [],
-      mentionedParticipantIds: [],
-      sessionKeys: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    } as never,
-    participant: {
-      participantId: "coq",
-      agentId: "coq",
-      displayName: "Coq-每日新闻",
-      semanticRole: "planner",
-      aliases: [],
-      active: true,
-    } as never,
-    triggerMessage: {
-      hallId: "hall",
-      messageId: "trigger",
-      kind: "task",
-      authorParticipantId: "operator",
-      authorLabel: "Operator",
-      content: "我想要做一个视频 介绍我的群聊功能",
-      createdAt: new Date().toISOString(),
-    } as never,
-    mode: "discussion",
-  });
-
-  assert.match(capturedPrompt, /This is your first reply in this hall thread/i);
-  assert.match(capturedPrompt, /Ignore any earlier conversation, momentum, unfinished phrasing, or assumptions/i);
-  assert.match(capturedPrompt, /do not answer as if you are continuing a previous thread/i);
-  assert.match(capturedPrompt, /Do not open with continuation or agreement phrases like '对'/i);
-});
-
 test("participants with an existing thread-scoped hall session keep same-thread continuity prompts without the clean-thread reset", async () => {
   let capturedPrompt = "";
   await dispatchHallRuntimeTurn({
@@ -470,7 +235,6 @@ test("participants with an existing thread-scoped hall session keep same-thread 
       taskId: "task-654",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
       status: "todo",
       plannedExecutionOrder: [],
       plannedExecutionItems: [],
@@ -503,66 +267,6 @@ test("participants with an existing thread-scoped hall session keep same-thread 
   assert.doesNotMatch(capturedPrompt, /continuing a previous thread/i);
 });
 
-test("a second speaker in the same hall thread still gets a clean first-turn prompt until their own thread session exists", async () => {
-  let capturedPrompt = "";
-  await dispatchHallRuntimeTurn({
-    client: {
-      sessionsHistory: async () => ({ history: [] }),
-      agentRun: async (request: { sessionKey?: string; message: string }) => {
-        capturedPrompt = request.message;
-        return {
-          ok: true,
-          text: "那第一版就拿最小任务样本来演示。",
-          rawText: "",
-          sessionKey: request.sessionKey,
-        };
-      },
-    } as never,
-    hall: {
-      hallId: "hall",
-      participants: [],
-      updatedAt: new Date().toISOString(),
-    } as never,
-    taskCard: {
-      taskCardId: "card",
-      hallId: "hall",
-      projectId: "project",
-      taskId: "task-777",
-      title: "我想要做一个视频 介绍我的群聊功能",
-      description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
-      status: "todo",
-      plannedExecutionOrder: [],
-      plannedExecutionItems: [],
-      mentionedParticipantIds: [],
-      sessionKeys: ["agent:coq:hall:task-777"],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    } as never,
-    participant: {
-      participantId: "monkey",
-      agentId: "monkey",
-      displayName: "monkey",
-      semanticRole: "coder",
-      aliases: [],
-      active: true,
-    } as never,
-    triggerMessage: {
-      hallId: "hall",
-      messageId: "trigger",
-      kind: "task",
-      authorParticipantId: "operator",
-      authorLabel: "Operator",
-      content: "我想要做一个视频 介绍我的群聊功能",
-      createdAt: new Date().toISOString(),
-    } as never,
-    mode: "discussion",
-  });
-
-  assert.match(capturedPrompt, /This is your first reply in this hall thread/i);
-  assert.match(capturedPrompt, /do not answer as if you are continuing a previous thread/i);
-});
-
 test("brand-new discussion first replies strip continuation-style openers from the visible content", async () => {
   const result = await dispatchHallRuntimeTurn({
     client: {
@@ -586,7 +290,6 @@ test("brand-new discussion first replies strip continuation-style openers from t
       taskId: "task-888",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
       status: "todo",
       plannedExecutionOrder: [],
       plannedExecutionItems: [],
@@ -682,7 +385,6 @@ test("execution reply that stays in meta-discussion cannot pretend to hand off",
         taskId: "task",
         title: "做一个视频介绍群聊功能",
         description: "做一个视频介绍群聊功能",
-        stage: "execution",
         status: "in_progress",
         plannedExecutionOrder: [],
         plannedExecutionItems: [],
@@ -735,7 +437,6 @@ test("execution reply that stays in meta-discussion is hidden even before it tri
         taskId: "task",
         title: "做一个视频介绍群聊功能",
         description: "做一个视频介绍群聊功能",
-        stage: "execution",
         status: "in_progress",
         plannedExecutionOrder: [],
         plannedExecutionItems: [],
@@ -788,7 +489,6 @@ test("generic carry-forward execution steps still require a concrete deliverable
         taskId: "task",
         title: "继续推进这一轮",
         description: "继续推进这一轮",
-        stage: "execution",
         status: "in_progress",
         plannedExecutionOrder: [],
         plannedExecutionItems: [],
@@ -841,7 +541,6 @@ test("repo scan execution reply that still speaks in abstractions is hidden unti
         taskId: "task",
         title: "扫描 control-center 代码库",
         description: "扫描 control-center 代码库",
-        stage: "execution",
         status: "in_progress",
         plannedExecutionOrder: [],
         plannedExecutionItems: [],
@@ -959,76 +658,6 @@ test("coworker reply keeps legitimate support-only wording instead of deleting t
   assert.match(result, /@main/);
 });
 
-test("explicit @main deliverable request overrides manager decision mode and returns concrete output", async () => {
-  let capturedPrompt = "";
-  const result = await dispatchHallRuntimeTurn({
-    client: {
-      agentRun: async (request: { message: string }) => {
-        capturedPrompt = request.message;
-        return {
-          ok: true,
-          text: '三个视频开头：1. 不是多了个群聊，是任务自己开始往前走。 2. 你不用再来回转述，群聊会自己收敛出 owner 和下一步。 3. 以前要你盯全程，现在它会自己把分工和推进串起来。',
-          rawText: "",
-        };
-      },
-    } as never,
-    hall: {
-      hallId: "hall",
-      participants: [
-        {
-          participantId: "main",
-          displayName: "main",
-          semanticRole: "manager",
-          aliases: [],
-          active: true,
-        },
-      ],
-      updatedAt: new Date().toISOString(),
-    } as never,
-    taskCard: {
-      taskCardId: "card",
-      hallId: "hall",
-      projectId: "project",
-      taskId: "task",
-      title: "我想要做一个视频 介绍我的群聊功能",
-      description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
-      status: "todo",
-      plannedExecutionOrder: [],
-      plannedExecutionItems: [],
-      mentionedParticipantIds: [],
-      sessionKeys: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    } as never,
-    participant: {
-      participantId: "main",
-      displayName: "main",
-      semanticRole: "manager",
-      aliases: [],
-      active: true,
-    } as never,
-    triggerMessage: {
-      hallId: "hall",
-      messageId: "trigger",
-      kind: "chat",
-      authorParticipantId: "operator",
-      authorLabel: "Operator",
-      content: "@main 你给一下三个视频开头啊",
-      targetParticipantIds: ["main"],
-      mentionTargets: [{ participantId: "main" }],
-      createdAt: new Date().toISOString(),
-    } as never,
-    mode: "discussion",
-  });
-
-  assert.match(capturedPrompt, /explicitly assigning you work right now/i);
-  assert.match(capturedPrompt, /Prioritize this current ask over your default semantic role/i);
-  assert.equal(result.kind, "status");
-  assert.match(result.content, /三个视频开头/);
-  assert.doesNotMatch(result.content, /先给 .* 开第一步|这一轮做到|Then hand off in this order/i);
-});
-
 test("direct deliverable replies in discussion stay fully visible instead of being compacted to two segments", async () => {
   const result = await dispatchHallRuntimeTurn({
     client: {
@@ -1058,7 +687,6 @@ test("direct deliverable replies in discussion stay fully visible instead of bei
       taskId: "task",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
       status: "todo",
       plannedExecutionOrder: [],
       plannedExecutionItems: [],
@@ -1095,77 +723,6 @@ test("direct deliverable replies in discussion stay fully visible instead of bei
   assert.doesNotMatch(result.content, /…$/);
 });
 
-test("untargeted expansion asks in discussion are treated as full direct answers instead of being squeezed into one short angle", async () => {
-  let capturedPrompt = "";
-  const result = await dispatchHallRuntimeTurn({
-    client: {
-      agentRun: async (request: { message: string }) => {
-        capturedPrompt = request.message;
-        return {
-          ok: true,
-          text: "第一个开头我直接展开成这一版：<br>“你有没有发现，大多数 AI 工具都还停留在一对一聊天。但真实工作从来不是一问一答就结束，一个任务进来之后，需要有人判断方向，有人拆解执行，有人补内容，也有人盯风险。<br>我做这个群聊功能，不是为了让更多 agent 一起说话，而是为了让任务真的被接住：谁来做、下一步做什么，会先被系统收出来，然后事情继续往下走。”",
-          rawText: "",
-        };
-      },
-    } as never,
-    hall: {
-      hallId: "hall",
-      participants: [
-        {
-          participantId: "coq",
-          displayName: "Coq-每日新闻",
-          semanticRole: "planner",
-          aliases: [],
-          active: true,
-        },
-      ],
-      updatedAt: new Date().toISOString(),
-    } as never,
-    taskCard: {
-      taskCardId: "card",
-      hallId: "hall",
-      projectId: "project",
-      taskId: "task",
-      title: "我想要做一个视频 介绍我的群聊功能",
-      description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
-      status: "todo",
-      plannedExecutionOrder: [],
-      plannedExecutionItems: [],
-      mentionedParticipantIds: [],
-      sessionKeys: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    } as never,
-    participant: {
-      participantId: "coq",
-      displayName: "Coq-每日新闻",
-      semanticRole: "planner",
-      aliases: [],
-      active: true,
-    } as never,
-    triggerMessage: {
-      hallId: "hall",
-      messageId: "trigger",
-      kind: "chat",
-      authorParticipantId: "operator",
-      authorLabel: "Operator",
-      content: "第一个开头 展开一下吧",
-      targetParticipantIds: [],
-      mentionTargets: [],
-      createdAt: new Date().toISOString(),
-    } as never,
-    mode: "discussion",
-  });
-
-  assert.match(capturedPrompt, /Direct ask you must satisfy now/);
-  assert.doesNotMatch(capturedPrompt, /stay short/i);
-  assert.doesNotMatch(capturedPrompt, /one useful angle is enough/i);
-  assert.doesNotMatch(capturedPrompt, /short, decisive/i);
-  assert.match(result.content, /第一个开头我直接展开成这一版/);
-  assert.match(result.content, /真实工作从来不是一问一答就结束/);
-});
-
 test("direct deliverable replies in discussion fall back to structured summary instead of disappearing", async () => {
   const result = await dispatchHallRuntimeTurn({
     client: {
@@ -1195,7 +752,6 @@ test("direct deliverable replies in discussion fall back to structured summary i
       taskId: "task",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
       status: "todo",
       plannedExecutionOrder: [],
       plannedExecutionItems: [],
@@ -1258,7 +814,6 @@ test("direct video-opening request rejects evidence-point summaries until comple
       taskId: "task",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
       status: "todo",
       plannedExecutionOrder: [],
       plannedExecutionItems: [],
@@ -1337,7 +892,6 @@ test("visible completed handoff wins over hidden blocked structured state when t
       taskId: "task",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "execution",
       status: "in_progress",
       currentOwnerParticipantId: "main",
       currentOwnerLabel: "main",
@@ -1438,7 +992,6 @@ test("long spoken openings plus an explicit handoff still win over hidden blocke
       taskId: "task",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "execution",
       status: "in_progress",
       currentOwnerParticipantId: "main",
       currentOwnerLabel: "main",
@@ -1539,7 +1092,6 @@ test("long spoken openings that end in review still win over hidden blocked stru
       taskId: "task",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "execution",
       status: "in_progress",
       currentOwnerParticipantId: "monkey",
       currentOwnerLabel: "monkey",
@@ -1618,7 +1170,6 @@ test("execution does not accept the wrong deliverable type just because it is co
       taskId: "task",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "execution",
       status: "in_progress",
       currentOwnerParticipantId: "main",
       currentOwnerLabel: "main",
@@ -1708,7 +1259,6 @@ test("repo scan findings plus an explicit handoff still win over hidden blocked 
       taskId: "task",
       title: "请先扫描 control-center 代码",
       description: "请先扫描 control-center 代码",
-      stage: "execution",
       status: "in_progress",
       currentOwnerParticipantId: "pandas",
       currentOwnerLabel: "pandas",
@@ -1797,7 +1347,6 @@ test("hook deliverables plus an explicit handoff still win over hidden blocked s
       taskId: "task",
       title: "我想要做一个视频 介绍我的群聊功能",
       description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "execution",
       status: "in_progress",
       currentOwnerParticipantId: "monkey",
       currentOwnerLabel: "monkey",
@@ -1884,7 +1433,6 @@ test("explicit @pandas repo scan request in discussion hides abstract summaries 
       taskId: "task",
       title: "请先扫描 control-center 代码",
       description: "请先扫描 control-center 代码",
-      stage: "discussion",
       status: "todo",
       plannedExecutionOrder: [],
       plannedExecutionItems: [],
@@ -1952,7 +1500,6 @@ test("brand-new untargeted repo scan asks still start with normal discussion ins
       taskId: "task",
       title: "请先扫描 control-center 代码",
       description: "请先扫描 control-center 代码",
-      stage: "discussion",
       status: "todo",
       plannedExecutionOrder: [],
       plannedExecutionItems: [],
@@ -1987,248 +1534,3 @@ test("brand-new untargeted repo scan asks still start with normal discussion ins
   assert.match(result.content, /UI、orchestrator、runtime/);
 });
 
-test("explicit artifact optimization asks with file URLs stay direct deliverable work instead of drifting into repo scan", async () => {
-  let capturedPrompt = "";
-  const result = await dispatchHallRuntimeTurn({
-    client: {
-      agentRun: async (request: { message: string }) => {
-        capturedPrompt = request.message;
-        return {
-          ok: true,
-          text: "我会先把第一张继续减字，再补一张更大的结果卡和一张小插图，让 owner、next action、3 idea 一眼可读。",
-          rawText: "",
-        };
-      },
-    } as never,
-    hall: {
-      hallId: "hall",
-      participants: [
-        {
-          participantId: "coq",
-          displayName: "Coq-每日新闻",
-          semanticRole: "planner",
-          aliases: [],
-          active: true,
-        },
-      ],
-      updatedAt: new Date().toISOString(),
-    } as never,
-    taskCard: {
-      taskCardId: "card",
-      hallId: "hall",
-      projectId: "project",
-      taskId: "task",
-      title: "我想要做一个视频 介绍我的群聊功能",
-      description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
-      status: "todo",
-      plannedExecutionOrder: [],
-      plannedExecutionItems: [],
-      mentionedParticipantIds: [],
-      sessionKeys: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    } as never,
-    participant: {
-      participantId: "coq",
-      displayName: "Coq-每日新闻",
-      semanticRole: "planner",
-      aliases: [],
-      active: true,
-    } as never,
-    triggerMessage: {
-      hallId: "hall",
-      messageId: "trigger",
-      kind: "chat",
-      authorParticipantId: "operator",
-      authorLabel: "Operator",
-      content: `@Coq-每日新闻 我喜欢第一个 ${THUMBNAIL_HOOK_1_URL} 但是你再优化一下吧 字太多了 然后加一些图`,
-      targetParticipantIds: ["coq"],
-      mentionTargets: [{ participantId: "coq" }],
-      createdAt: new Date().toISOString(),
-    } as never,
-    recentThreadMessages: [],
-    mode: "discussion",
-  });
-
-  assert.match(capturedPrompt, /Direct ask you must satisfy now/i);
-  assert.doesNotMatch(capturedPrompt, /repo inspection work|inspect the repository/i);
-  assert.match(result.content, /减字|结果卡|插图/);
-  assert.equal(result.suppressVisibleMessage, undefined);
-});
-
-test("discussion prompt stays minimal instead of forcing role choreography or follow-up templates", async () => {
-  let capturedPrompt = "";
-  await dispatchHallRuntimeTurn({
-    client: {
-      agentRun: async (request: { message: string }) => {
-        capturedPrompt = request.message;
-        return {
-          ok: true,
-          text: "同意，第一屏先让观众看懂它到底替人省了什么。",
-          rawText: "",
-        };
-      },
-    } as never,
-    hall: {
-      hallId: "hall",
-      participants: [
-        {
-          participantId: "coq",
-          displayName: "Coq-每日新闻",
-          semanticRole: "planner",
-          aliases: [],
-          active: true,
-        },
-        {
-          participantId: "monkey",
-          displayName: "monkey",
-          semanticRole: "coder",
-          aliases: [],
-          active: true,
-        },
-      ],
-      updatedAt: new Date().toISOString(),
-    } as never,
-    taskCard: {
-      taskCardId: "card",
-      hallId: "hall",
-      projectId: "project",
-      taskId: "task",
-      title: "我想要做一个视频 介绍我的群聊功能",
-      description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
-      status: "todo",
-      discussionCycle: {
-        startedAt: new Date().toISOString(),
-        expectedParticipantIds: ["coq", "monkey"],
-        completedParticipantIds: ["coq"],
-      },
-      plannedExecutionOrder: [],
-      plannedExecutionItems: [],
-      mentionedParticipantIds: [],
-      sessionKeys: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    } as never,
-    participant: {
-      participantId: "monkey",
-      displayName: "monkey",
-      semanticRole: "coder",
-      aliases: [],
-      active: true,
-    } as never,
-    recentThreadMessages: [
-      {
-        hallId: "hall",
-        messageId: "msg-1",
-        kind: "proposal",
-        authorParticipantId: "coq",
-        authorLabel: "Coq-每日新闻",
-        authorSemanticRole: "planner",
-        content: "第一版先别急着讲技术，先让人一眼看懂这群聊替你省了什么。",
-        targetParticipantIds: [],
-        mentionTargets: [],
-        createdAt: new Date().toISOString(),
-      } as never,
-    ],
-    triggerMessage: {
-      hallId: "hall",
-      messageId: "trigger",
-      kind: "chat",
-      authorParticipantId: "operator",
-      authorLabel: "Operator",
-      content: "我想要做一个视频 介绍我的群聊功能",
-      createdAt: new Date().toISOString(),
-    } as never,
-    mode: "discussion",
-  });
-
-  assert.match(capturedPrompt, /This is discussion only\. Do not start execution yet\./i);
-  assert.match(capturedPrompt, /Answer the latest human message directly\./i);
-  assert.match(capturedPrompt, /Detailed answers are allowed\./i);
-  assert.doesNotMatch(capturedPrompt, /Your semantic responsibility is/i);
-  assert.doesNotMatch(capturedPrompt, /role:\s*(planner|builder|reviewer|manager|generalist)/i);
-  assert.doesNotMatch(capturedPrompt, /persona:/i);
-  assert.doesNotMatch(capturedPrompt, /this round:/i);
-  assert.doesNotMatch(capturedPrompt, /Your workspace persona and job boundary:/i);
-  assert.doesNotMatch(capturedPrompt, /Start by acknowledging that exact point/i);
-  assert.doesNotMatch(capturedPrompt, /push it one step further/i);
-  assert.doesNotMatch(capturedPrompt, /Add only the missing delta/i);
-  assert.doesNotMatch(capturedPrompt, /briefly acknowledging/i);
-  assert.doesNotMatch(capturedPrompt, /one short clause/i);
-});
-
-test("discussion prompt only injects workspace persona when the participant is explicitly @mentioned", async () => {
-  let capturedPrompt = "";
-  await dispatchHallRuntimeTurn({
-    client: {
-      agentRun: async (request: { message: string }) => {
-        capturedPrompt = request.message;
-        return {
-          ok: true,
-          text: "我会直接按你的反馈改第一张。",
-          rawText: "",
-        };
-      },
-    } as never,
-    hall: {
-      hallId: "hall",
-      participants: [
-        {
-          participantId: "coq",
-          displayName: "Coq-每日新闻",
-          semanticRole: "planner",
-          aliases: [],
-          active: true,
-        },
-        {
-          participantId: "monkey",
-          displayName: "monkey",
-          semanticRole: "coder",
-          aliases: [],
-          active: true,
-        },
-      ],
-      updatedAt: new Date().toISOString(),
-    } as never,
-    taskCard: {
-      taskCardId: "card",
-      hallId: "hall",
-      projectId: "project",
-      taskId: "task",
-      title: "我想要做一个视频 介绍我的群聊功能",
-      description: "我想要做一个视频 介绍我的群聊功能",
-      stage: "discussion",
-      status: "todo",
-      plannedExecutionOrder: [],
-      plannedExecutionItems: [],
-      mentionedParticipantIds: ["coq"],
-      sessionKeys: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    } as never,
-    participant: {
-      participantId: "coq",
-      displayName: "Coq-每日新闻",
-      semanticRole: "planner",
-      aliases: [],
-      active: true,
-    } as never,
-    triggerMessage: {
-      hallId: "hall",
-      messageId: "trigger",
-      kind: "chat",
-      authorParticipantId: "operator",
-      authorLabel: "Operator",
-      content: "@Coq-每日新闻 帮我把第一个版本再优化一下",
-      targetParticipantIds: ["coq"],
-      mentionTargets: [{ participantId: "coq" }],
-      createdAt: new Date().toISOString(),
-    } as never,
-    mode: "discussion",
-  });
-
-  assert.match(capturedPrompt, /Your workspace persona and job boundary:/i);
-  assert.doesNotMatch(capturedPrompt, /Your semantic responsibility is/i);
-});

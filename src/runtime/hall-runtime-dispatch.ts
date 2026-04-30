@@ -1,6 +1,10 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { existsSync, readFileSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { ensureHallTaskWorkspace, resolveHallTaskWorkspacePath } from "./hall-workspace";
+import { initializeHallBlackboard, renderHallBlackboardPromptGuidance } from "./hall-blackboard";
+import { copyHallFilesToWorkspace } from "./hall-file-store";
 import type { ToolClient } from "../clients/tool-client";
 import {
   HALL_RUNTIME_DIRECT_STREAM_ENABLED,
@@ -27,6 +31,7 @@ import {
   beginHallDraftReply,
   completeHallDraftReply,
   pushHallDraftDelta,
+  pushHallDraftToolUpdate,
 } from "./collaboration-stream";
 import { resolveOpenClawConfigPath, resolveOpenClawHomePath } from "./current-agent-catalog";
 import { inferHallDiscussionDomainFromText } from "./hall-discussion-domain";
@@ -40,6 +45,7 @@ interface ToolClientWithAgentRun extends ToolClient {
     rawText: string;
     sessionKey?: string;
     sessionId?: string;
+    model?: string;
   }>;
   agentRunStream?(
     request: AgentRunRequest,
@@ -53,15 +59,22 @@ interface ToolClientWithAgentRun extends ToolClient {
     rawText: string;
     sessionKey?: string;
     sessionId?: string;
+    model?: string;
   }>;
 }
 
-export type HallRuntimeNextAction = "continue" | "review" | "blocked" | "handoff" | "done";
+export type HallRuntimeNextAction = "continue" | "review" | "handoff" | "done" | "parallel_dispatch";
+
+export interface HallParallelTaskTarget {
+  executor: string;
+  task: string;
+}
 
 export interface HallRuntimeChainDirective {
   nextAction?: HallRuntimeNextAction;
   nextStep?: string;
   executor?: string;
+  parallelTasks?: HallParallelTaskTarget[];
 }
 
 export interface HallRuntimeDispatchInput {
@@ -142,6 +155,7 @@ interface ParsedStructuredBlock {
   nextAction?: HallRuntimeNextAction;
   nextStep?: string;
   artifactRefs?: TaskArtifact[];
+  parallelTasks?: HallParallelTaskTarget[];
 }
 
 interface HallRuntimeRepoContext {
@@ -180,7 +194,67 @@ export function canDispatchHallToRuntime(client: ToolClient | undefined, partici
   );
 }
 
-export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): Promise<HallRuntimeDispatchResult> {
+// ---------------------------------------------------------------------------
+// Per-sessionKey dispatch serialization — same hall thread cannot have two turns
+// in flight simultaneously. Cross-thread concurrency is arbitrated by OpenClaw's
+// per-workspace lock on the gateway side.
+// ---------------------------------------------------------------------------
+const dispatchChains = new Map<string, Promise<unknown>>();
+
+// Tool pill markers: `[[tool:name]]` or `[[tool:name|detail]]` (legacy), plus
+// an optional third segment `|~<base64>` carrying base64-encoded JSON
+// `{i?: input, o?: output, e?: 1}` so the renderer can show full input/output
+// on click without mutating the current CLI-style hover tooltip.
+const TOOL_PILL_INPUT_OUTPUT_CAP = 2000;
+
+function truncateForPill(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  const s = typeof value === "string" ? value : JSON.stringify(value);
+  if (!s) return "";
+  return s.length > TOOL_PILL_INPUT_OUTPUT_CAP
+    ? s.slice(0, TOOL_PILL_INPUT_OUTPUT_CAP) + "\n…(truncated)"
+    : s;
+}
+
+function encodeToolPillPayload(entry: {
+  input?: string;
+  output?: string;
+  isError?: boolean;
+}): string | null {
+  if (!entry.input && !entry.output && !entry.isError) return null;
+  const obj: { i?: string; o?: string; e?: number } = {};
+  if (entry.input) obj.i = entry.input;
+  if (entry.output) obj.o = entry.output;
+  if (entry.isError) obj.e = 1;
+  return Buffer.from(JSON.stringify(obj), "utf8").toString("base64");
+}
+
+function buildToolPillMarker(entry: {
+  toolName: string;
+  detail?: string;
+  input?: string;
+  output?: string;
+  isError?: boolean;
+}): string {
+  const encoded = encodeToolPillPayload(entry);
+  if (encoded) {
+    return `[[tool:${entry.toolName}|${entry.detail ?? ""}|~${encoded}]]`;
+  }
+  return entry.detail
+    ? `[[tool:${entry.toolName}|${entry.detail}]]`
+    : `[[tool:${entry.toolName}]]`;
+}
+
+export function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): Promise<HallRuntimeDispatchResult> {
+  const agentId = (input.participant.agentId ?? input.participant.participantId).trim();
+  const sessionKey = pickExpectedSessionKey(input.taskCard, agentId) ?? `agent:${agentId}`;
+  const prev = dispatchChains.get(sessionKey) ?? Promise.resolve();
+  const result: Promise<HallRuntimeDispatchResult> = prev.then(() => dispatchHallRuntimeTurnUnsafe(input));
+  dispatchChains.set(sessionKey, result.catch(() => undefined));
+  return result;
+}
+
+async function dispatchHallRuntimeTurnUnsafe(input: HallRuntimeDispatchInput): Promise<HallRuntimeDispatchResult> {
   const participantAgentId = (input.participant.agentId ?? input.participant.participantId).trim();
   if (!canDispatchHallToRuntime(input.client, input.participant)) {
     throw new Error(`Runtime dispatch is unavailable for participant '${input.participant.displayName}'.`);
@@ -207,6 +281,62 @@ export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): 
   let sessionHistoryObserved = false;
   let directStdoutBuffer = "";
   let finished = false;
+  let processedStdoutToolCount = 0;
+  let processedHistoryToolCount = 0;
+  // Wall-clock snapshot used to tell "this run's tool calls" apart from earlier
+  // tool calls that share the same session file (hall sessions accumulate turns).
+  // findLatestAgentSessionFile(agentId) is fuzzy and may initially resolve to an
+  // unrelated hall card's session, so a count-based baseline is unreliable.
+  const runStartMs = Date.now();
+
+  const TOOL_LINE_PATTERN = /\[tool\]\s+(.+?)\s+\((\w+)\)/g;
+
+  const flushStdoutToolLines = (): void => {
+    const matches: Array<{ name: string; status: string }> = [];
+    let m: RegExpExecArray | null;
+    const re = new RegExp(TOOL_LINE_PATTERN.source, "g");
+    while ((m = re.exec(directStdoutBuffer)) !== null) {
+      matches.push({ name: m[1], status: m[2] });
+    }
+    for (let i = processedStdoutToolCount; i < matches.length; i++) {
+      pushHallDraftToolUpdate({
+        hallId: input.hall.hallId,
+        taskCardId: input.taskCard.taskCardId,
+        projectId: input.taskCard.projectId,
+        taskId: input.taskCard.taskId,
+        roomId: input.taskCard.roomId,
+        draftId,
+        toolName: matches[i].name,
+        toolStatus: matches[i].status,
+      });
+    }
+    processedStdoutToolCount = matches.length;
+  };
+
+  let sessionFileToolCount = 0;
+  let baselineSessionFileToolCount = 0;
+  let historyToolCount = 0;
+
+  const emitToolUpdate = (toolName: string, toolStatus: string): void => {
+    pushHallDraftToolUpdate({
+      hallId: input.hall.hallId,
+      taskCardId: input.taskCard.taskCardId,
+      projectId: input.taskCard.projectId,
+      taskId: input.taskCard.taskId,
+      roomId: input.taskCard.roomId,
+      draftId,
+      toolName,
+      toolStatus,
+    });
+  };
+
+  const flushHistoryToolEvents = (messages: SessionHistoryMessage[]): void => {
+    const toolEvents = messages.filter((m) => m.kind === "tool_event" && m.toolName);
+    for (let i = historyToolCount; i < toolEvents.length; i++) {
+      emitToolUpdate(toolEvents[i].toolName!, toolEvents[i].toolStatus || "completed");
+    }
+    historyToolCount = toolEvents.length;
+  };
 
   const applyDraftText = (nextDraftText: string, source: "session" | "stdout"): void => {
     const normalized = formatHallRuntimeDraftVisibleText(input, nextDraftText).trim();
@@ -243,21 +373,150 @@ export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): 
       ? await safeReadHistory(input.client, expectedSessionKey)
       : [];
     baselineFingerprint = baselineHistory.at(-1) ? fingerprintHistoryMessage(baselineHistory.at(-1)!) : undefined;
+    await ensureHallTaskWorkspace(input.taskCard.taskCardId);
+    // Best-effort: ensure the per-card blackboard exists. Fire-and-forget so
+    // dispatch latency is unaffected; orchestrator's postHallMessage path
+    // already initializes the blackboard on the first message in the thread.
+    void initializeHallBlackboard(input.taskCard).catch(() => undefined);
     const repoContext = buildHallRuntimeRepoContext(input);
     const prompt = buildHallRuntimePrompt(input, repoContext);
     const flushHistory = async (sessionKey: string | undefined): Promise<void> => {
       if (!sessionKey) return;
       const history = await safeReadHistory(input.client, sessionKey);
+      flushHistoryToolEvents(sliceMessagesAfterFingerprint(history, baselineFingerprint));
       const nextDraftText = renderRuntimeDraftText(history, baselineFingerprint);
       if (!nextDraftText) return;
       lastHistoryDraftText = nextDraftText;
       sessionHistoryObserved = true;
       applyDraftText(nextDraftText, "session");
     };
+
+    // Resolve session file and baseline tool count BEFORE agent starts
+    let resolvedSessionFilePath = await findLatestAgentSessionFile(participantAgentId).catch(() => undefined);
+    if (resolvedSessionFilePath) {
+      try {
+        const baseline = await readFile(resolvedSessionFilePath, "utf8");
+        for (const line of baseline.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const entry = JSON.parse(line);
+            const msg = entry?.message;
+            if (msg && typeof msg === "object" && typeof msg.role === "string" && msg.role.toLowerCase().includes("tool")) {
+              sessionFileToolCount++;
+            }
+          } catch { /* skip */ }
+        }
+        baselineSessionFileToolCount = sessionFileToolCount;
+      } catch { /* ok */ }
+    }
+
+    let sessionFileRescanCounter = 0;
+
+    const pollSessionFileToolCalls = async (): Promise<void> => {
+      // Re-resolve session file periodically (agent may create a new one)
+      sessionFileRescanCounter++;
+      if (!resolvedSessionFilePath || sessionFileRescanCounter % 8 === 0) {
+        const latest = await findLatestAgentSessionFile(participantAgentId).catch(() => undefined);
+        if (latest && latest !== resolvedSessionFilePath) {
+          resolvedSessionFilePath = latest;
+          sessionFileToolCount = 0; // Reset baseline for new file
+        }
+      }
+      if (!resolvedSessionFilePath) return;
+      try {
+        const raw = await readFile(resolvedSessionFilePath, "utf8");
+        let currentCount = 0;
+        // Collect toolCall arguments by callId for hover detail + full input
+        const toolCallArgs = new Map<string, { preview: string; full: string }>();
+        const newTools: Array<{
+          name: string;
+          detail: string;
+          input?: string;
+          output?: string;
+          isError?: boolean;
+        }> = [];
+        for (const line of raw.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const entry = JSON.parse(line);
+            const msg = entry?.message;
+            if (!msg || typeof msg !== "object") continue;
+            // Extract toolCall arguments from assistant messages
+            const content = msg.content;
+            if (Array.isArray(content)) {
+              for (const block of content) {
+                if (block && block.type === "toolCall" && block.id && block.arguments) {
+                  const args = block.arguments;
+                  const preview = typeof args === "object"
+                    ? Object.values(args).map((v) => String(v)).join(", ").slice(0, 120)
+                    : String(args).slice(0, 120);
+                  const full = truncateForPill(args);
+                  toolCallArgs.set(block.id, { preview, full });
+                }
+              }
+            }
+            // Detect toolResult entries
+            const role = typeof msg.role === "string" ? msg.role.toLowerCase() : "";
+            if (role.includes("tool")) {
+              currentCount++;
+              if (currentCount > sessionFileToolCount) {
+                const toolName = msg.toolName || msg.name || "tool";
+                const callId = msg.toolCallId || "";
+                const argsEntry = toolCallArgs.get(callId);
+                const detail = argsEntry?.preview || "";
+                const input = argsEntry?.full || undefined;
+                const outputText = Array.isArray(msg.content)
+                  ? (msg.content as Array<{ type?: string; text?: string }>)
+                      .filter((b) => Boolean(b) && typeof b === "object" && b.type === "text")
+                      .map((b) => String(b.text ?? ""))
+                      .join("\n")
+                  : typeof msg.content === "string"
+                    ? msg.content
+                    : "";
+                const output = outputText ? truncateForPill(outputText) : undefined;
+                const isError = Boolean(msg.isError);
+                emitToolUpdate(toolName, isError ? "error" : "completed");
+                newTools.push({ name: toolName, detail, input, output, isError });
+              }
+            }
+          } catch { /* skip malformed */ }
+        }
+        sessionFileToolCount = Math.max(sessionFileToolCount, currentCount);
+        // Inject tool markers into the draft text stream so they appear inline
+        if (newTools.length > 0) {
+          const toolMarkers = newTools.map((t) =>
+            buildToolPillMarker({
+              toolName: t.name,
+              detail: t.detail || undefined,
+              input: t.input,
+              output: t.output,
+              isError: t.isError,
+            })
+          ).join("\n");
+          const combined = (lastStreamedText ? lastStreamedText + "\n" : "") + toolMarkers;
+          lastStreamedText = combined;
+          pushHallDraftDelta({
+            hallId: input.hall.hallId,
+            taskCardId: input.taskCard.taskCardId,
+            projectId: input.taskCard.projectId,
+            taskId: input.taskCard.taskId,
+            roomId: input.taskCard.roomId,
+            draftId,
+            authorParticipantId: input.participant.participantId,
+            authorLabel: input.participant.displayName,
+            authorSemanticRole: input.participant.semanticRole,
+            messageKind: resolveHallRuntimeMessageKind(input),
+            delta: "\n" + toolMarkers,
+          });
+        }
+      } catch { /* file may not exist yet */ }
+    };
+
     poller = (async () => {
       while (!finished) {
         try {
           await flushHistory(currentSessionKey);
+          await pollSessionFileToolCalls();
         } catch {
           // Best-effort only; final completion still comes from agentRun().
         }
@@ -270,12 +529,13 @@ export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): 
       message: prompt,
       thinking: HALL_RUNTIME_THINKING_LEVEL,
       timeoutSeconds: HALL_RUNTIME_TIMEOUT_SECONDS,
-      context: buildHallRuntimeTransportContext(input, repoContext.entryFiles),
+      context: await buildHallRuntimeTransportContext(input, repoContext.entryFiles),
     };
     const response = input.client.agentRunStream && HALL_RUNTIME_DIRECT_STREAM_ENABLED
       ? await input.client.agentRunStream(request, {
           onStdoutChunk: (chunk) => {
             directStdoutBuffer += chunk;
+            flushStdoutToolLines();
             if (sessionHistoryObserved) return;
             const directText = formatHallRuntimeDraftVisibleText(input, directStdoutBuffer);
             if (!directText) return;
@@ -287,16 +547,102 @@ export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): 
         : await Promise.reject(new Error("No runtime dispatch method is available."));
     currentSessionKey = response.sessionKey?.trim() || expectedSessionKey;
     await flushHistory(currentSessionKey);
+
+    // Final session file scan for any remaining tool events
+    await pollSessionFileToolCalls().catch(() => {});
+
     const parsed = extractStructuredBlock(response.text);
-    const visibleContent = sanitizeHallVisibleRuntimeText(lastHistoryDraftText)
-      || sanitizeHallVisibleRuntimeText(parsed.visibleText);
+    // Prefer response.text (the agent RPC's authoritative final synthesis) over
+    // lastHistoryDraftText. History reads can race with the gateway's session-file
+    // flush: the WS agent RPC resolves before the final assistant message lands
+    // on disk, so renderRuntimeDraftText sometimes only sees the pre-tool
+    // thinking block and buries the real answer under a "will do" preamble.
+    const visibleContent = sanitizeHallVisibleRuntimeText(parsed.visibleText)
+      || sanitizeHallVisibleRuntimeText(lastHistoryDraftText);
     const structured = parsed.structured;
+    // Prefer the session file derived from response.sessionId — definitive and
+    // robust against findLatestAgentSessionFile's fuzzy agent-wide scan which
+    // can initially lock onto an unrelated hall card's jsonl.
+    if (response.sessionId) {
+      const definitivePath = join(
+        resolveOpenClawHomePath(),
+        "agents",
+        participantAgentId,
+        "sessions",
+        `${response.sessionId}.jsonl`,
+      );
+      resolvedSessionFilePath = definitivePath;
+    }
+    // Collect ONLY this run's tool calls (entries written after runStartMs) for
+    // the persisted message payload. Timestamp filtering is reliable even when
+    // the session file is shared across turns of the same hall thread.
+    const collectedToolCalls: Array<{
+      toolName: string;
+      toolStatus: string;
+      detail?: string;
+      input?: string;
+      output?: string;
+      isError?: boolean;
+    }> = [];
+    if (resolvedSessionFilePath) {
+      try {
+        const raw = await readFile(resolvedSessionFilePath, "utf8");
+        const callArgs = new Map<string, { preview: string; full: string }>();
+        for (const line of raw.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const entry = JSON.parse(line);
+            const msg = entry?.message;
+            if (!msg || typeof msg !== "object") continue;
+            if (Array.isArray(msg.content)) {
+              for (const block of msg.content) {
+                if (block?.type === "toolCall" && block.id && block.arguments) {
+                  const args = block.arguments;
+                  const preview = typeof args === "object"
+                    ? Object.values(args).map((v) => String(v)).join(", ").slice(0, 120)
+                    : String(args).slice(0, 120);
+                  callArgs.set(block.id, { preview, full: truncateForPill(args) });
+                }
+              }
+            }
+            if (typeof msg.role === "string" && msg.role.toLowerCase().includes("tool")) {
+              const tsValue = typeof msg.timestamp === "number"
+                ? msg.timestamp
+                : (typeof msg.timestamp === "string" ? Date.parse(msg.timestamp) : NaN);
+              const entryMs = Number.isFinite(tsValue) ? (tsValue as number) : NaN;
+              if (!Number.isFinite(entryMs) || entryMs >= runStartMs) {
+                const argsEntry = callArgs.get(msg.toolCallId || "");
+                const outputText = Array.isArray(msg.content)
+                  ? (msg.content as Array<{ type?: string; text?: string }>)
+                      .filter((b) => Boolean(b) && typeof b === "object" && b.type === "text")
+                      .map((b) => String(b.text ?? ""))
+                      .join("\n")
+                  : typeof msg.content === "string"
+                    ? msg.content
+                    : "";
+                const isError = Boolean(msg.isError);
+                collectedToolCalls.push({
+                  toolName: msg.toolName || msg.name || "tool",
+                  toolStatus: isError ? "error" : "completed",
+                  detail: argsEntry?.preview || undefined,
+                  input: argsEntry?.full || undefined,
+                  output: outputText ? truncateForPill(outputText) : undefined,
+                  isError: isError || undefined,
+                });
+              }
+            }
+          } catch { /* skip */ }
+        }
+      } catch { /* ok */ }
+    }
     const result = buildHallRuntimeResult({
       input,
       content: visibleContent,
       structured,
       sessionKey: currentSessionKey,
       sessionId: response.sessionId?.trim() || undefined,
+      model: response.model?.trim() || undefined,
+      toolCalls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined,
     });
     if (isHallDraftCanceled(draftId)) {
       return {
@@ -351,13 +697,13 @@ export async function dispatchHallRuntimeTurn(input: HallRuntimeDispatchInput): 
   }
 }
 
+// P3-A: prompt context lives mostly on the shared blackboard (.hall/chat.jsonl).
+// Inline transcript is intentionally narrow — agent is expected to grep / jq
+// the blackboard for anything beyond the immediate trigger context.
+const HALL_INLINE_CONTEXT_DEFAULT = 5;
+const HALL_INLINE_CONTEXT_FIRST_TURN = 15;
+
 function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: HallRuntimeRepoContext): string {
-  const discussionMode = input.mode === "discussion";
-  const firstParticipantTurnInThread = isFirstParticipantTurnInHallThread(
-    input.taskCard,
-    input.participant.agentId ?? input.participant.participantId,
-  );
-  const cleanThreadOpeningGuard = shouldApplyCleanHallThreadOpeningGuard(input, firstParticipantTurnInThread);
   const responseLanguage = inferHallResponseLanguage(
     input.triggerMessage?.content
       ?? `${input.taskCard.title}\n${input.taskCard.description}\n${input.task?.title ?? ""}`,
@@ -365,181 +711,194 @@ function buildHallRuntimePrompt(input: HallRuntimeDispatchInput, repoContext: Ha
   const responseLanguageInstruction = responseLanguage === "zh"
     ? "Reply in Simplified Chinese unless the latest human message explicitly asks for another language."
     : "Reply in English unless the latest human message explicitly asks for another language.";
+
+  const firstParticipantTurnInThread = isFirstParticipantTurnInHallThread(
+    input.taskCard,
+    input.participant.agentId ?? input.participant.participantId,
+  );
+
+  // Recent thread messages — capped narrow on purpose. Agent grep's the
+  // blackboard (.hall/chat.jsonl) for full history.
+  const inlineCap = firstParticipantTurnInThread
+    ? HALL_INLINE_CONTEXT_FIRST_TURN
+    : HALL_INLINE_CONTEXT_DEFAULT;
   const recentMessages = dedupeHallPromptMessages(
     [...(input.recentThreadMessages ?? []), ...(input.triggerMessage ? [input.triggerMessage] : [])],
-  ).slice(-10);
+  ).slice(-inlineCap);
+
   const transcriptBlock = recentMessages.length > 0
     ? [
-        "Recent shared thread transcript (oldest -> newest):",
-        ...recentMessages.map((message) => `- ${message.authorLabel}${!discussionMode && message.authorSemanticRole ? ` [${message.authorSemanticRole}]` : ""}: ${message.content}`),
+        responseLanguage === "zh"
+          ? `以下是当前线程的最近 ${recentMessages.length} 条对话（从旧到新；更多历史请去黑板查询）：`
+          : `Recent ${recentMessages.length} messages from this thread (oldest→newest; grep the blackboard for more):`,
+        ...recentMessages.map((message) =>
+          `- ${message.authorLabel}${message.authorSemanticRole ? ` [${message.authorSemanticRole}]` : ""}: ${message.content}`,
+        ),
       ].join("\n")
     : "";
+
   const role = input.participant.semanticRole;
-  const currentExecutionItem = resolveCurrentExecutionItem(input.taskCard, input.participant.participantId);
-  const nextParticipantId = currentExecutionItem?.handoffToParticipantId?.trim()
-    || input.taskCard.plannedExecutionOrder[0]
-    || "";
-  const nextParticipant = nextParticipantId
-    ? input.hall.participants.find((participant) => participant.participantId === nextParticipantId)
-    : undefined;
-  const nextExecutionItem = nextParticipantId
-    ? resolvePlannedExecutionItem(input.taskCard, nextParticipantId)
-    : undefined;
-  const repoContextLines = repoContext.lines;
-  const roundRosterBlock = discussionMode
-    ? buildHallDiscussionRosterBlock(input)
-    : buildHallRuntimeRosterBlock(input);
+  const selfWorkspacePersona = describeHallParticipantWorkspacePersona(input.participant);
+  const rosterBlock = buildHallRuntimeRosterBlock(input);
   const hallRulesBlock = buildHallRulesPromptBlock();
-  const selfWorkspacePersona = !discussionMode || isDiscussionParticipantExplicitlyMentioned(input)
-    ? describeHallParticipantWorkspacePersona(input.participant)
-    : "";
   const taskArtifactBlock = buildHallRuntimeArtifactBlock(input.task?.artifacts, responseLanguage, "task");
-  const handoffArtifactBlock = buildHallRuntimeArtifactBlock(input.handoff?.artifactRefs, responseLanguage, "handoff");
-  const operatorIntent = resolveHallOperatorIntent(input);
-  const directResponseIntent = isDirectResponseIntent(operatorIntent) ? operatorIntent : undefined;
-  const commonBase = [
-    `You are ${input.participant.displayName}, participating in the control-center Collaboration Hall.`,
-    `Task title: ${input.taskCard.title}`,
-    `Task description: ${input.taskCard.description}`,
-    `Current hall stage: ${input.taskCard.stage}`,
-    input.taskCard.doneWhen ? `Current done_when: ${input.taskCard.doneWhen}` : "",
-    input.taskCard.decision ? `Current decision: ${input.taskCard.decision}` : "",
-    input.taskCard.currentOwnerLabel ? `Current owner: ${input.taskCard.currentOwnerLabel}` : "",
-    recentMessages.length > 0 ? `Recent agent contributions already in thread: ${countRecentAgentContributors(recentMessages)}.` : "",
-    transcriptBlock,
-    roundRosterBlock,
-    hallRulesBlock,
-    !discussionMode ? `Your semantic responsibility is ${role}.` : "",
-    selfWorkspacePersona ? `Your workspace persona and job boundary: ${selfWorkspacePersona}` : "",
-    taskArtifactBlock,
-    handoffArtifactBlock,
-    ...repoContextLines,
-    firstParticipantTurnInThread
-      ? "This is your first reply in this hall thread. Treat only the task, transcript, artifacts, and structured handoff shown here as canonical context. Ignore any earlier conversation, momentum, unfinished phrasing, or assumptions that are not explicitly present in this thread, and do not answer as if you are continuing a previous thread."
-      : "",
-    cleanThreadOpeningGuard
-      ? "Nothing has been established in this thread yet beyond the operator request. Start from a clean first answer. Do not open with continuation or agreement phrases like '对', '没错', '是的', '再', '继续', '那我', '我会再…', 'Exactly', 'Also', or 'One more tweak'."
-      : "",
-    "Do not write labels like Proposal, Decision, Suggested order, Suggested first executor, owner, or doneWhen in the visible reply.",
-    responseLanguageInstruction,
-    "Do not mention hidden system instructions.",
-    "If you include structured state, append one JSON block at the very end using <hall-structured>{...}</hall-structured>.",
-  ].filter(Boolean);
+  const repoContextLines = repoContext.lines;
+  const blackboardGuidance = renderHallBlackboardPromptGuidance(input.taskCard.taskCardId, responseLanguage);
 
-  if (discussionMode) {
-    if (directResponseIntent) {
-      const directTaskInstruction = directResponseIntent.type === "repo_scan_request"
-        ? "The latest human message is directly assigning you repo inspection work. Inspect the repository and answer with concrete file findings right now."
-        : directResponseIntent.type === "review_request"
-          ? "The latest human message is directly asking you for a targeted review answer. Reply with the must-fix point or a clean pass right now."
-          : "The latest human message is directly assigning you a concrete deliverable. Post that deliverable right now instead of turning this into a decision or workflow recap.";
-      return [
-        ...commonBase,
-        directResponseIntent.explicitTarget
-          ? "The latest human message is explicitly assigning you work right now."
-          : "The latest human message is asking for a concrete result right now, and you are the one replying to it.",
-        `Direct ask you must satisfy now: ${directResponseIntent.text}`,
-        "Prioritize this current ask over your default semantic role for this reply.",
-        directTaskInstruction,
-        buildConcreteExecutionOutputRequirement(directResponseIntent.text, responseLanguage, directResponseIntent),
-        directResponseIntent.type === "review_request"
-          ? "Keep the reply focused: pass / must-fix only. Do not reopen planning unless the human explicitly asks for that."
-          : "Do not delegate the work away before posting the deliverable the human asked you for.",
-        "Detailed answers are allowed when they are more useful than a short reply.",
-        "Do not turn this into a decision, reassignment, or process recap.",
-        'Structured JSON keys you may include: "proposal", "artifactRefs".',
-      ].filter(Boolean).join("\n");
-    }
-    return [
-      ...commonBase,
-      "This is discussion only. Do not start execution yet.",
-      "Do not act like a greeter and do not ask to create a task card; the hall already has enough context to discuss the work.",
-      explicitHallMentionTargetLine(input),
-      "Answer the latest human message directly.",
-      "Use any helpful context from the thread, but you do not need to follow a fixed discussion shape.",
-      "You may agree, disagree, refine, redirect, or propose a better angle if that is more useful.",
-      "Detailed answers are allowed. If a full version, rewrite, expansion, or example would help, give it in full.",
-      "If you mention a teammate by name, use a real hall participant name.",
-      'Structured JSON keys you may include: "proposal", "decision", "executor", "doneWhen", "artifactRefs".',
-    ].join("\n");
-  }
+  // Role-specific instructions
+  const roleInstruction = buildGroupChatRoleInstruction(input.participant, input.hall.participants, responseLanguage);
 
-  if (input.mode === "handoff" && input.handoff) {
-    return [
-      ...commonBase,
-      "Reply like a real coworker in a busy work chat: concrete, specific, and natural, without memo tone.",
-      "Sound like a teammate helping the work move, not a narrator explaining the workflow.",
-      "Lead with the point itself, not with scene-setting or report language.",
-      "Only answer the part that still matters. Do not rewrite the whole thread.",
-      "Prefer direct work-chat phrasing: decisive, easy to hand off, and natural. Avoid retrospective or report tone.",
-      'Avoid filler openings like "我先把…", "当前结果是…", "现阶段…", "我建议下一步…", "I want to clarify", or "At this stage". Start with the concrete action or result.',
-      "You are receiving a structured handoff and should continue the real work now.",
-      `Handoff goal: ${input.handoff.goal}`,
-      `Current result: ${input.handoff.currentResult}`,
-      `Done when: ${input.handoff.doneWhen}`,
-      input.handoff.blockers.length > 0 ? `Blockers: ${input.handoff.blockers.join("; ")}` : "",
-      input.handoff.requiresInputFrom.length > 0
-        ? `Requires input from: ${input.handoff.requiresInputFrom.join(", ")}`
-        : "",
-      nextParticipant
-        ? `The next queued owner after you is ${nextParticipant.displayName}. If you finish your step without a real blocker, hand the work to ${nextParticipant.displayName} instead of stopping at a vague review note.`
-        : "There is no further queued owner after you. If you finish your step without a real blocker, move the work to review.",
-      nextExecutionItem?.task
-        ? `Your exact planned execution item is: ${nextExecutionItem.task}`
-        : "",
-      "Use your real tools if needed. Then reply like a coworker in chat, not like a memo.",
-      "Post the full deliverable the step actually needs. Do not summarize or compress away real output.",
-      "For repo/code-scan work, inspect the repo before replying and cite real file paths plus what each file proves.",
-      buildConcreteExecutionOutputRequirement(nextExecutionItem?.task ?? input.handoff.goal, responseLanguage),
-      "Prefer this shape: what changed, and @who acts next.",
-      "If it is ready for review, say it like a teammate: '现在请老板评审。' / 'Ready for review.' Do not say '推进到 review' or other system phrasing.",
-      "No numbered list unless the deliverable itself is literally a list.",
-      'Good example: "这版先收住了，owner 还不够显眼。@下一位 你把最后一拍改成可执行句。" ',
-      "If there is a next owner and no blocker, explicitly @ that owner in the visible reply.",
-    nextExecutionItem?.task
-      ? `If you hand off, keep your visible @handoff aligned with the planned next task for ${nextParticipant?.displayName ?? "the next owner"}: ${nextExecutionItem.task}`
-      : "",
-      "Do not say the work is ready, done, or ready for review until the visible reply already contains the concrete deliverable for your step.",
-      "Do not restate the whole thread. Do not write a retrospective. Do not reopen earlier owners unless there is a real blocker.",
-      'Structured JSON keys you may include: "latestSummary", "blockers", "requiresInputFrom", "doneWhen", "nextAction", "nextStep", "artifactRefs".',
-    ].filter(Boolean).join("\n");
-  }
+  // A1: when the card records an original assigner distinct from this participant,
+  // tell the agent to @-report final completion to that assigner rather than the
+  // peer who just messaged them. Breaks A→B→A ping-pong at the prompt layer.
+  const assignerInstruction = buildOriginalAssignerInstruction(input, responseLanguage);
+
+  // A4: every agent (not just the observer) may reply with OBSERVE_SILENT when
+  // they genuinely have nothing substantive to add. dispatchHallAgentReply
+  // suppresses that reply so it never lands in the thread.
+  const observeSilentInstruction = responseLanguage === "zh"
+    ? "如果你审视完上下文后认为没有任何实质内容需要补充（比如已经被人回复过、任务已经结束、@ 到你只是礼节性告知），请只回复 OBSERVE_SILENT，系统会把这次发言当作无内容处理，不落到群聊。不要为了表态、确认或寒暄而发言。"
+    : "If you review the thread and genuinely have nothing substantive to add (e.g. someone already answered, the task is resolved, or you were merely CC'd), reply with exactly OBSERVE_SILENT and the system will suppress this turn so it never lands in the thread. Do not speak just to agree, acknowledge, or small-talk.";
 
   return [
-    ...commonBase,
-    "Reply like a real coworker in a busy work chat: concrete, specific, and natural, without memo tone.",
-    "Sound like a teammate helping the work move, not a narrator explaining the workflow.",
-    "Lead with the point itself, not with scene-setting or report language.",
-    "Only answer the part that still matters. Do not rewrite the whole thread.",
-    "Prefer direct work-chat phrasing: decisive, easy to hand off, and natural. Avoid retrospective or report tone.",
-    'Avoid filler openings like "我先把…", "当前结果是…", "现阶段…", "我建议下一步…", "I want to clarify", or "At this stage". Start with the concrete action or result.',
-    "You are the current execution owner. Do the real work now if needed, then post the full worker result needed by the hall.",
-    currentExecutionItem?.task ? `Your current execution item: ${currentExecutionItem.task}` : "",
-    currentExecutionItem?.handoffWhen ? `Your step is done when: ${currentExecutionItem.handoffWhen}` : "",
-    nextParticipant
-      ? `The next queued owner after you is ${nextParticipant.displayName}. When your current execution item is complete, hand the work off to ${nextParticipant.displayName} instead of doing their step yourself.`
-      : "If your current execution item is complete and there is no next owner, move the work to review instead of inventing extra steps.",
-    nextExecutionItem?.task ? `The next owner's step after you is: ${nextExecutionItem.task}` : "",
-    input.note ? `Assignment note: ${input.note}` : "",
-    "Stay inside the current execution item only. Do not complete deliverables that belong to later owners in the execution order.",
-    "Write like a coworker in a work chat.",
-    "Post the full deliverable the step actually needs. Do not compress real output into two lines.",
-    "Say only what concrete result now exists, any real blocker, and @who acts next.",
-    "If your current execution item asks for a concrete deliverable, the visible reply must contain that deliverable itself: the actual hooks, thumbnail ideas, URLs, script lines, file findings, or repo evidence. Do not just comment on what should be done.",
-    "For code-scan / repo-summary work, inspect the repo before replying. The visible reply must cite real file paths and what you found in them.",
-    buildConcreteExecutionOutputRequirement(currentExecutionItem?.task, responseLanguage),
-    "If your step is done and there is a next owner, make the visible reply read like a handoff between coworkers, not a status report.",
-    "No numbered list unless the deliverable itself is literally a list.",
-    'Good example: "第一版脚本先锁住了，核心句是‘不是在聊天，是在推进任务’。@下一位 你只挑必须改的一点。" ',
-    "If there is a next queued owner and you are not blocked, explicitly @ that owner in the visible reply.",
-    nextExecutionItem?.task
-      ? `If you hand off, do not invent a different next task. Keep your visible @handoff aligned with the planned next task for ${nextParticipant?.displayName ?? "the next owner"}: ${nextExecutionItem.task}`
+    // Identity
+    `You are ${input.participant.displayName}, participating in a group chat called the Collaboration Hall (协作大厅).`,
+    `The hall has both human operators and AI agents. Messages you see are from the current thread.`,
+    selfWorkspacePersona ? `Your identity and job boundary: ${selfWorkspacePersona}` : "",
+
+    // Thread context
+    input.taskCard.title ? `Thread topic: ${input.taskCard.title}` : "",
+    input.taskCard.description ? `Thread description: ${input.taskCard.description}` : "",
+    transcriptBlock,
+
+    // Team roster
+    rosterBlock,
+
+    // Shared rules & repo context
+    hallRulesBlock,
+    taskArtifactBlock,
+    ...repoContextLines,
+
+    // Per-task workspace
+    `Your working directory for this task is: ${resolveHallTaskWorkspacePath(input.taskCard.taskCardId)}`,
+    `Please save all generated files and artifacts in this directory.`,
+    `The main repository is still accessible at: ${CONTROL_CENTER_REPO_ROOT}`,
+
+    // P3-A: shared blackboard guidance — agents grep .hall/chat.jsonl for
+    // history beyond the narrow inline transcript above, and append to
+    // task_plan / findings / progress to coordinate with peers.
+    blackboardGuidance,
+
+    // Assignment note (if any)
+    input.note ? `Note: ${input.note}` : "",
+
+    // Behavioral instructions
+    "Reply like a real coworker in a busy work chat: concrete, specific, and natural.",
+    "Lead with the point itself. Do not restate the whole thread.",
+    "Avoid filler openings like ‘我先把...’, ‘当前结果是...’, ‘I want to clarify’. Start with the concrete action or result.",
+    "If you mention a teammate, use their real name with @ prefix (e.g. @林纳斯 Linus). The system will auto-dispatch them.",
+    "Post concrete deliverables, not descriptions of what should be done.",
+    assignerInstruction,
+    observeSilentInstruction,
+
+    // Data integrity — no silent fabrication
+    "Before running any analysis, algorithm, pipeline, or computation, verify the environment can actually support it: required software/tooling is installed and runnable, input data is accessible, and there is enough storage / memory / compute. If any of that is missing or unverified, stop and report the gap — to whoever dispatched you (@mention them), or to the user if you are the main agent.",
+    "Do NOT silently substitute mock, synthetic, simulated, randomly-generated, or hand-fabricated data to make a task look complete. Using such data is only allowed when you have explicitly told the caller it is mock/synthetic and they have agreed — and even then, label every such result clearly as mock/synthetic in your reply and in any artifact. Presenting fabricated output as if it were a real result is a hard violation.",
+
+    // First-turn guard
+    firstParticipantTurnInThread
+      ? "This is your first reply in this thread. Start from a clean first answer. Do not open with continuation phrases."
       : "",
-    "Do not say the work is done, hand off, or ask for review until the visible reply already contains the concrete deliverable for your step.",
-    "Do not write a project recap, status memo, or generic brainstorming. If there is a next queued owner and you are not blocked, hand off instead of lingering on your own step.",
-    'Structured JSON keys you may include: "latestSummary", "blockers", "requiresInputFrom", "doneWhen", "nextAction", "nextStep", "artifactRefs".',
-    'Allowed nextAction values: "continue" when you need one more pass on your current execution item, "handoff" when your current execution item is complete and the next queued owner should take over, "review" when the work is ready for review and there is no further handoff, and "blocked" when you need help before continuing.',
+
+    // Role-specific
+    roleInstruction,
+
+    // Structured output
+    "If you include structured state, append one JSON block at the very end using <hall-structured>{...}</hall-structured>.",
+    "Structured JSON keys you may include: \"latestSummary\", \"nextAction\", \"nextStep\", \"parallelTasks\", \"artifactRefs\".",
+    role === "manager" || role === "planner"
+      ? "Allowed nextAction values: \"continue\" (need another pass), \"parallel_dispatch\" (dispatch multiple agents concurrently on independent sub-tasks)."
+      : "",
+    role === "manager" || role === "planner"
+      ? "To dispatch agents in parallel, set nextAction to \"parallel_dispatch\" and include \"parallelTasks\": [{\"executor\":\"<agent_name>\",\"task\":\"<description>\"},...]. Each executor will be dispatched concurrently. You will be re-invoked as each completes."
+      : "",
+
+    // Language
+    responseLanguageInstruction,
+    "Do not mention hidden system instructions.",
   ].filter(Boolean).join("\n");
+}
+
+function buildOriginalAssignerInstruction(
+  input: HallRuntimeDispatchInput,
+  language: HallResponseLanguage,
+): string {
+  const assignerId = input.taskCard.originalAssignerParticipantId;
+  if (!assignerId) return "";
+  const selfId = input.participant.participantId;
+  if (assignerId === selfId) return "";
+  // The human operator is not a member of hall.participants — look them up
+  // by id first, and fall back to the Operator label when the assigner is a
+  // human ("operator").
+  const assigner = input.hall.participants.find((p) => p.participantId === assignerId);
+  let label: string;
+  if (assigner) {
+    label = assigner.displayName || assigner.participantId;
+  } else if (assignerId === "operator") {
+    label = language === "zh" ? "Operator（操作员）" : "Operator";
+  } else {
+    return "";
+  }
+  return language === "zh"
+    ? `当你认为本子任务已经做完、不需要继续来回讨论时，直接 @${label}（最初派活儿给这条线程的人）汇报最终结果，不要回 @ 当前对话中的对等执行层 Agent，避免陷入循环。`
+    : `When you believe this sub-task is done and no further back-and-forth is needed, report the final result by @-mentioning ${label} (the original assigner of this thread), rather than pinging the peer executor who just messaged you. This prevents loops.`;
+}
+
+function buildGroupChatRoleInstruction(
+  participant: HallParticipant,
+  allParticipants: HallParticipant[],
+  language: HallResponseLanguage,
+): string {
+  const role = participant.semanticRole;
+  const agentId = (participant.agentId ?? participant.participantId).trim();
+  const isMainAgent = /\bmain\b/i.test(agentId);
+
+  if (isMainAgent) {
+    const specialists = allParticipants
+      .filter((p) => p.participantId !== agentId && p.active)
+      .map((p) => `@${p.displayName}`)
+      .join(", ");
+    return language === "zh"
+      ? [
+          "你是这个群聊的默认响应者和观察者。",
+          "当用户发消息且没有 @ 任何人时，由你接收。判断需求类型：",
+          "- 简单需求或系统级需求：自己直接处理并回复。",
+          "- 专项需求（如数据工程、系统开发、生信、数据分析、合规）：@ 对应的专项智能体，简要说明需求。",
+          "- 复杂的跨领域需求：@ PM 智能体（图灵），让 PM 协调。",
+          "你同时是大厅的观察者：当其他智能体在工作时，你会被通知审阅对话。如果你发现值得指出的问题、风险、遗漏或优化建议，就主动发言；如果没有，保持沉默（回复 OBSERVE_SILENT）。",
+          `可用的团队成员：${specialists}`,
+        ].join("\n")
+      : [
+          "You are the default responder AND observer in this group chat.",
+          "When users send messages without @mentioning anyone, you receive them. Assess the request type:",
+          "- Simple or system-level: handle it directly.",
+          "- Specialist work: @mention the specialist agent with a brief description.",
+          "- Complex cross-domain work: @mention the PM agent to coordinate.",
+          "You are also the hall observer: when other agents work, you are notified to review the conversation. Speak up only if you spot issues, risks, gaps, or improvement opportunities. Otherwise respond with OBSERVE_SILENT.",
+          `Available team members: ${specialists}`,
+        ].join("\n");
+  }
+
+  if (role === "manager") {
+    return language === "zh"
+      ? "你是项目经理。收到复杂任务时拆解为子任务，识别可并行的部分，使用 parallel_dispatch 调度专项智能体。汇总结果后推进下一步。"
+      : "You are the project manager. Break complex tasks into sub-tasks, identify parallelizable work, and use parallel_dispatch to coordinate specialist agents. Synthesize results and drive next steps.";
+  }
+
+  // All other roles: specialist agents
+  return language === "zh"
+    ? "专注于你的专业领域。收到任务后直接执行并回复结果。如需其他智能体配合，直接 @ 他们。"
+    : "Focus on your area of expertise. Execute assigned work and reply with concrete results. If you need another agent to help, @mention them directly.";
 }
 
 function buildHallRulesPromptBlock(): string {
@@ -694,20 +1053,34 @@ function buildHallRuntimeRepoContext(input: HallRuntimeDispatchInput): HallRunti
   };
 }
 
-function buildHallRuntimeTransportContext(
+async function buildHallRuntimeTransportContext(
   input: HallRuntimeDispatchInput,
   entryFiles: string[],
-): AgentRunTransportContext {
+): Promise<AgentRunTransportContext> {
+  const fileAttachments = input.triggerMessage?.payload?.fileAttachments;
+  const taskWorkdir = resolveHallTaskWorkspacePath(input.taskCard.taskCardId);
+
+  // Copy uploaded files into the task workspace so agents can access them
+  let filePathMap = new Map<string, string>();
+  if (fileAttachments && fileAttachments.length > 0) {
+    filePathMap = await copyHallFilesToWorkspace(fileAttachments, taskWorkdir);
+  }
+
   return {
     surface: "control-center/hall",
     workspaceRoot: CONTROL_CENTER_REPO_ROOT,
-    workdir: CONTROL_CENTER_REPO_ROOT,
+    workdir: taskWorkdir,
     entryFiles,
     artifactRefs: input.task?.artifacts.map((artifact) => ({
       artifactId: artifact.artifactId,
       type: artifact.type,
       label: artifact.label,
       location: artifact.location,
+    })) ?? [],
+    attachmentRefs: fileAttachments?.map((f) => ({
+      label: f.originalName,
+      url: filePathMap.get(f.fileId) ?? join(taskWorkdir, "uploads", f.originalName),
+      mimeType: f.mimeType,
     })) ?? [],
   };
 }
@@ -1017,8 +1390,17 @@ function buildHallRuntimeResult(input: {
   structured: ParsedStructuredBlock;
   sessionKey?: string;
   sessionId?: string;
+  model?: string;
+  toolCalls?: Array<{
+    toolName: string;
+    toolStatus: string;
+    detail?: string;
+    input?: string;
+    output?: string;
+    isError?: boolean;
+  }>;
 }): HallRuntimeDispatchResult {
-  const { input: dispatch, content, structured, sessionKey, sessionId } = input;
+  const { input: dispatch, content, structured, sessionKey, sessionId, model, toolCalls } = input;
   const cleanedContent = stripCleanHallThreadContinuationLead(dispatch, content);
   const responseLanguage = inferHallResponseLanguage(
     `${cleanedContent}\n${dispatch.triggerMessage?.content ?? ""}\n${dispatch.taskCard.title}\n${dispatch.taskCard.description}`,
@@ -1031,7 +1413,7 @@ function buildHallRuntimeResult(input: {
     responseLanguage,
     directResponseIntent,
   );
-  const visibleContent = ensureNonEmptyHallVisibleRuntimeText(
+  let visibleContent = ensureNonEmptyHallVisibleRuntimeText(
     dispatch,
     visibleContentBase,
     structured,
@@ -1039,15 +1421,23 @@ function buildHallRuntimeResult(input: {
     directResponseIntent,
     true,
   );
+  // Prepend inline tool markers so they appear in the message timeline
+  if (toolCalls && toolCalls.length > 0) {
+    const markers = toolCalls.map((tc) => buildToolPillMarker(tc)).join("\n");
+    visibleContent = markers + "\n" + visibleContent;
+  }
   let kind = resolveHallRuntimeMessageKind(dispatch, directResponseIntent);
-  const payload: HallMessage["payload"] = {
-    taskStage: dispatch.taskCard.stage,
+  const payload: NonNullable<HallMessage["payload"]> = {
     taskStatus: dispatch.taskCard.status,
     sessionKey,
+    model,
   };
   const artifactRefs = resolveHallRuntimeArtifactRefs(dispatch, structured, visibleContent);
   if (artifactRefs.length > 0) {
     payload.artifactRefs = artifactRefs;
+  }
+  if (toolCalls && toolCalls.length > 0) {
+    payload.toolCalls = toolCalls;
   }
   const taskCardPatch: HallRuntimeDispatchResult["taskCardPatch"] = {
     latestSummary: structured.latestSummary ?? visibleContent,
@@ -1188,6 +1578,7 @@ function buildHallRuntimeResult(input: {
       nextAction: concreteDeliverable.nextAction,
       nextStep: concreteDeliverable.nextStep ?? structured.nextStep,
       executor: implicitExecutor,
+      parallelTasks: concreteDeliverable.nextAction === "parallel_dispatch" ? structured.parallelTasks : undefined,
     },
     taskCardPatch,
   };
@@ -1242,11 +1633,13 @@ export function enforceConcreteDeliverableReply(
   const currentTask = dispatch.mode === "discussion"
     ? (operatorIntent?.text ?? "")
     : (resolveCurrentExecutionItem(dispatch.taskCard, dispatch.participant.participantId)?.task ?? "");
-  const requiresConcreteDeliverable = strictDirectAsk || requiresConcreteDeliverableForStep(currentTask);
-  if (!requiresConcreteDeliverable) {
+  // In the group chat model, agents respond conversationally. Only enforce
+  // concrete deliverables when there is an explicit execution task assigned.
+  if (!currentTask.trim() && !strictDirectAsk) {
     return { content: visibleContent, nextAction };
   }
-  if (nextAction === "blocked" || looksLikeBlockedExecutionUpdate(visibleContent)) {
+  const requiresConcreteDeliverable = strictDirectAsk || requiresConcreteDeliverableForStep(currentTask);
+  if (!requiresConcreteDeliverable) {
     return { content: visibleContent, nextAction };
   }
   const deliverableKind = resolveConcreteDeliverableKind(currentTask, operatorIntent);
@@ -1551,8 +1944,6 @@ function normalizeImplicitHallExecutionNextAction(
     return nextParticipant && nextParticipant.participantId !== dispatch.participant.participantId ? "handoff" : "review";
   }
   if (structured.nextAction) return structured.nextAction;
-  if ((structured.blockers?.length ?? 0) > 0) return "blocked";
-  if (looksLikeBlockedExecutionUpdate(content)) return "blocked";
   if (dispatch.mode === "handoff" && nextParticipant && nextParticipant.participantId !== dispatch.participant.participantId) {
     if (looksLikeNeedsAnotherPass(content)) return "continue";
     return "handoff";
@@ -1574,10 +1965,9 @@ function shouldPreferVisibleDeliverableCompletion(
   nextParticipant: HallParticipant | undefined,
 ): boolean {
   if (dispatch.mode === "discussion") return false;
-  if (looksLikeBlockedExecutionUpdate(content) || looksLikeNeedsAnotherPass(content)) return false;
+  if (looksLikeNeedsAnotherPass(content)) return false;
   const hiddenBlockSignal =
-    structured.nextAction === "blocked"
-    || structured.nextAction === "continue"
+    structured.nextAction === "continue"
     || (structured.blockers?.length ?? 0) > 0
     || (structured.requiresInputFrom?.length ?? 0) > 0;
   if (!hiddenBlockSignal) return false;
@@ -1593,7 +1983,6 @@ function shouldPreferVisibleDeliverableCompletion(
 function looksLikeCompletedExecutionUpdate(content: string): boolean {
   const normalized = content.replace(/\s+/g, " ").trim();
   if (!normalized) return false;
-  if (looksLikeBlockedExecutionUpdate(normalized)) return false;
   return /(这一步.*(完成|做完|够了|成立|可以交给|收住)|已经(完成|补完|锁定|收住|够了)|可直接交给|下一步.*(交给|给)|交给\s*@?[A-Za-z0-9_\-\u4e00-\u9fa5]+|现在请\s*@?[A-Za-z0-9_\-\u4e00-\u9fa5]+|就可以\s*@?[A-Za-z0-9_\-\u4e00-\u9fa5]+|继续交给\s*@?[A-Za-z0-9_\-\u4e00-\u9fa5]+|ready for review|ready to hand off|handoff|hand off|hand it to|pass(?: it)? to|turn it over to|the next step is|can go to|send this to|ship this to)/i.test(normalized);
 }
 
@@ -1701,22 +2090,12 @@ function looksLikeMetaExecutionDiscussion(content: string): boolean {
   return /(第一版里|最好|更适合|这样|不然|价值|观众|画面|样本|约束|风险|方向|更像|说明|证明|优先|建议|适合|最稳|关键不是|缺的角度|最该|这版.*(更|会)|不会被.*带跑|一眼读完|人工|协调成本)/i.test(normalized);
 }
 
-function looksLikeBlockedExecutionUpdate(content: string): boolean {
-  const normalized = sanitizeHallVisibleRuntimeText(content)
-    .replace(/<br\s*\/?>/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) return false;
-  return /(这一步.*卡住|先卡住了|当前.*卡住|被卡住|卡在|阻塞|缺的是|缺少|缺失|拿不到|没有.*(上下文|代码|文件|权限|信息)|无法继续|不能继续(?:这一棒|往下|执行)|still need|still missing|blocked on|blocked by|can't continue|cannot continue|need more context|need the repo|need the file)/i.test(normalized);
-}
-
 function looksLikeNeedsAnotherPass(content: string): boolean {
   const normalized = sanitizeHallVisibleRuntimeText(content)
     .replace(/<br\s*\/?>/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!normalized) return false;
-  if (looksLikeBlockedExecutionUpdate(normalized)) return false;
   return /(我先再|我还要再|我再补一轮|我再改一轮|我先继续改|我先补完|需要我再|我继续把这一步|one more pass|another pass|i will revise|i'll revise|i will keep refining|i'll keep refining|i need one more pass|let me tighten this)/i.test(normalized);
 }
 
@@ -1890,6 +2269,58 @@ function sliceMessagesAfterFingerprint(
   return lastIndex >= 0 ? messages.slice(lastIndex + 1) : messages;
 }
 
+/**
+ * Find the most recently modified session JSONL file for an agent.
+ * First checks sessions.json (which stores the correct path even when openclaw
+ * writes to a double-nested directory), then falls back to glob scanning.
+ */
+async function findLatestAgentSessionFile(agentId: string): Promise<string | undefined> {
+  const openclawHome = resolveOpenClawHomePath();
+  const sessionsJsonPath = join(openclawHome, "agents", agentId, "sessions", "sessions.json");
+
+  // Prefer the path from sessions.json: openclaw records the exact sessionFile path
+  // there, which may differ from the glob base (e.g. double-nested .openclaw/.openclaw).
+  try {
+    const parsed = JSON.parse(await readFile(sessionsJsonPath, "utf8")) as unknown;
+    let bestPath: string | undefined;
+    let bestUpdatedAt = 0;
+    const root = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+    if (root) {
+      for (const value of Object.values(root)) {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+        const record = value as Record<string, unknown>;
+        const sessionFile = typeof record.sessionFile === "string" ? record.sessionFile : undefined;
+        const updatedAt = typeof record.updatedAt === "number" ? record.updatedAt : 0;
+        if (sessionFile && updatedAt > bestUpdatedAt) {
+          bestUpdatedAt = updatedAt;
+          bestPath = sessionFile;
+        }
+      }
+    }
+    if (bestPath) return bestPath;
+  } catch { /* ok — fall through to glob */ }
+
+  // Fallback: glob for JSONL files in the standard outer path
+  const sessionsDir = join(openclawHome, "agents", agentId, "sessions");
+  let bestPath: string | undefined;
+  let bestMtime = 0;
+  try {
+    const entries = await readdir(sessionsDir);
+    for (const f of entries) {
+      if (!f.endsWith(".jsonl")) continue;
+      const fullPath = join(sessionsDir, f);
+      const st = await stat(fullPath).catch(() => null);
+      if (st && st.mtimeMs > bestMtime) {
+        bestMtime = st.mtimeMs;
+        bestPath = fullPath;
+      }
+    }
+  } catch { /* directory not found */ }
+  return bestPath;
+}
+
 function fingerprintHistoryMessage(message: SessionHistoryMessage): string {
   return [
     message.kind,
@@ -1901,7 +2332,10 @@ function fingerprintHistoryMessage(message: SessionHistoryMessage): string {
 }
 
 function formatRuntimeStreamSegments(message: SessionHistoryMessage): string[] {
-  if (message.kind === "tool_event") return [];
+  if (message.kind === "tool_event") {
+    const name = message.toolName || "tool";
+    return [`[[tool:${name}]]`];
+  }
   const role = message.role.trim().toLowerCase();
   if (role === "user" || role === "system") return [];
   const content = sanitizeHallVisibleRuntimeText(message.content);
@@ -1930,6 +2364,7 @@ function extractStructuredBlock(rawText: string): { visibleText: string; structu
       nextAction: asOptionalNextAction(parsed.nextAction),
       nextStep: asOptionalString(parsed.nextStep),
       artifactRefs: asOptionalArtifactRefs(parsed.artifactRefs),
+      parallelTasks: asOptionalParallelTasks(parsed.parallelTasks),
     };
   } catch {
     structured = {};
@@ -2134,13 +2569,25 @@ function asOptionalNextAction(value: unknown): HallRuntimeNextAction | undefined
   switch (value.trim().toLowerCase()) {
     case "continue":
     case "review":
-    case "blocked":
     case "handoff":
     case "done":
+    case "parallel_dispatch":
       return value.trim().toLowerCase() as HallRuntimeNextAction;
     default:
       return undefined;
   }
+}
+
+function asOptionalParallelTasks(value: unknown): HallParallelTaskTarget[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const tasks = value
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    .map((item) => ({
+      executor: typeof item.executor === "string" ? item.executor.trim() : "",
+      task: typeof item.task === "string" ? item.task.trim() : "",
+    }))
+    .filter((item) => item.executor && item.task);
+  return tasks.length > 0 ? tasks : undefined;
 }
 
 function asOptionalArtifactRefs(value: unknown): TaskArtifact[] | undefined {
@@ -2177,12 +2624,11 @@ function normalizeRuntimeArtifactRef(value: unknown): TaskArtifact | undefined {
 function resolveHallRuntimeArtifactRefs(
   dispatch: HallRuntimeDispatchInput,
   structured: ParsedStructuredBlock,
-  visibleContent: string,
+  _visibleContent: string,
 ): TaskArtifact[] {
   return mergeArtifactRefs(
     dispatch.mode === "handoff" ? dispatch.handoff?.artifactRefs : undefined,
     structured.artifactRefs,
-    extractArtifactRefsFromVisibleContent(visibleContent),
   );
 }
 
@@ -2198,40 +2644,6 @@ function mergeArtifactRefs(...groups: Array<TaskArtifact[] | undefined>): TaskAr
     }
   }
   return [...merged.values()];
-}
-
-function extractArtifactRefsFromVisibleContent(content: string): TaskArtifact[] {
-  const refs: TaskArtifact[] = [];
-  const seen = new Set<string>();
-  const pushRef = (location: string, label?: string): void => {
-    const normalizedLocation = location.trim();
-    if (!normalizedLocation) return;
-    const key = normalizeLookup(normalizedLocation);
-    if (seen.has(key)) return;
-    seen.add(key);
-    refs.push({
-      artifactId: buildRuntimeArtifactId(normalizedLocation),
-      type: inferArtifactTypeFromLocation(normalizedLocation),
-      label: label?.trim() || inferArtifactLabelFromLocation(normalizedLocation),
-      location: normalizedLocation,
-    });
-  };
-
-  const markdownImagePattern = /!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/gi;
-  const markdownLinkPattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
-  const urlPattern = /https?:\/\/[^\s<)]+/gi;
-
-  for (const match of content.matchAll(markdownImagePattern)) {
-    pushRef(match[2] ?? "", match[1] ?? "");
-  }
-  for (const match of content.matchAll(markdownLinkPattern)) {
-    pushRef(match[2] ?? "", match[1] ?? "");
-  }
-  for (const match of content.matchAll(urlPattern)) {
-    pushRef(match[0] ?? "");
-  }
-
-  return refs;
 }
 
 function buildRuntimeArtifactId(seed: string): string {

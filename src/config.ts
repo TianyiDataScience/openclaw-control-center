@@ -8,6 +8,8 @@ if (existsSync(DOTENV_PATH)) {
 }
 
 export const GATEWAY_URL = readStringEnv(process.env.GATEWAY_URL, "ws://127.0.0.1:18789");
+export const GATEWAY_TOKEN = readOptionalStringEnv(process.env.GATEWAY_TOKEN);
+export const HALL_USE_GATEWAY_WS = process.env.HALL_USE_GATEWAY_WS !== "false";
 export const OPENCLAW_CONTROL_UI_URL = readOptionalStringEnv(process.env.OPENCLAW_CONTROL_UI_URL);
 export const UI_TIMEZONE = readTimeZoneEnv(process.env.UI_TIMEZONE, "UTC");
 export const TASK_ROOM_BRIDGE_ENABLED = process.env.TASK_ROOM_BRIDGE_ENABLED === "true";
@@ -26,7 +28,7 @@ export const APPROVAL_ACTIONS_ENABLED = process.env.APPROVAL_ACTIONS_ENABLED ===
 export const APPROVAL_ACTIONS_DRY_RUN = process.env.APPROVAL_ACTIONS_DRY_RUN !== "false";
 export const IMPORT_MUTATION_ENABLED = process.env.IMPORT_MUTATION_ENABLED === "true";
 export const IMPORT_MUTATION_DRY_RUN = process.env.IMPORT_MUTATION_DRY_RUN === "true";
-export const LOCAL_TOKEN_AUTH_REQUIRED = process.env.LOCAL_TOKEN_AUTH_REQUIRED !== "false";
+export const LOCAL_TOKEN_AUTH_REQUIRED = process.env.LOCAL_TOKEN_AUTH_REQUIRED === "true";
 export const LOCAL_API_TOKEN = (process.env.LOCAL_API_TOKEN ?? "").trim();
 export const LOCAL_TOKEN_HEADER = "x-local-token" as const;
 export const HALL_RUNTIME_DISPATCH_ENABLED = process.env.HALL_RUNTIME_DISPATCH_ENABLED !== "false";

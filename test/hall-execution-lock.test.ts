@@ -15,7 +15,6 @@ const baseTaskCard: HallTaskCard = {
   taskId: "lock-test",
   title: "Execution lock",
   description: "Lock one owner at a time.",
-  stage: "discussion",
   status: "todo",
   createdByParticipantId: "operator",
   blockers: [],

@@ -30,7 +30,6 @@ export function acquireHallExecutionLock(
   };
   return {
     ...taskCard,
-    stage: "execution",
     currentOwnerParticipantId: input.ownerParticipantId,
     currentOwnerLabel: input.ownerLabel,
     executionLock,
@@ -56,9 +55,11 @@ export function releaseHallExecutionLock(
   };
 }
 
+// Execution-lock semantics are independent of any "stage" concept: as long as
+// an execution lock exists and is unreleased, only its owner may mutate the task card.
+// This guards against two operators pressing a mutation button at the same time.
 export function assertHallExecutionAllowed(taskCard: HallTaskCard, participantId: string): void {
   const activeLock = taskCard.executionLock && !taskCard.executionLock.releasedAt ? taskCard.executionLock : undefined;
-  if (taskCard.stage !== "execution") return;
   if (!activeLock) return;
   if (activeLock.ownerParticipantId !== participantId) {
     throw new HallExecutionLockError(

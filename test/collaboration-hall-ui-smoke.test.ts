@@ -18,10 +18,8 @@ test("collaboration hall renders a three-pane hall-first shell", () => {
   assert(html.includes('data-hall-compose'));
   assert(html.includes('data-hall-headline'));
   assert(html.includes('data-hall-compose-task'));
-  assert(html.includes('data-hall-create-task'));
-  assert(html.includes('data-hall-handoff'));
   assert(html.match(/data-hall-toggle-context/g)?.length >= 2);
-  assert(html.includes('/hall-avatars/'));
+  assert(html.includes('/avatars/'));
   assert(html.includes('hall-empty-actions'));
   assert(html.includes('hall-thread-subtitle'));
   const script = renderCollaborationHallClientScript("en");
@@ -29,14 +27,12 @@ test("collaboration hall renders a three-pane hall-first shell", () => {
   assert(script.includes("new EventSource('/api/hall/events"));
   assert(script.includes("draft_start"));
   assert(script.includes("draft_delta"));
-  assert(script.includes("draftTtlMs = 30_000"));
   assert(script.includes("renderTypingStrip"));
   assert(script.includes("renderMemberStrip"));
   assert(script.includes("renderToolbarMetaNote"));
   assert(script.includes("participantPresence"));
   assert(script.includes("hall-typing-dots"));
   assert(script.includes("window.__openclawHallSetExecutionOrder"));
-  assert(script.includes("window.__openclawHallContinueDiscussion"));
   assert(script.includes("is-planning-order"));
   assert(script.includes("Start execution"));
   assert(zhScript.includes("开始执行（"));
@@ -44,8 +40,6 @@ test("collaboration hall renders a three-pane hall-first shell", () => {
   assert(!zhScript.includes("更换当前执行者"));
   assert(!html.includes('data-hall-assign'));
   assert(!script.includes("data-hall-assign"));
-  assert(html.includes("data-hall-start-execution"));
-  assert(html.includes("data-hall-plan-order"));
   assert(html.includes("is-planning-order .hall-pane--thread"));
   assert(html.includes("is-planning-order .hall-composer-shell"));
   assert(html.includes("is-planning-order .hall-thread"));
@@ -73,7 +67,7 @@ test("collaboration hall renders a three-pane hall-first shell", () => {
   assert(script.includes("sanitizeDraftVisibleText"));
   assert(script.includes("const visibleTypingDrafts = () => visibleDrafts().filter((draft) => !draft.settledAt);"));
   assert(script.includes("const syntheticExecutionHandoffDraft = (taskCard, persistedThreadMessages) => {"));
-  assert(script.includes("if (!taskCard || taskCard.stage !== 'execution' || !taskCard.currentOwnerParticipantId) return [];"));
+  assert(script.includes("executionLock"));
   assert(script.includes("const latestHandoff = [...persistedThreadMessages].reverse().find((message) => {"));
   assert(script.includes("targetIds.includes(ownerParticipantId)"));
   assert(script.includes("draftId: 'synthetic-execution:' + taskCard.taskCardId + ':' + ownerParticipantId"));
@@ -96,503 +90,6 @@ test("hall chat page source wires the hall workbench into its own section", asyn
   assert(source.includes('const hallChatSection = needsHallChat ? `'));
   assert(source.includes("${collaborationHallWorkbench}"));
   assert(source.includes('if (options.section === "hall-chat") sectionBody = hallChatSection;'));
-});
-
-test("review-stage hall cards with a queued next round still render a start-execution action", () => {
-  const html = renderCollaborationHall({
-    language: "zh",
-    hall: {
-      hallId: "main",
-      title: "Collaboration Hall",
-      participants: [
-        { participantId: "main", agentId: "main", displayName: "Main", semanticRole: "manager", active: true, aliases: ["Main"] },
-        { participantId: "pandas", agentId: "pandas", displayName: "Pandas", semanticRole: "coder", active: true, aliases: ["Pandas"] },
-        { participantId: "monkey", agentId: "monkey", displayName: "Monkey", semanticRole: "planner", active: true, aliases: ["Monkey"] },
-      ],
-      taskCardIds: ["demo"],
-      messageIds: ["demo-message"],
-      lastMessageId: "demo-message",
-      latestMessageAt: "2026-03-24T10:05:00.000Z",
-      createdAt: "2026-03-24T10:00:00.000Z",
-      updatedAt: "2026-03-24T10:05:00.000Z",
-    },
-    hallSummary: {
-      hallId: "main",
-      headline: "A first execution pass finished and the next round is ready to start.",
-      activeTaskCount: 1,
-      waitingReviewCount: 1,
-      blockedTaskCount: 0,
-      currentSpeakerLabel: "Monkey",
-      updatedAt: "2026-03-24T10:05:00.000Z",
-    },
-    taskCards: [
-      {
-        card: {
-          hallId: "main",
-          taskCardId: "demo",
-          projectId: "collaboration-hall",
-          taskId: "demo-task",
-          roomId: "collaboration-hall:demo-task",
-          title: "Build the public collaboration hall",
-          description: "Keep discussion, execution, and review in one visible timeline.",
-          stage: "review",
-          status: "in_progress",
-          createdByParticipantId: "operator",
-          currentOwnerParticipantId: "monkey",
-          currentOwnerLabel: "Monkey",
-          currentExecutionItem: {
-            itemId: "done-monkey",
-            participantId: "monkey",
-            task: "Package the first reviewable demo teaser.",
-            handoffWhen: "Once the teaser is posted back to the hall.",
-          },
-          proposal: "Finish the first teaser, then start a second round with pandas.",
-          decision: "Use the first teaser as evidence, then launch the next implementation round.",
-          doneWhen: "The second round starts explicitly from the decision card.",
-          plannedExecutionOrder: ["pandas"],
-          plannedExecutionItems: [
-            {
-              itemId: "next-pandas",
-              participantId: "pandas",
-              task: "Turn the reviewed teaser into a second implementation pass.",
-              handoffWhen: "When the next pass is ready for review.",
-            },
-          ],
-          latestSummary: "The first pass is done; the next round should start with pandas.",
-          blockers: [],
-          requiresInputFrom: [],
-          mentionedParticipantIds: [],
-          sessionKeys: [],
-          createdAt: "2026-03-24T10:00:00.000Z",
-          updatedAt: "2026-03-24T10:05:00.000Z",
-        },
-        summary: {
-          taskCardId: "demo",
-          projectId: "collaboration-hall",
-          taskId: "demo-task",
-          headline: "The first pass finished; the next queued owner is pandas.",
-          currentOwnerLabel: "Monkey",
-          nextAction: "Start the next execution round with pandas.",
-          stage: "review",
-          blockerCount: 0,
-          updatedAt: "2026-03-24T10:05:00.000Z",
-        },
-        task: {
-          projectId: "collaboration-hall",
-          taskId: "demo-task",
-          title: "Build the public collaboration hall",
-          status: "in_progress",
-          owner: "Operator",
-          roomId: "collaboration-hall:demo-task",
-          definitionOfDone: ["A reviewable teaser exists", "The next round can be started from the hall"],
-          artifacts: [],
-          rollback: { strategy: "manual", steps: [] },
-          sessionKeys: [],
-          budget: {},
-          updatedAt: "2026-03-24T10:05:00.000Z",
-        },
-      },
-    ],
-    selectedTaskCard: {
-      hallId: "main",
-      taskCardId: "demo",
-      projectId: "collaboration-hall",
-      taskId: "demo-task",
-      roomId: "collaboration-hall:demo-task",
-      title: "Build the public collaboration hall",
-      description: "Keep discussion, execution, and review in one visible timeline.",
-      stage: "review",
-      status: "in_progress",
-      createdByParticipantId: "operator",
-      currentOwnerParticipantId: "monkey",
-      currentOwnerLabel: "Monkey",
-      currentExecutionItem: {
-        itemId: "done-monkey",
-        participantId: "monkey",
-        task: "Package the first reviewable demo teaser.",
-        handoffWhen: "Once the teaser is posted back to the hall.",
-      },
-      proposal: "Finish the first teaser, then start a second round with pandas.",
-      decision: "Use the first teaser as evidence, then launch the next implementation round.",
-      doneWhen: "The second round starts explicitly from the decision card.",
-      plannedExecutionOrder: ["pandas"],
-      plannedExecutionItems: [
-        {
-          itemId: "next-pandas",
-          participantId: "pandas",
-          task: "Turn the reviewed teaser into a second implementation pass.",
-          handoffWhen: "When the next pass is ready for review.",
-        },
-      ],
-      latestSummary: "The first pass is done; the next round should start with pandas.",
-      blockers: [],
-      requiresInputFrom: [],
-      mentionedParticipantIds: [],
-      sessionKeys: [],
-      createdAt: "2026-03-24T10:00:00.000Z",
-      updatedAt: "2026-03-24T10:05:00.000Z",
-    },
-    selectedTaskSummary: {
-      taskCardId: "demo",
-      projectId: "collaboration-hall",
-      taskId: "demo-task",
-      headline: "The first pass finished; the next queued owner is pandas.",
-      currentOwnerLabel: "Monkey",
-      nextAction: "Start the next execution round with pandas.",
-      stage: "review",
-      blockerCount: 0,
-      updatedAt: "2026-03-24T10:05:00.000Z",
-    },
-    selectedTask: {
-      projectId: "collaboration-hall",
-      taskId: "demo-task",
-      title: "Build the public collaboration hall",
-      status: "in_progress",
-      owner: "Operator",
-      roomId: "collaboration-hall:demo-task",
-      definitionOfDone: ["A reviewable teaser exists", "The next round can be started from the hall"],
-      artifacts: [],
-      rollback: { strategy: "manual", steps: [] },
-      sessionKeys: [],
-      budget: {},
-      updatedAt: "2026-03-24T10:05:00.000Z",
-    },
-    messages: [],
-  });
-
-  assert(html.includes("开始执行（"));
-  assert(!html.includes("更换当前执行者"));
-  assert(html.includes("data-hall-start-execution"));
-});
-
-test("discussion-stage proposals still render the bottom decision console actions", () => {
-  const html = renderCollaborationHall({
-    language: "zh",
-    hall: {
-      hallId: "main",
-      title: "Collaboration Hall",
-      participants: [
-        { participantId: "coq", agentId: "coq", displayName: "Coq", semanticRole: "planner", active: true, aliases: ["Coq"] },
-        { participantId: "monkey", agentId: "monkey", displayName: "Monkey", semanticRole: "coder", active: true, aliases: ["Monkey"] },
-      ],
-      taskCardIds: ["demo"],
-      messageIds: ["coq-1", "monkey-1"],
-      lastMessageId: "monkey-1",
-      latestMessageAt: "2026-03-29T17:00:00.000Z",
-      createdAt: "2026-03-29T16:58:00.000Z",
-      updatedAt: "2026-03-29T17:00:00.000Z",
-    },
-    hallSummary: {
-      hallId: "main",
-      headline: "The discussion settled on a concrete first slice.",
-      activeTaskCount: 1,
-      waitingReviewCount: 0,
-      blockedTaskCount: 0,
-      currentSpeakerLabel: "Monkey",
-      updatedAt: "2026-03-29T17:00:00.000Z",
-    },
-    taskCards: [
-      {
-        card: {
-          hallId: "main",
-          taskCardId: "demo",
-          projectId: "collaboration-hall",
-          taskId: "demo-task",
-          roomId: "collaboration-hall:demo-task",
-          title: "Introduce the hall with a short video",
-          description: "Show the moment when the task gets picked up.",
-          stage: "discussion",
-          status: "in_progress",
-          createdByParticipantId: "operator",
-          proposal: "Open on a small task entering the hall, then land on owner and next action.",
-          latestSummary: "Open on a small task entering the hall, then land on owner and next action.",
-          blockers: [],
-          requiresInputFrom: [],
-          mentionedParticipantIds: [],
-          sessionKeys: [],
-          discussionCycle: {
-            participantIds: ["coq", "monkey"],
-            completedParticipantIds: ["coq", "monkey"],
-          },
-          createdAt: "2026-03-29T16:58:00.000Z",
-          updatedAt: "2026-03-29T17:00:00.000Z",
-        },
-        summary: {
-          taskCardId: "demo",
-          projectId: "collaboration-hall",
-          taskId: "demo-task",
-          headline: "Open on a small task entering the hall, then land on owner and next action.",
-          currentOwnerLabel: "",
-          nextAction: "Plan the execution order for the first concrete deliverable.",
-          stage: "discussion",
-          blockerCount: 0,
-          updatedAt: "2026-03-29T17:00:00.000Z",
-        },
-        task: {
-          projectId: "collaboration-hall",
-          taskId: "demo-task",
-          title: "Introduce the hall with a short video",
-          status: "in_progress",
-          owner: "Operator",
-          roomId: "collaboration-hall:demo-task",
-          definitionOfDone: ["A concrete first cut is chosen"],
-          artifacts: [],
-          rollback: { strategy: "manual", steps: [] },
-          sessionKeys: [],
-          budget: {},
-          updatedAt: "2026-03-29T17:00:00.000Z",
-        },
-      },
-    ],
-    selectedTaskCard: {
-      hallId: "main",
-      taskCardId: "demo",
-      projectId: "collaboration-hall",
-      taskId: "demo-task",
-      roomId: "collaboration-hall:demo-task",
-      title: "Introduce the hall with a short video",
-      description: "Show the moment when the task gets picked up.",
-      stage: "discussion",
-      status: "in_progress",
-      createdByParticipantId: "operator",
-      proposal: "Open on a small task entering the hall, then land on owner and next action.",
-      latestSummary: "Open on a small task entering the hall, then land on owner and next action.",
-      blockers: [],
-      requiresInputFrom: [],
-      mentionedParticipantIds: [],
-      sessionKeys: [],
-      discussionCycle: {
-        participantIds: ["coq", "monkey"],
-        completedParticipantIds: ["coq", "monkey"],
-      },
-      createdAt: "2026-03-29T16:58:00.000Z",
-      updatedAt: "2026-03-29T17:00:00.000Z",
-    },
-    selectedTaskSummary: {
-      taskCardId: "demo",
-      projectId: "collaboration-hall",
-      taskId: "demo-task",
-      headline: "Open on a small task entering the hall, then land on owner and next action.",
-      currentOwnerLabel: "",
-      nextAction: "Plan the execution order for the first concrete deliverable.",
-      stage: "discussion",
-      blockerCount: 0,
-      updatedAt: "2026-03-29T17:00:00.000Z",
-    },
-    selectedTask: {
-      projectId: "collaboration-hall",
-      taskId: "demo-task",
-      title: "Introduce the hall with a short video",
-      status: "in_progress",
-      owner: "Operator",
-      roomId: "collaboration-hall:demo-task",
-      definitionOfDone: ["A concrete first cut is chosen"],
-      artifacts: [],
-      rollback: { strategy: "manual", steps: [] },
-      sessionKeys: [],
-      budget: {},
-      updatedAt: "2026-03-29T17:00:00.000Z",
-    },
-    messages: [],
-  });
-
-  assert(html.includes("讨论结论"));
-  assert(html.includes("data-hall-plan-order"));
-  assert(html.includes("继续讨论"));
-});
-
-test("selected task renders the current console in the bottom decision panel instead of the message history", () => {
-  const html = renderCollaborationHall({
-    language: "zh",
-    hall: {
-      hallId: "main",
-      title: "Collaboration Hall",
-      participants: [
-        { participantId: "main", agentId: "main", displayName: "Main", semanticRole: "manager", active: true, aliases: ["Main"] },
-        { participantId: "otter", agentId: "otter", displayName: "Otter", semanticRole: "reviewer", active: true, aliases: ["Otter"] },
-      ],
-      taskCardIds: ["demo"],
-      messageIds: ["message-1"],
-      lastMessageId: "message-1",
-      latestMessageAt: "2026-03-28T13:21:32.962Z",
-      createdAt: "2026-03-28T13:15:22.034Z",
-      updatedAt: "2026-03-28T13:21:32.962Z",
-    },
-    hallSummary: {
-      hallId: "main",
-      headline: "Current console should stay pinned under the timeline.",
-      activeTaskCount: 1,
-      waitingReviewCount: 1,
-      blockedTaskCount: 0,
-      currentSpeakerLabel: "Otter",
-      updatedAt: "2026-03-28T13:21:32.962Z",
-    },
-    taskCards: [{
-      card: {
-        hallId: "main",
-        taskCardId: "demo",
-        projectId: "collaboration-hall",
-        taskId: "demo-task",
-        roomId: "collaboration-hall:demo-task",
-        title: "我想要做一个视频 介绍我的群聊功能",
-        description: "把讨论收敛成当前 owner 和 next action。",
-        stage: "review",
-        status: "in_progress",
-        createdByParticipantId: "operator",
-        currentOwnerParticipantId: "otter",
-        currentOwnerLabel: "otter",
-        currentExecutionItem: {
-          itemId: "review-otter",
-          participantId: "otter",
-          task: "检查上一位的结果，指出必须改的点；如果没有硬阻塞，就直接把可继续版本交给下一位。",
-          handoffWhen: "没有 must-fix 时直接请老板评审。",
-        },
-        decision: "任务标题不仅要短，还要直接写成产物目标，例如‘出3个thumbnail idea’。",
-        latestSummary: "任务标题不仅要短，还要直接写成产物目标，例如‘出3个thumbnail idea’。",
-        blockers: [],
-        requiresInputFrom: [],
-        mentionedParticipantIds: [],
-        plannedExecutionOrder: ["coq", "main"],
-        plannedExecutionItems: [
-          {
-            itemId: "coq-1",
-            participantId: "coq",
-            task: "产出 3 个 thumbnail 页面 URL。",
-            handoffToParticipantId: "main",
-            handoffWhen: "贴完 URL 后交给 main 收口。",
-          },
-          {
-            itemId: "main-2",
-            participantId: "main",
-            task: "收口并决定下一轮。",
-            handoffWhen: "确认是否继续讨论或开始下一轮。",
-          },
-        ],
-        sessionKeys: [],
-        createdAt: "2026-03-28T13:15:22.034Z",
-        updatedAt: "2026-03-28T13:21:32.962Z",
-      },
-      summary: {
-        taskCardId: "demo",
-        projectId: "collaboration-hall",
-        taskId: "demo-task",
-        headline: "任务标题不仅要短，还要直接写成产物目标，例如‘出3个thumbnail idea’。",
-        currentOwnerLabel: "otter",
-        nextAction: "调整执行顺序或继续讨论。",
-        stage: "review",
-        blockerCount: 0,
-        updatedAt: "2026-03-28T13:21:32.962Z",
-      },
-      task: {
-        projectId: "collaboration-hall",
-        taskId: "demo-task",
-        title: "我想要做一个视频 介绍我的群聊功能",
-        status: "in_progress",
-        owner: "Operator",
-        roomId: "collaboration-hall:demo-task",
-        definitionOfDone: ["有明确产物目标", "当前控制卡固定在最下面"],
-        artifacts: [],
-        rollback: { strategy: "manual", steps: [] },
-        sessionKeys: [],
-        budget: {},
-        updatedAt: "2026-03-28T13:21:32.962Z",
-      },
-    }],
-    selectedTaskCard: {
-      hallId: "main",
-      taskCardId: "demo",
-      projectId: "collaboration-hall",
-      taskId: "demo-task",
-      roomId: "collaboration-hall:demo-task",
-      title: "我想要做一个视频 介绍我的群聊功能",
-      description: "把讨论收敛成当前 owner 和 next action。",
-      stage: "review",
-      status: "in_progress",
-      createdByParticipantId: "operator",
-      currentOwnerParticipantId: "otter",
-      currentOwnerLabel: "otter",
-      currentExecutionItem: {
-        itemId: "review-otter",
-        participantId: "otter",
-        task: "检查上一位的结果，指出必须改的点；如果没有硬阻塞，就直接把可继续版本交给下一位。",
-        handoffWhen: "没有 must-fix 时直接请老板评审。",
-      },
-      decision: "任务标题不仅要短，还要直接写成产物目标，例如‘出3个thumbnail idea’。",
-      latestSummary: "任务标题不仅要短，还要直接写成产物目标，例如‘出3个thumbnail idea’。",
-      blockers: [],
-      requiresInputFrom: [],
-      mentionedParticipantIds: [],
-      plannedExecutionOrder: ["coq", "main"],
-      plannedExecutionItems: [
-        {
-          itemId: "coq-1",
-          participantId: "coq",
-          task: "产出 3 个 thumbnail 页面 URL。",
-          handoffToParticipantId: "main",
-          handoffWhen: "贴完 URL 后交给 main 收口。",
-        },
-        {
-          itemId: "main-2",
-          participantId: "main",
-          task: "收口并决定下一轮。",
-          handoffWhen: "确认是否继续讨论或开始下一轮。",
-        },
-      ],
-      sessionKeys: [],
-      createdAt: "2026-03-28T13:15:22.034Z",
-      updatedAt: "2026-03-28T13:21:32.962Z",
-    },
-    selectedTaskSummary: {
-      taskCardId: "demo",
-      projectId: "collaboration-hall",
-      taskId: "demo-task",
-      headline: "任务标题不仅要短，还要直接写成产物目标，例如‘出3个thumbnail idea’。",
-      currentOwnerLabel: "otter",
-      nextAction: "调整执行顺序或继续讨论。",
-      stage: "review",
-      blockerCount: 0,
-      updatedAt: "2026-03-28T13:21:32.962Z",
-    },
-    selectedTask: {
-      projectId: "collaboration-hall",
-      taskId: "demo-task",
-      title: "我想要做一个视频 介绍我的群聊功能",
-      status: "in_progress",
-      owner: "Operator",
-      roomId: "collaboration-hall:demo-task",
-      definitionOfDone: ["有明确产物目标", "当前控制卡固定在最下面"],
-      artifacts: [],
-      rollback: { strategy: "manual", steps: [] },
-      sessionKeys: [],
-      budget: {},
-      updatedAt: "2026-03-28T13:21:32.962Z",
-    },
-    messages: [{
-      hallId: "main",
-      messageId: "message-1",
-      kind: "handoff",
-      authorParticipantId: "coq",
-      authorLabel: "Coq-每日新闻",
-      authorSemanticRole: "planner",
-      content: "3 个 thumbnail 页都好了，现在请老板评审。",
-      targetParticipantIds: [],
-      mentionTargets: [],
-      projectId: "collaboration-hall",
-      taskId: "demo-task",
-      taskCardId: "demo",
-      createdAt: "2026-03-28T13:21:32.962Z",
-    }],
-  });
-
-  const threadStart = html.indexOf('<div class="hall-thread" data-hall-thread>');
-  const panelStart = html.indexOf('<div class="hall-decision-panel" data-hall-decision-panel');
-  const typingStart = html.indexOf('<div class="hall-typing-strip" data-hall-typing-strip');
-  assert(threadStart >= 0 && panelStart > threadStart && typingStart > panelStart);
-  const threadSection = html.slice(threadStart, panelStart);
-  const panelSection = html.slice(panelStart, typingStart);
-  assert(!threadSection.includes("data-hall-current-console"));
-  assert(panelSection.includes("data-hall-current-console"));
-  assert(panelSection.includes("讨论结论"));
 });
 
 test("hall messages and detail panes render artifact chips", () => {
@@ -618,7 +115,7 @@ test("hall messages and detail panes render artifact chips", () => {
       headline: "Artifacts should be visible in the hall.",
       activeTaskCount: 1,
       waitingReviewCount: 0,
-      blockedTaskCount: 0,
+      needsHumanReviewCount: 0,
       currentSpeakerLabel: "Main",
       updatedAt: "2026-03-26T12:00:00.000Z",
     },
@@ -630,7 +127,6 @@ test("hall messages and detail panes render artifact chips", () => {
         taskId: "demo-task",
         title: "Render artifact chips",
         description: "Show concrete outputs in the hall UI.",
-        stage: "discussion",
         status: "todo",
         createdByParticipantId: "operator",
         currentExecutionItem: {
@@ -717,7 +213,6 @@ test("hall messages and detail panes render artifact chips", () => {
       taskId: "demo-task",
       title: "Render artifact chips",
       description: "Show concrete outputs in the hall UI.",
-      stage: "discussion",
       status: "todo",
       createdByParticipantId: "operator",
       currentExecutionItem: {
@@ -801,7 +296,7 @@ test("hall message rendering normalizes legacy escaped arrows without double-esc
       headline: "Legacy escaped arrows should still render as plain arrows.",
       activeTaskCount: 0,
       waitingReviewCount: 0,
-      blockedTaskCount: 0,
+      needsHumanReviewCount: 0,
       updatedAt: "2026-03-25T08:52:18.059Z",
     },
     taskCards: [],
@@ -843,7 +338,7 @@ test("hall message rendering turns legacy <br> tags into visible line breaks, st
       headline: "Render legacy line breaks and mentions like real chat text.",
       activeTaskCount: 0,
       waitingReviewCount: 0,
-      blockedTaskCount: 0,
+      needsHumanReviewCount: 0,
       updatedAt: "2026-03-26T15:18:52.905Z",
     },
     taskCards: [],
@@ -871,6 +366,66 @@ test("hall message rendering turns legacy <br> tags into visible line breaks, st
   assert(!html.includes('"executor":"pandas"'));
 });
 
+test("hall message rendering converts markdown pipe tables into real <table> elements with aligned cells", () => {
+  const html = renderCollaborationHall({
+    language: "en",
+    hall: {
+      hallId: "main",
+      title: "Collaboration Hall",
+      participants: [],
+      taskCardIds: [],
+      messageIds: ["msg-1"],
+      lastMessageId: "msg-1",
+      latestMessageAt: "2026-04-10T08:00:00.000Z",
+      createdAt: "2026-04-10T08:00:00.000Z",
+      updatedAt: "2026-04-10T08:00:00.000Z",
+    },
+    hallSummary: {
+      hallId: "main",
+      headline: "Markdown tables should render as real tables.",
+      activeTaskCount: 0,
+      waitingReviewCount: 0,
+      needsHumanReviewCount: 0,
+      updatedAt: "2026-04-10T08:00:00.000Z",
+    },
+    taskCards: [],
+    messages: [
+      {
+        hallId: "main",
+        messageId: "msg-1",
+        kind: "proposal",
+        authorParticipantId: "linus",
+        authorLabel: "Linus",
+        authorSemanticRole: "coder",
+        content:
+          "Here is the comparison:\n\n| Item | Owner | Status |\n|:-----|:-----:|------:|\n| Auth | linus | done |\n| API  | otter | wip  |\n\nDone.",
+        targetParticipantIds: [],
+        mentionTargets: [],
+        createdAt: "2026-04-10T08:00:00.000Z",
+      },
+    ],
+  });
+
+  assert(html.includes('<table class="hall-md-table">'));
+  assert(html.includes("<thead><tr>"));
+  assert(html.includes("<th"));
+  assert(html.includes("<tbody>"));
+  assert(html.includes("<td"));
+  assert(html.includes('text-align:left'));
+  assert(html.includes('text-align:center'));
+  assert(html.includes('text-align:right'));
+  assert(html.includes(">Item</th>"));
+  assert(html.includes(">Auth</td>"));
+  assert(!html.includes("|------"));
+  assert(!html.includes("|:-----"));
+});
+
+test("hall client script includes a markdown table parser that emits hall-md-table elements", () => {
+  const script = renderCollaborationHallClientScript("en");
+  assert(script.includes("tryParseTable"));
+  assert(script.includes("hall-md-table"));
+});
+
 test("selected hall thread cards expose an aria-current marker for styling and smoke checks", () => {
   const html = renderCollaborationHall({
     language: "zh",
@@ -888,7 +443,7 @@ test("selected hall thread cards expose an aria-current marker for styling and s
       headline: "Use one thread per task.",
       activeTaskCount: 2,
       waitingReviewCount: 0,
-      blockedTaskCount: 0,
+      needsHumanReviewCount: 0,
       updatedAt: "2026-03-26T15:18:52.905Z",
     },
     taskCards: [
@@ -901,7 +456,6 @@ test("selected hall thread cards expose an aria-current marker for styling and s
           roomId: "room-1",
           title: "First thread",
           description: "First thread description",
-          stage: "discussion",
           status: "todo",
           createdByParticipantId: "operator",
           blockers: [],
@@ -921,7 +475,6 @@ test("selected hall thread cards expose an aria-current marker for styling and s
           roomId: "room-2",
           title: "Second thread",
           description: "Second thread description",
-          stage: "discussion",
           status: "todo",
           createdByParticipantId: "operator",
           blockers: [],
@@ -942,7 +495,6 @@ test("selected hall thread cards expose an aria-current marker for styling and s
       roomId: "room-2",
       title: "Second thread",
       description: "Second thread description",
-      stage: "discussion",
       status: "todo",
       createdByParticipantId: "operator",
       blockers: [],
@@ -977,7 +529,7 @@ test("routine execution status system messages stay out of the visible hall time
       headline: "Routine system progress should stay in the card, not duplicate the chat feed.",
       activeTaskCount: 0,
       waitingReviewCount: 0,
-      blockedTaskCount: 0,
+      needsHumanReviewCount: 0,
       updatedAt: "2026-03-26T15:18:52.905Z",
     },
     taskCards: [],
@@ -1033,7 +585,7 @@ test("legacy wrong-handoff warning system messages stay out of the visible hall 
       headline: "Hide stale wrong-handoff warnings from old threads.",
       activeTaskCount: 1,
       waitingReviewCount: 0,
-      blockedTaskCount: 0,
+      needsHumanReviewCount: 0,
       updatedAt: "2026-03-28T09:00:00.000Z",
     },
     taskCards: [],
@@ -1089,7 +641,7 @@ test("agent execution updates and handoffs stay visible even when they carry run
       headline: "Execution results should remain visible in the thread.",
       activeTaskCount: 1,
       waitingReviewCount: 0,
-      blockedTaskCount: 0,
+      needsHumanReviewCount: 0,
       updatedAt: "2026-03-26T15:20:52.905Z",
     },
     taskCards: [],
@@ -1160,7 +712,7 @@ test("same-author handoff keeps the polished visible version and hides the later
       headline: "Keep the polished handoff visible and hide the flattened duplicate.",
       activeTaskCount: 1,
       waitingReviewCount: 0,
-      blockedTaskCount: 0,
+      needsHumanReviewCount: 0,
       updatedAt: "2026-03-28T21:25:54.346Z",
     },
     taskCards: [],
@@ -1220,7 +772,7 @@ test("legacy system progress copy stays hidden even when old messages are alread
       headline: "Hide duplicated routine system copy.",
       activeTaskCount: 0,
       waitingReviewCount: 1,
-      blockedTaskCount: 0,
+      needsHumanReviewCount: 0,
       updatedAt: "2026-03-26T15:20:52.905Z",
     },
     taskCards: [],
@@ -1267,4 +819,105 @@ test("legacy system progress copy stays hidden even when old messages are alread
   assert(!html.includes("Execution order updated: main -> otter -> pandas."));
   assert(!html.includes("现在请老板评审。"));
   assert(html.includes("结果给你了"));
+});
+
+test("hall composer includes file attachment controls", () => {
+  const html = renderCollaborationHallForSmoke("en");
+  assert(html.includes("data-hall-attach-file"));
+  assert(html.includes("data-hall-file-input"));
+  assert(html.includes("data-hall-file-preview"));
+  const script = renderCollaborationHallClientScript("en");
+  assert(script.includes("pendingFiles"));
+  assert(script.includes("readFileAsDataUrl"));
+  assert(script.includes("hall-dragover"));
+  assert(script.includes("renderPendingFiles"));
+  assert(script.includes("/api/hall/files"));
+  assert(script.includes("fileAttachments"));
+});
+
+test("hall composer includes file attachment controls (zh)", () => {
+  const html = renderCollaborationHallForSmoke("zh");
+  assert(html.includes("data-hall-attach-file"));
+  assert(html.includes("data-hall-file-input"));
+  const script = renderCollaborationHallClientScript("zh");
+  assert(script.includes("pendingFiles"));
+  assert(script.includes("文件过大"));
+  assert(script.includes("上传失败"));
+});
+
+test("hall renders inline image preview for file attachments", () => {
+  const html = renderCollaborationHall({
+    language: "en",
+    hall: {
+      hallId: "main",
+      title: "Collaboration Hall",
+      participants: [],
+      taskCardIds: [],
+      messageIds: ["msg-file-1"],
+      lastMessageId: "msg-file-1",
+      latestMessageAt: "2026-04-09T10:00:00.000Z",
+      createdAt: "2026-04-09T10:00:00.000Z",
+      updatedAt: "2026-04-09T10:00:00.000Z",
+    },
+    hallSummary: {
+      hallId: "main",
+      headline: "File attachment test.",
+      activeTaskCount: 0,
+      waitingReviewCount: 0,
+      needsHumanReviewCount: 0,
+      currentSpeakerLabel: "",
+      updatedAt: "2026-04-09T10:00:00.000Z",
+    },
+    taskCards: [],
+    messages: [{
+      hallId: "main",
+      messageId: "msg-file-1",
+      kind: "chat",
+      authorParticipantId: "operator",
+      authorLabel: "Operator",
+      content: "Here is a screenshot.",
+      targetParticipantIds: [],
+      mentionTargets: [],
+      payload: {
+        artifactRefs: [
+          { artifactId: "file-1", type: "file", label: "screenshot.png", location: "/hall-files/screenshot-abc.png" },
+          { artifactId: "file-2", type: "file", label: "report.pdf", location: "/hall-files/report-def.pdf" },
+        ],
+        fileAttachments: [
+          { fileId: "file-1", originalName: "screenshot.png", mimeType: "image/png", sizeBytes: 12345, storedFileName: "screenshot-abc.png" },
+          { fileId: "file-2", originalName: "report.pdf", mimeType: "application/pdf", sizeBytes: 67890, storedFileName: "report-def.pdf" },
+        ],
+      },
+      createdAt: "2026-04-09T10:00:00.000Z",
+    }],
+  });
+
+  // Image should render as <img> preview
+  assert(html.includes("hall-file-img"));
+  assert(html.includes("hall-file-preview"));
+  assert(html.includes("/hall-files/screenshot-abc.png"));
+  // PDF should render as artifact chip (not img)
+  assert(html.includes("report.pdf"));
+  assert(html.includes("/hall-files/report-def.pdf"));
+});
+
+test("hall detail pane includes workspace files section", () => {
+  const html = renderCollaborationHallForSmoke("en");
+  assert(html.includes("Workspace Files"));
+  assert(html.includes("data-hall-workspace-files"));
+  const script = renderCollaborationHallClientScript("en");
+  assert(script.includes("loadWorkspaceFiles"));
+  assert(script.includes("/api/hall/workspace-files"));
+  assert(script.includes("hall-workspace-file-item"));
+});
+
+test("client script handles draft_tool_update events and renders inline tool pills", () => {
+  const script = renderCollaborationHallClientScript("en");
+  assert(script.includes("draft_tool_update"));
+  assert(script.includes("toolCalls"));
+  assert(script.includes("hall-tool-pill"));
+  assert(script.includes("is-completed"));
+  assert(script.includes("toolName"));
+  assert(script.includes("toolStatus"));
+  assert(!script.includes("hall-tool-strip"));
 });

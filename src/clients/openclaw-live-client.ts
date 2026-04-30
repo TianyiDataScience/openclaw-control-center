@@ -1,7 +1,7 @@
 import { exec, execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { open, readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import type {
   AgentRunRequest,
@@ -18,10 +18,14 @@ import type {
   SessionsHistoryResponse,
   SessionsListResponse,
 } from "../contracts/openclaw-tools";
-import { APPROVAL_ACTIONS_ENABLED } from "../config";
+import { APPROVAL_ACTIONS_ENABLED, HALL_USE_GATEWAY_WS } from "../config";
 import { loadCurrentAgentCatalog, resolveOpenClawHomePath } from "../runtime/current-agent-catalog";
 import { buildOpenClawCommandCandidates, buildOpenClawCommandEnv } from "../runtime/openclaw-cli-insights";
 import type { ToolClient } from "./tool-client";
+import {
+  getSharedGatewayWsClient,
+  type OpenClawGatewayWsClient,
+} from "./openclaw-gateway-ws";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -323,6 +327,72 @@ export class OpenClawLiveClient implements ToolClient {
     return response;
   }
 
+  private gatewayWsClient?: OpenClawGatewayWsClient;
+
+  setGatewayWsClientForTest(client: OpenClawGatewayWsClient | undefined): void {
+    this.gatewayWsClient = client;
+  }
+
+  private resolveGatewayWsClient(): OpenClawGatewayWsClient {
+    if (this.gatewayWsClient) return this.gatewayWsClient;
+    return getSharedGatewayWsClient();
+  }
+
+  private shouldUseGatewayWs(request: AgentRunRequest): boolean {
+    if (!HALL_USE_GATEWAY_WS) return false;
+    const key = request.sessionKey?.trim();
+    return Boolean(key && /^agent:[^:]+:hall:/.test(key));
+  }
+
+  private async agentRunStreamViaGateway(
+    request: AgentRunRequest,
+    handlers: AgentRunStreamHandlers,
+  ): Promise<AgentRunResponse> {
+    const client = this.resolveGatewayWsClient();
+    let lastCumulative = "";
+    const response = await client.agent(
+      {
+        agentId: request.agentId?.trim() || undefined,
+        sessionKey: request.sessionKey?.trim() || undefined,
+        sessionId: request.sessionId?.trim() || undefined,
+        message: request.message,
+        thinking: normalizeThinkingLevel(request.thinking),
+        timeoutSeconds: request.timeoutSeconds,
+        deliver: request.deliver,
+      },
+      {
+        onTextDelta: (delta, cumulative) => {
+          lastCumulative = cumulative;
+          handlers.onStdoutChunk?.(delta);
+        },
+        onToolEvent: (evt) => {
+          handlers.onStdoutChunk?.(`\n[tool] ${evt.toolName} (${evt.toolStatus})\n`);
+        },
+      },
+    );
+    const finalText = response.text || lastCumulative;
+    const sessionKey = response.sessionKey ?? request.sessionKey?.trim() ?? undefined;
+    if (sessionKey && response.sessionId) {
+      const cached = this.sessionCache.get(sessionKey) ?? {};
+      this.sessionCache.set(sessionKey, {
+        ...cached,
+        model: response.model ?? cached.model,
+      });
+    }
+    return {
+      ok: response.ok,
+      status: response.status,
+      text: finalText,
+      rawText: response.rawText,
+      sessionId: response.sessionId,
+      sessionKey,
+      model: response.model,
+      provider: response.provider,
+      runId: response.runId,
+      summary: response.summary,
+    };
+  }
+
   async agentRunStream(
     request: AgentRunRequest,
     handlers: AgentRunStreamHandlers = {},
@@ -330,6 +400,10 @@ export class OpenClawLiveClient implements ToolClient {
     const message = request.message.trim();
     if (!message) {
       throw new Error("agentRunStream requires a non-empty message.");
+    }
+
+    if (this.shouldUseGatewayWs(request)) {
+      return this.agentRunStreamViaGateway(request, handlers);
     }
 
     const args = ["agent"];
@@ -375,6 +449,14 @@ export class OpenClawLiveClient implements ToolClient {
     const resolvedSessionId = sessionId
       || (sessionKey ? await this.resolveSessionIdByKey(sessionKey) : undefined)
       || latestBeforeRun?.sessionId;
+    let model = sessionKey ? this.sessionCache.get(sessionKey)?.model : undefined;
+    if (!model && sessionKey) {
+      await this.sessionsList().catch(() => undefined);
+      model = this.sessionCache.get(sessionKey)?.model;
+    }
+    if (!model && agentId) {
+      model = await this.resolveLatestModelForAgent(agentId);
+    }
 
     return {
       ok: true,
@@ -383,6 +465,7 @@ export class OpenClawLiveClient implements ToolClient {
       rawText: stdout,
       sessionId: resolvedSessionId,
       sessionKey,
+      model,
     };
   }
 
@@ -390,21 +473,25 @@ export class OpenClawLiveClient implements ToolClient {
     const openclawHome = resolveOpenClawHomePath();
     const agentsPath = join(openclawHome, "agents");
     const configuredAgentKeys = await this.loadConfiguredAgentKeys();
-    let agentDirs: string[] = [];
+    let agentDirs: Array<{ agentId: string; basePath: string }> = [];
     try {
       const entries = await readdir(agentsPath, { withFileTypes: true });
-      agentDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          agentDirs.push({ agentId: entry.name, basePath: agentsPath });
+        }
+      }
     } catch {
-      return { sessions: [] };
+      // directory not found — skip
     }
 
     if (configuredAgentKeys.size > 0) {
-      agentDirs = agentDirs.filter((agentId) => matchesConfiguredAgents(agentId, configuredAgentKeys));
+      agentDirs = agentDirs.filter(({ agentId }) => matchesConfiguredAgents(agentId, configuredAgentKeys));
     }
 
     const sessions: SessionsListResponse["sessions"] = [];
-    for (const agentId of agentDirs) {
-      const sessionsPath = join(agentsPath, agentId, "sessions", "sessions.json");
+    for (const { agentId, basePath } of agentDirs) {
+      const sessionsPath = join(basePath, agentId, "sessions", "sessions.json");
       try {
         const parsed = JSON.parse(await readFile(sessionsPath, "utf8")) as unknown;
         const records = extractSessionRecords(parsed);
@@ -465,17 +552,19 @@ export class OpenClawLiveClient implements ToolClient {
     let agentDirs: string[] = [];
     try {
       const entries = await readdir(agentsPath, { withFileTypes: true });
-      agentDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+      const dirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+      agentDirs.push(...dirs.map((d) => join(agentsPath, d)));
     } catch {
-      return undefined;
+      // directory not found
     }
 
     if (configuredAgentKeys.size > 0) {
-      agentDirs = agentDirs.filter((agentId) => matchesConfiguredAgents(agentId, configuredAgentKeys));
+      agentDirs = agentDirs.filter((fullPath) => matchesConfiguredAgents(basename(fullPath), configuredAgentKeys));
     }
 
-    for (const agentId of agentDirs) {
-      const sessionsPath = join(agentsPath, agentId, "sessions", "sessions.json");
+    for (const agentDir of agentDirs) {
+      const agentId = basename(agentDir);
+      const sessionsPath = join(agentDir, "sessions", "sessions.json");
       try {
         const parsed = JSON.parse(await readFile(sessionsPath, "utf8")) as unknown;
         for (const record of extractSessionRecords(parsed)) {
@@ -519,6 +608,29 @@ export class OpenClawLiveClient implements ToolClient {
       sessionId: match.sessionId,
       updatedAtMs: match.updatedAtMs,
     };
+  }
+
+  private async resolveLatestModelForAgent(agentId: string): Promise<string | undefined> {
+    const normalizedAgentId = agentId.trim();
+    if (!normalizedAgentId) return undefined;
+    const sessionsPath = join(resolveOpenClawHomePath(), "agents", normalizedAgentId, "sessions", "sessions.json");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(sessionsPath, "utf8"));
+    } catch {
+      return undefined;
+    }
+    const records = extractSessionRecords(parsed);
+    let best: { model?: string; updatedAtMs: number } | undefined;
+    for (const record of records) {
+      const model = asString(record.model);
+      if (!model) continue;
+      const updatedAtMs = readUpdatedAtMs(record);
+      if (!best || (Number.isFinite(updatedAtMs) && updatedAtMs > best.updatedAtMs)) {
+        best = { model, updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : 0 };
+      }
+    }
+    return best?.model;
   }
 
   private async resolveSessionKeyAfterRun(input: {
