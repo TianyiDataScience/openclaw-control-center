@@ -1091,7 +1091,8 @@ async function dispatchMainObserver(input: {
         triggerAuthorParticipantId: triggerAuthorId,
         chainDepth: 1,
         enqueueReason: "observer-chain",
-      }).kind === "allow",
+        recentThreadMessages: updatedMessages,
+      }).kind !== "deny",
     );
   if (chainTargets.length > 0) {
     const chainTrigger = lastMessage ?? ({ content: result.content } as HallMessage);
@@ -1175,6 +1176,7 @@ async function dispatchHallAgentReply(input: {
     triggerAuthorParticipantId: triggerMessage.authorParticipantId,
     chainDepth,
     enqueueReason: chainDepth === 0 ? "operator-route" : "auto-chain",
+    recentThreadMessages,
   });
   if (gateVerdict.kind === "deny") {
     if (gateVerdict.policyId === POLICY_ENFORCE_AUTO_ROUND_LIMIT) {
@@ -1257,6 +1259,13 @@ async function dispatchHallAgentReply(input: {
   if (chainDepth < MAX_AUTO_CHAIN_DEPTH) {
     const replyMentions = resolveHallMentionTargets(result.content, hall.participants);
     const triggerAuthorId = triggerMessage.authorParticipantId;
+    // P3-C-2: load thread messages BEFORE the chain candidate filter so
+    // content-aware policies (`dropResolvedTriggers`, `enforceBackPingBudget`)
+    // can see the reply we just persisted. Skipped when no @-mention targets
+    // exist — the per-mention filter wouldn't run anyway.
+    const updatedThreadMessages = replyMentions.targets.length > 0
+      ? await loadRecentHallThreadMessages(taskCard)
+      : [];
     const chainTargets = replyMentions.targets
       .map((t) => findParticipant(hall.participants, t.participantId))
       .filter((p): p is HallParticipant =>
@@ -1273,11 +1282,11 @@ async function dispatchHallAgentReply(input: {
           triggerAuthorParticipantId: triggerAuthorId,
           chainDepth: chainDepth + 1,
           enqueueReason: "auto-chain",
-        }).kind === "allow",
+          recentThreadMessages: updatedThreadMessages,
+        }).kind !== "deny",
       );
 
     if (chainTargets.length > 0) {
-      const updatedThreadMessages = await loadRecentHallThreadMessages(taskCard);
       const mentionResults = await Promise.allSettled(
         chainTargets.map((target) =>
           enqueueAndDispatch(
