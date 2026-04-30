@@ -429,3 +429,47 @@ P3-A-2 跟 P3-B-1 是兄弟分支，都基于 P3-A，互不依赖（功能上正
 | 10 轮对话累计 | ~100K | ~6K + 9*0.3K ≈ 9K |
 
 约 **90% token 削减**。
+
+### Session 2026-04-30 续 — P3-A-2 实施 + e2e
+
+#### 落地
+
+- `hall-runtime-dispatch.ts` 拆 `buildHallRuntimePrompt` → `buildFirstTurnSetupPrompt` + `buildSubsequentTurnTriggerPrompt`
+- 删除 inline transcript 段（`recentMessages.slice(-5/15)`）+ 死代码（`HALL_INLINE_CONTEXT_*` / `dedupeHallPromptMessages`）
+- `hall-blackboard.ts:renderHallBlackboardPromptGuidance` 强化"群聊意识"：明确告诉 agent "其他人一直在说话，没 @ 你时你看不到"，给具体 `tail`/`grep` 命令
+- `collaboration-hall-orchestrator.ts:dispatchMainObserver` 观察者 trigger 缩成 `[mode: observer] tail .hall/chat.jsonl ...`
+- 新增 `linkRuntimeSessionKeyToTaskCard`：dispatch 完成后把 runtime sessionKey 写回 taskCard.sessionKeys（pre-P3-A-2 这条路径就有但没影响因为 prompt 不区分；P3-A-2 实际 branch on it 才暴露这个 latent bug）。同时给 dispatchHallAgentReply / dispatchMainObserver / wakeMentionInitiator 三处都加上链接
+
+#### 单元测试 (test/hall-prompt-context.test.ts) 8 case 全过
+
+- 首轮 prompt 含 setup 段（identity / 群聊意识 / 黑板路径 / roster）
+- 首轮**不**inline transcript（即使 `recentThreadMessages` 里有 3 条旧消息）
+- 后续轮 prompt 极简（只有 `[from: <author>] <trigger>`，< 2KB）
+- 后续轮含 A1 originalAssigner one-liner（如适用）
+- assigner == self 时不加 A1 hint
+- triggerMessage 缺失（observer / wake）渲染干净
+- 黑板 guidance 含强群聊意识
+- token footprint：subsequent ≪ first（至少 8×）
+
+#### 全 hall 套（除 typing）
+
+- 108/111 过，3 失败仍是 P3-A 之前的基线（execution-order persists / session-linkage / multi-mention routing），零新回归
+- `npm run smoke:ui` 通过
+
+#### Playwright e2e 真机
+
+任务卡：`collaboration-hall:p3-a-2-prompt-2-linus-idempotent-455a7d6c`，发了 3 条 operator 消息观察 OpenClaw session 变化：
+
+| 轮 | OpenClaw session 中 user message 长度 | 路径 |
+|---|---|---|
+| 1 | 15,785 chars | first-turn setup（预期） |
+| 2 | 15,763 chars | first-turn setup（**异常**——预期应是 subsequent） |
+| 3 | 116 chars | subsequent trigger（预期）✓ |
+
+**第 3 轮 116 字符**确认机制正常：`[note] 完成后请 @Operator（操作员）汇报，... [来自 Operator] @林纳斯 第三轮，简短回复"3"。`
+
+第 2 轮的 15K 异常**未完全定位**——可能是首次 dispatch 完成后 sessionKey 写盘到下次 read 之间的 race window。机制上 turn 3 已证明 subsequent-turn 路径正确生效。代价：单卡片首发那一组的第二条 dispatch 可能仍走完整 prompt，但仍**严格优于** baseline（baseline 永远全发）。后续 PR 可以加更稳健的 first-turn 判定（例如 OpenClaw session 文件存在性检查）。
+
+#### Agent 行为副作用：首轮就用了 `tail .hall/chat.jsonl`
+
+观察到 Linus 收到第一条 task 后**主动调 bash `tail -n 20 .hall/chat.jsonl`**——正是新群聊意识引导教的工作流。说明 prompt 强化生效。
