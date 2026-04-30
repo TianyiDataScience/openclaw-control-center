@@ -67,7 +67,94 @@ P3-A 落地后，Phase 3 的剩余架构层工作（解决 issue #9 第 4 项 + 
 
 拆 PR 计划：~~P3-B-1 inbox 层~~（PR #14 已开） → **P3-A-2 prompt 简化** → P3-B-2 防抖合并 → P3-C-1 policy 抽取（不变行为）→ P3-C-2 新 policy 上线（含 `dropResolvedTriggers`）→ P3-C-3 Supervisor。每步独立可发版。
 
-### Phase P3-A-2 — 上下文交给 OpenClaw + 黑板（**current focus**）
+### Phase P3-B-2 — 防抖合并 + worker queue（**current focus**, 2026-04-30+）
+
+**Design issue**: https://github.com/xiaolinfrank/openclaw-control-center/issues/13
+**Branch**: `feat/hall-mailbox-debounce-p3b2`（基于合并后的 `main`，已包含 P3-A / P3-B-1 / P3-A-2）
+
+#### 动机
+
+P3-B-1 的 `enqueueAndDispatch(args, dispatch)` 是**透明加层**——只做 audit log，dispatch 仍同步 await。这无法解决 issue #9 第 4 项的核心场景：多个 agent 在短时间内 @ 同一目标 → 应该一次合并 dispatch，而不是 N 次。
+
+P3-B-2 把 inbox 真正变成异步 worker pump：enqueue 持久化 + signal worker，立即返回（fire-and-forget）；worker 750ms 防抖后批量 dispatch。
+
+#### 架构
+
+```
+enqueueHallInbox(record)
+  ├─ append enqueue 行到 inbox/{agent}.jsonl
+  ├─ signal worker (cardId, agentId)
+  └─ 返回 Promise<void>  ← resolve 时机 = 包含该 record 的批次 dispatch 完成
+
+InboxWorker(cardId, agentId) tick:
+  1. 等 750ms 防抖窗（每来新 enqueue 就 reset）
+  2. 窗稳定 → 原子读所有 pending records
+  3. 合并成单次 dispatch input（多个 triggerMessages）
+  4. 调注册的 dispatcher 回调
+  5. 全部 records 标 consumed + 写 deliveries（按 batch 共享 batchId）
+  6. resolve 这批 records 的 enqueue Promise
+```
+
+**关键 invariant**：enqueue 的 promise resolve 时机 = 它所在 batch dispatch 完成。这样 `Promise.allSettled([...enqueues])` 语义保留——observer 仍能"等 primary 全完后再 run"。
+
+#### 死锁规避
+
+之前 P3-B-1 设计放弃 worker 是因为 cyclic enqueue 死锁。P3-B-2 通过两点解决：
+1. **fire-and-forget enqueue**：enqueue 返回的 promise 不阻塞 worker 自身的循环；worker 永远不会 `await someEnqueue()`
+2. **buffer 而非 await 单条**：worker 不会"等下一个 dispatch 完成再继续"——它收 batch，dispatch，标 consumed，进入下一个防抖窗。即使 dispatch 内部触发 chain enqueue 到本 worker，也只是排进 pending；worker 在当前 batch 完成后自然处理
+
+A→B→C→A 链：A 的 worker dispatch 到 A 的 reply 含 @B → B 的 worker enqueue → B dispatch reply 含 @C → C enqueue → C dispatch reply 含 @A → A 的 worker pending 多一条 → 在当前 batch 结束后 worker 自然处理（不形成 await 环）。
+
+#### Prompt 渲染改动
+
+`buildSubsequentTurnTriggerPrompt` 支持 trigger batch。单条时跟现在一样：
+```
+[来自 Operator]
+@林纳斯 用一句话讲 idempotent
+```
+
+多条时（同 batch 合并）：
+```
+[在短时间内你被多次 @：]
+
+[来自 Operator]
+@林纳斯 用一句话讲 idempotent
+
+[来自 图灵 Turing (PM)]
+@林纳斯 你举一个例子
+```
+
+让 agent 自己读 prompt 决定是分别回还是合并回。
+
+#### 工作项
+
+- [ ] 1. 重构 `hall-mailbox.ts`：补 `markHallInboxConsumedBatch(records)` + `appendHallDeliveryRecord(batchId)` 字段
+- [ ] 2. 重写 `hall-scheduler.ts`：
+  - `enqueueHallInbox(args): Promise<void>`：persist + signal worker，promise 在 batch 完成时 resolve
+  - `registerInboxDispatcher(fn)`：orchestrator 启动时注册回调
+  - `InboxWorker` 内部状态：per-(cardId, agentId) 防抖窗 timer + pending records 队列 + active promise resolvers
+  - debounce 窗 750ms（可配 env: `HALL_INBOX_DEBOUNCE_MS`）
+- [ ] 3. 改 `dispatchHallAgentReply`：接受 `triggerMessages: HallMessage[]` 数组（保留 `triggerMessage` 单字段向后兼容；新路径走数组）
+- [ ] 4. 改 `buildSubsequentTurnTriggerPrompt`：支持多 trigger 渲染
+- [ ] 5. 改 orchestrator 路由：原 `enqueueAndDispatch(args, () => dispatchHallAgentReply(...))` → `enqueueHallInbox(args)` + 在 dispatcher 回调里跑 dispatchHallAgentReply
+- [ ] 6. 改 P3-B-1 测试：`hall-mailbox.test.ts` / `hall-scheduler.test.ts` 适配新 API
+- [ ] 7. 新增测试：批合并 / 防抖窗 reset / cyclic enqueue 不死锁 / observer 时机保留
+- [ ] 8. e2e：playwright 多 agent 同时 @ 同目标 → 看 inbox 一次合并 dispatch + prompt 渲染多 trigger
+
+#### 退出标准
+
+- [ ] `npm run build` 干净
+- [ ] hall 全套零回归
+- [ ] `npm run smoke:ui` 通过
+- [ ] Playwright 真机：触发多 @ 场景，黑板里看到一次 dispatch 包含 N 个 triggers 的 prompt
+
+#### 风险
+
+- **observer 时机依赖**：必须保留 enqueue 的"完成 promise"语义；否则 `Promise.allSettled([primary])` 立即返回，observer 在 primary 还没派之前就跑了。**对策**：`enqueueHallInbox` 返回的 promise 严格等到本 batch dispatch 完才 resolve
+- **debounce 窗大小**：750ms 太短可能错过合并机会，太长拖慢响应。issue #13 推荐 750ms，先跑这个值，e2e 看效果再调
+- **重启恢复**：worker 内部状态（pending、timer）是内存的；进程重启时丢失 timer 但 inbox 文件里的 enqueue 行仍在。**对策**：worker 启动时（或首次 enqueue 时）从 inbox 文件 hydrate pending；timer 立即触发（视作"窗已超时"）
+
+### Phase P3-A-2 — 上下文交给 OpenClaw + 黑板（completed, PR #16 merged 2026-04-30）
 
 **Design issue**: https://github.com/xiaolinfrank/openclaw-control-center/issues/15
 **Branch**: `feat/hall-context-delegation-p3a2`（基于 `feat/hall-blackboard-p3a`，PR 标 depends on #12）

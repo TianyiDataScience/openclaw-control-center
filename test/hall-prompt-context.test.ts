@@ -320,3 +320,74 @@ test("token footprint: subsequent turn ≪ first turn (validates main P3-A-2 win
     `subsequent (${subsTurn.length} chars) should be ≪ first (${firstTurn.length}); ratio ${(firstTurn.length / Math.max(1, subsTurn.length)).toFixed(1)}x`,
   );
 });
+
+test("subsequent turn renders multi-trigger batch with attribution per trigger (P3-B-2 merge)", async () => {
+  const { observedPrompts, client } = makeCapturingClient();
+  const hall = makeHall();
+  const card = makeCard({
+    taskCardId: "card-multi-trigger",
+    sessionKeys: ["agent:linus-dev:hall:p3a2-task"],
+  });
+  const trigger1 = makeTrigger({
+    messageId: "t-1",
+    content: "@林纳斯 用一句话讲 idempotent",
+    authorParticipantId: "operator",
+    authorLabel: "Operator",
+  });
+  const trigger2 = makeTrigger({
+    messageId: "t-2",
+    content: "@林纳斯 顺便举个软件开发的例子",
+    authorParticipantId: "turing-pm",
+    authorLabel: "图灵 Turing (PM)",
+  });
+
+  await dispatchHallRuntimeTurn({
+    client: client as never,
+    hall,
+    taskCard: card,
+    participant: hall.participants[0],
+    triggerMessage: trigger2, // primary = latest
+    triggerMessages: [trigger1, trigger2],
+    mode: "execution",
+  });
+
+  const prompt = observedPrompts[0];
+  // Multi-trigger header
+  assert.match(prompt, /在短时间内你被多次 @|@-mentioned \d+ times in quick succession/);
+  // Both authors attributed
+  assert.match(prompt, /\[来自 Operator\]|\[from: Operator\]/);
+  assert.match(prompt, /\[来自 图灵 Turing \(PM\)\]|\[from: 图灵 Turing \(PM\)\]/);
+  // Both bodies present
+  assert.match(prompt, /用一句话讲 idempotent/);
+  assert.match(prompt, /举个软件开发的例子/);
+  // Setup sections still NOT re-sent (subsequent turn)
+  assert.ok(!/You are Linus/.test(prompt));
+  assert.ok(!/Group-chat awareness|群聊意识/.test(prompt));
+});
+
+test("single-trigger rendering unchanged when triggerMessages has length 1", async () => {
+  const { observedPrompts, client } = makeCapturingClient();
+  const hall = makeHall();
+  const card = makeCard({
+    taskCardId: "card-single-trigger",
+    sessionKeys: ["agent:linus-dev:hall:p3a2-task"],
+  });
+  const trigger = makeTrigger({ content: "hi linus", authorLabel: "Operator" });
+
+  await dispatchHallRuntimeTurn({
+    client: client as never,
+    hall,
+    taskCard: card,
+    participant: hall.participants[0],
+    triggerMessage: trigger,
+    triggerMessages: [trigger],
+    mode: "execution",
+  });
+
+  const prompt = observedPrompts[0];
+  // No "multi-trigger header" when there's only one
+  assert.ok(!/在短时间内你被多次 @|@-mentioned \d+ times in quick succession/.test(prompt));
+  // Standard single attribution still works
+  assert.match(prompt, /\[来自 Operator\]|\[from: Operator\]/);
+  assert.match(prompt, /hi linus/);
+});
