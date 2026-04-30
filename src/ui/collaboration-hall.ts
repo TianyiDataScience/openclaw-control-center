@@ -769,7 +769,11 @@ export function renderCollaborationHallClientScript(language: UiLanguage): strin
   };
   const renderArtifactChips = (artifactRefs, fileAttachments) => renderArtifactFooterHtml(artifactRefs, fileAttachments);
   const needsHumanReview = (taskCard) => {
-    if (!taskCard || taskCard.archivedAt || taskCard.status === 'done' || taskCard.humanReviewedAt) return false;
+    if (!taskCard || taskCard.archivedAt || taskCard.status === 'done') return false;
+    const reviewedAt = Date.parse(taskCard.humanReviewedAt || '') || 0;
+    const escalatedAt = Date.parse(taskCard.escalatedAt || '') || 0;
+    if (escalatedAt && escalatedAt > reviewedAt) return true;
+    if (reviewedAt) return false;
     const lastAgentAt = Date.parse(taskCard.lastAgentActivityAt || '') || 0;
     if (!lastAgentAt) return false;
     return (Date.now() - lastAgentAt) > 10 * 60 * 1000;
@@ -3653,11 +3657,15 @@ function resolveHallActivityLabel(taskCard: HallTaskCard, language: UiLanguage):
 }
 
 // Duplicate of runtime needsHumanReview to avoid a runtime→UI dep cycle.
-// Kept in sync with HUMAN_REVIEW_IDLE_WINDOW_MS.
+// Kept in sync with src/runtime/hall-human-review.ts (HUMAN_REVIEW_IDLE_WINDOW_MS
+// + escalatedAt logic).
 function hallTaskNeedsHumanReview(card: HallTaskCard, nowMs: number = Date.now()): boolean {
   if (card.archivedAt) return false;
   if (card.status === "done") return false;
-  if (card.humanReviewedAt) return false;
+  const reviewedAt = Date.parse(card.humanReviewedAt ?? "") || 0;
+  const escalatedAt = Date.parse(card.escalatedAt ?? "") || 0;
+  if (escalatedAt && escalatedAt > reviewedAt) return true;
+  if (reviewedAt) return false;
   const lastAgentAt = Date.parse(card.lastAgentActivityAt ?? "") || 0;
   if (!lastAgentAt) return false;
   return (nowMs - lastAgentAt) > 10 * 60 * 1000;

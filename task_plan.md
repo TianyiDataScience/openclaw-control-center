@@ -67,7 +67,41 @@ P3-A 落地后，Phase 3 的剩余架构层工作（解决 issue #9 第 4 项 + 
 
 拆 PR 计划：~~P3-B-1 inbox 层~~（PR #14 已开） → **P3-A-2 prompt 简化** → P3-B-2 防抖合并 → P3-C-1 policy 抽取（不变行为）→ P3-C-2 新 policy 上线（含 `dropResolvedTriggers`）→ P3-C-3 Supervisor。每步独立可发版。
 
-### Phase P3-C-2 — 三条新 policy 上线（**current focus**, 2026-04-30）
+### Phase P3-C-3a — A2 hit 显式标 needsHumanReview（**current focus**, 2026-04-30）
+
+**Design issue**: https://github.com/xiaolinfrank/openclaw-control-center/issues/13 (Supervisor 半)
+**Branch**: `feat/hall-supervisor-p3c3`（基于已合并 P3-C-2 的 main）
+
+#### 动机
+
+A2（auto-round limit）hit 时目前只发 system 消息 + status=blocked，UI 上的"需要人类审核"标签靠 10 分钟空闲窗判定，所以 A2 后要等 10 分钟卡片才会变红。加显式 `escalatedAt` 字段，A2 hit 立刻写，`needsHumanReview()` 立即返回 true。
+
+#### 工作项
+
+- [x] 1. `HallTaskCard.escalatedAt?: string` + store round-trip（`UpdateHallTaskCardInput` / `normalizeTaskCard`）
+- [x] 2. `needsHumanReview()` 改写：`escalatedAt > humanReviewedAt` 走显式路径，否则回退空闲窗
+- [x] 3. `handleAutoRoundBlockedThreshold` 写 `escalatedAt: now()`
+- [x] 4. `touchHallTaskAgentActivity` 同时清 `escalatedAt: null`（避免 mark reviewed 后 agent 重新发声错误 re-fire）
+- [x] 5. UI 两处重复 `needsHumanReview` 同步（SSR + 客户端 JS）
+- [x] 6. 单测 16 个：`test/hall-human-review.test.ts` 15 + store round-trip 1
+- [x] 7. tsc 干净 + 重点回归批 112/114 零新回归
+
+#### 退出标准
+
+- [x] tsc 干净
+- [x] 单测全过
+- [x] 重点回归零新回归
+- [ ] PR 入 main
+- [ ] 后续 P3-C-3b 崩溃恢复
+
+#### 设计 trade-offs
+
+- **加新字段 vs 复用 humanReviewedAt 反语义**：选加新字段。`escalatedAt` 与 `humanReviewedAt` 配对（"系统标记紧急" + "人审核已确认"）语义清晰，UI / 审计 / 监控都好理解
+- **同时刻 escalatedAt === humanReviewedAt 谁赢**：选 operator 赢（return false）。判定用严格 `>` 而非 `>=`。设计意图：operator 在 escalation 之后立刻点"审核"应该立刻清
+- **`touchHallTaskAgentActivity` 是否清 `escalatedAt`**：清。否则 mark reviewed 后 agent 重新发声 → `humanReviewedAt` 被清成 null（已有逻辑），但 escalatedAt 留着 → 下次评估 `needsHumanReview` 时假阳性
+- **不做的事**：A3 / dropResolved / backPing 等 silent deny 不触发 escalation。它们是常规过滤，不是"系统已经放弃"。只有 A2（auto-round 兜底）触发 escalation
+
+### Phase P3-C-2 — 三条新 policy 上线（completed, PR #19 merged 2026-04-30）
 
 **Design issue**: https://github.com/xiaolinfrank/openclaw-control-center/issues/13 (P3-C-2 修正评论)
 **Branch**: `feat/hall-policy-chain-p3c2`（基于已合并 P3-C-1 的 main）

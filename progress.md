@@ -692,5 +692,46 @@ P3-C-2 在 P3-C-1 的链上加 `detectClarifyingQuestion` / `dropResolvedTrigger
 
 - 第一次跑测试有 2 个失败：`detectClarifyingQuestion` 的 CJK 还是 regex `/[一-龥]+\s*还是\s*[一-龥]+/` 要求两侧都是 CJK，但测试用例 "INNER JOIN 还是 LEFT JOIN" 两侧是 ASCII。改成 `/\s还是\s|^还是\s|\s还是$/` 接受任何上下文（接受了 `还是`/"still" 副词义偶尔误命中作为 force-allow 假阳性的小代价）
 
+## Session 2026-04-30 — Phase 3-C-3a Supervisor 半场（escalation）
+
+P3-C-3 issue #13 三件套最后一块。计划拆成两个 PR：
+- **3a**：A2 hit 时显式标记 `needsHumanReview`（本次）
+- **3b**：崩溃恢复（hydrate inbox pending → 重新 schedule，下个 PR）
+
+### 动机
+
+P3-C-2 之前，A2（auto-round limit）hit 只发一条 system 消息 + 把 task card 的 `status` 改成 `blocked`，但 UI 上的"需要人类审核"标签依赖的 `needsHumanReview()` 函数是 10 分钟空闲窗判定。所以 A2 hit 后还要等 10 分钟卡片才会变红。
+
+P3-C-3a 加显式 `escalatedAt` 字段，A2 hit 时立刻写入，`needsHumanReview()` 立即返回 true。
+
+### What landed
+
+- **`src/types.ts`**：`HallTaskCard` 加 `escalatedAt?: string` 字段
+- **`src/runtime/collaboration-hall-store.ts`**：`UpdateHallTaskCardInput.escalatedAt?` + apply path + `normalizeTaskCard` round-trip
+- **`src/runtime/hall-human-review.ts`**：`needsHumanReview` 改写——两条路径
+  - 显式 escalation：`escalatedAt > humanReviewedAt` 时返回 true，bypass 空闲窗
+  - 空闲窗 fallback：原逻辑保留
+  - operator 在 escalation 之后 mark reviewed → `humanReviewedAt > escalatedAt` → 清掉信号
+  - 同时刻平局算 operator 赢（设计：operator 立即点"审核"应该立刻清）
+- **`src/runtime/collaboration-hall-orchestrator.ts`**：
+  - `handleAutoRoundBlockedThreshold` 在写 status=blocked + blockers 时一并写 `escalatedAt: now()`，UI 立刻凸显
+  - `touchHallTaskAgentActivity` 同时清 `escalatedAt: null`（agent 重新发声 → 旧的 escalation 不再相关，避免 mark reviewed 后 agent 再发一条又错误地 re-fire）
+- **`src/ui/collaboration-hall.ts`**：两处 `needsHumanReview` 重复实现（SSR 端 + 客户端 JS template literal）按运行时版本同步
+
+### 测试
+
+- **`test/hall-human-review.test.ts`** 新增 15 case：
+  - 空闲窗路径：无活动 / 窗内 / 窗外 / done / archived / humanReviewedAt 清掉信号
+  - 显式 escalation 路径：fresh escalation 立即 true / 无空闲活动也 true / operator 后 review 清掉 / re-fire 第二轮 escalation
+  - 边界：archived 覆盖 escalation / done 覆盖 escalation / 错误 ISO 不崩 / 同时刻 operator 赢
+- **`test/hall-loop-prevention.test.ts`** 加 1 case：escalatedAt 字段 store round-trip + null 清除
+
+### 验证
+
+- `npm run build` 干净
+- 重点回归批（hall-human-review + hall-loop-prevention + collaboration-hall-orchestrator + hall-policies + collaboration-hall-store）：112 过 2 fail，2 fail 全是 P3-A 之前的基线（session-linkage / multi-mention routing），**零新回归**
+- 端到端测试 A2 → escalatedAt 走通的 integration 测试因为 A3 + chain depth 上限的天然约束（一个 operator turn 内最多让一个 agent 被 dispatch 3 次，达不到 6 次）而难以构造。改成测试字段管线（store round-trip / pure-function logic / touch-clear），覆盖到 A2 调用 `handleAutoRoundBlockedThreshold` 时写入的实际代码路径
+
+
 
 

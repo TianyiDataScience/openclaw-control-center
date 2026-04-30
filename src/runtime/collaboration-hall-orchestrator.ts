@@ -1355,9 +1355,10 @@ async function handleAutoRoundBlockedThreshold(input: {
   const agentKey = (participant.agentId ?? participant.participantId).trim();
   const count = rounds[agentKey] ?? AUTO_ROUND_BLOCK_THRESHOLD;
 
-  // Mark the card blocked + add a blockers reason so the UI surfaces the
-  // "needs human review" state we already support (commit 21f9403). Tolerate
-  // the update failing: the system message below is the user-visible signal.
+  // Mark the card blocked + add a blockers reason + set escalatedAt so the UI
+  // immediately surfaces the "needs human review" signal (without waiting for
+  // the 10-minute idle window to elapse). Tolerate the update failing: the
+  // system message below is the user-visible fallback.
   const blockerReason =
     `auto-paused: 与 @${participant.displayName} 的对话轮次达 ${count}，请人工审核后继续`;
   const mergedBlockers = Array.from(
@@ -1368,6 +1369,7 @@ async function handleAutoRoundBlockedThreshold(input: {
       taskCardId: taskCard.taskCardId,
       status: "blocked",
       blockers: mergedBlockers,
+      escalatedAt: new Date().toISOString(),
     });
   } catch {
     // Non-fatal: surface the block via the system message even if update fails.
@@ -3637,8 +3639,8 @@ async function appendPersistedHallMessage(input: {
 }
 
 // Records that an agent just posted to this task card: bumps lastAgentActivityAt
-// and clears humanReviewedAt so the "needs human review" signal can re-fire if
-// the thread idles again.
+// and clears humanReviewedAt + escalatedAt so the "needs human review" signal
+// can re-fire fresh if the thread idles again or hits a new escalation.
 async function touchHallTaskAgentActivity(taskCardId: string): Promise<void> {
   if (!taskCardId) return;
   try {
@@ -3646,6 +3648,7 @@ async function touchHallTaskAgentActivity(taskCardId: string): Promise<void> {
       taskCardId,
       lastAgentActivityAt: new Date().toISOString(),
       humanReviewedAt: null,
+      escalatedAt: null,
     });
   } catch {
     // Best-effort: a missing task card should not break message persistence.

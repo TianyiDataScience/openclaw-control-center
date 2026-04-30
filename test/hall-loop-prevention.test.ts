@@ -286,6 +286,53 @@ test("store: originalAssignerParticipantId and autoRoundsByAgent round-trip thro
 });
 
 // ---------------------------------------------------------------------------
+// P3-C-3a store round-trip: escalatedAt persists and clears via update + null.
+// ---------------------------------------------------------------------------
+
+test("store: escalatedAt round-trips through load/update cycles and null clears it", async () => {
+  const backups = await backupFiles(STATE_PATHS);
+  try {
+    const hall = await ensureDefaultCollaborationHall([
+      { participantId: "main", agentId: "main", displayName: "Main", semanticRole: "observer", active: true, aliases: ["Main", "main"] },
+    ]);
+    const { taskCard } = await createHallTaskCard({
+      hallId: hall.hallId,
+      projectId: "proj-escalate",
+      taskId: "task-escalate",
+      title: "escalation",
+      description: "test the escalatedAt field",
+      createdByParticipantId: "operator",
+    });
+    assert.equal(taskCard.escalatedAt, undefined, "new cards start without escalatedAt");
+
+    const escalatedAt = new Date("2026-04-30T13:00:00.000Z").toISOString();
+    await updateHallTaskCard({
+      taskCardId: taskCard.taskCardId,
+      escalatedAt,
+    });
+
+    const reloaded = await loadCollaborationTaskCardStore();
+    const loaded = reloaded.taskCards.find((c) => c.taskCardId === taskCard.taskCardId);
+    assert(loaded, "card should reload from disk");
+    assert.equal(loaded.escalatedAt, escalatedAt);
+
+    // Clearing back to null must drop the field from the persisted state
+    // (this is the path taken by `touchHallTaskAgentActivity` after fresh
+    // agent activity replaces the escalation).
+    await updateHallTaskCard({
+      taskCardId: taskCard.taskCardId,
+      escalatedAt: null,
+    });
+    const reloaded2 = await loadCollaborationTaskCardStore();
+    const loaded2 = reloaded2.taskCards.find((c) => c.taskCardId === taskCard.taskCardId);
+    assert(loaded2);
+    assert.equal(loaded2.escalatedAt, undefined);
+  } finally {
+    await restoreFiles(backups);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // A1 + A2 orchestrator-layer: operator posts set the assigner and reset counters.
 // Uses main (which is always the default target when no @-mention resolves) to
 // avoid the pre-existing @熊猫 dispatch flakiness on this branch.
