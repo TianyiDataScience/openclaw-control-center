@@ -380,3 +380,52 @@ JSON store 里的原始消息**不动**——黑板是物化视图，UI 仍然�
 | 6. session 一致性 | ✅ Phase 2 | 已合 commit `36b4ca2`（Gateway WS） |
 
 任务计划文件 `task_plan.md` 和 `findings.md` 仍为本地工作脚本（未入 git，作为后续 phase 的 working memory）。
+
+## Session 2026-04-30 — 中途切分支：P3-B-1 暂停，开 P3-A-2
+
+### 缘起
+
+P3-B-1（mailbox 透明层）已 ship 到 PR #14 + 跑通 Playwright e2e。跟 owner review 时引出两个新议题：
+
+1. **issue #13 的 `dedupRecentDispatch` 设计有缺陷**——按时间窗 silence 会误伤"30s 内不同 agent 各问 Linus 不同问题"这种独立请求场景。已在 issue #13 评论修正为 `dropResolvedTriggers`（看 agent 已说过的话决定是否冗余）：https://github.com/xiaolinfrank/openclaw-control-center/issues/13#issuecomment-4349519620
+2. **每次 dispatch 都重发完整 prompt**——10K tokens 的 identity / persona / hall rules / roster / 5 条 inline transcript 等，LLM 端 OpenClaw session 累积下来全是重复内容。10 轮对话累计 ~100K，长聊容易爆窗口 + 烧钱。
+
+### 决定
+
+先开 **P3-A-2** 把上下文管理彻底交给 OpenClaw session + 黑板（首轮发 setup，后续轮只发 trigger，agent 想看群聊用 grep 黑板），从根上消除 prompt 冗余。这是 P3-A 黑板的延伸优化，正好以黑板为基础设施。
+
+P3-A-2 ship 之后**回来**：
+- `git checkout feat/hall-mailbox-p3b1` 回到 mailbox 分支
+- rebase 到合并后的 main（吸收 P3-A-2 的 prompt 简化）
+- 继续 **P3-B-2**（750ms 防抖合并 + worker queue）
+- 再做 **P3-C 系列**（policy chain + `dropResolvedTriggers` + supervisor）
+
+### 分支拓扑
+
+```
+main
+└─ feat/hall-blackboard-p3a (PR #12, P3-A 黑板)
+   ├─ feat/hall-mailbox-p3b1 (PR #14, P3-B-1 mailbox)  ← 暂停
+   └─ feat/hall-context-delegation-p3a2 ← 新分支（current focus）
+```
+
+P3-A-2 跟 P3-B-1 是兄弟分支，都基于 P3-A，互不依赖（功能上正交）。先合谁后合谁均可，但建议 P3-A-2 先合，P3-B-1 后做 rebase 吸收 prompt 简化。
+
+### 设计要点（详见 task_plan.md "Phase P3-A-2"）
+
+- **首轮**发完整 setup（identity + 群聊意识 + 黑板路径 + 工作目录 + 花名册 + 行为指令 + trigger）
+- **后续轮**只发 `[from: <作者>] <trigger 内容>`（约 200-500 tokens vs 当前 10K）
+- 删除 `recentMessages.slice(-5/15)` 的 inline transcript 段
+- 强化 blackboard guidance 的"群聊意识"段——明确告诉 agent "别人说话你看不到，想看自己 grep"
+- observer 触发文案改成 `[mode: observer] 阅读 .hall/chat.jsonl 末尾几条，决定是否补充`
+- A1 originalAssigner 提示从 prompt 段降级为 trigger 前缀的 `[note: 完成后 @ X 汇报]`
+
+### 节省估算
+
+| 维度 | 当前 (P3-A 后) | P3-A-2 后 |
+|---|---|---|
+| 首轮 prompt | ~10K tokens | ~6K tokens（去掉 inline transcript 但保留稳定段） |
+| 后续轮 prompt | ~10K tokens（每次重发） | **~200-500 tokens**（只 trigger + 作者归属） |
+| 10 轮对话累计 | ~100K | ~6K + 9*0.3K ≈ 9K |
+
+约 **90% token 削减**。
