@@ -407,7 +407,32 @@ JSON store 里的原始消息**不动**——黑板是物化视图，UI 仍然�
 - 全 hall 套（除已知 hang 的 typing 文件）：96+ 过，3 失败全部是 P3-A 之前就存在的基线（execution-order persists / session-linkage / multi-mention routing），零回归
 - `npm run smoke:ui` 通过
 - `npm run smoke:hall` 失败（`data-hall-continue-discussion` 选择器在 commit 21f9403 拆 5 状态机时移除，smoke 脚本未跟上——pre-existing baseline broken，与本 PR 无关）
-- Playwright 真机 e2e：留作下一步手动 / 自动验证
+- Playwright 真机 e2e：✅ 跑通
+
+#### Playwright e2e（2026-04-30）
+
+任务卡：`collaboration-hall:p3-b-1-mailbox-turing-pm-linus-idempotent-.hall--85b5a134`
+
+第一步：操作员发"请 @图灵 + @林纳斯 各回答 idempotent 是什么"——多 @ 同时派发。
+
+第二步：操作员发"@图灵 让他 @ 林纳斯 举软件开发例子"——同时触发 auto-chain（图灵 reply 里 @ 林纳斯）+ wake-mention-initiator（chain 完成后回叫图灵）。
+
+`.hall/inbox/` 文件验证：
+- `turing-pm.jsonl` —— 多次 enqueue + consume，含 `operator-route` 与 `wake-mention-initiator` 两种 reason
+- `linus-dev.jsonl` —— 多次 enqueue + consume，含 `operator-route`（operator 直接 @ 林纳斯）+ `auto-chain depth=1`（图灵 reply 里 @ 林纳斯）
+- `main.jsonl` —— `main-observer` reason，main 不在 primary targets 时 observer 路径触发
+
+`deliveries.jsonl` 5 条：
+
+| recordId | target | enqueueReason | chainDepth | outcome | duration |
+|---|---|---|---|---|---|
+| `52e53a28` | turing-pm | operator-route | 0 | dispatched | 46s |
+| `eb0d5f71` | linus-dev | operator-route | 0 | dispatched | 58s |
+| `bd1cdeaf` | main | main-observer | 0 | dispatched | 36s |
+| `a80c2c4e` | linus-dev | operator-route | 0 | dispatched | 17s |
+| `f5c2529a` | linus-dev | **auto-chain** | **1** | dispatched | 23s |
+
+✅ 全部 4 个集成点（operator-route / main-observer / auto-chain / wake-mention-initiator）都被实际流量打到了，零回归零异常。
 
 ## Session 2026-04-30 — 中途切分支：P3-B-1 暂停，开 P3-A-2
 
