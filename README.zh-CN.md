@@ -108,6 +108,7 @@ npm run dev:ui
 - 推荐用 `npm run dev:ui` 启动界面；它比 `UI_MODE=true npm run dev` 更稳，尤其是 Windows shell。
 - `npm run dev` 只会执行一次 monitor，不会启动 HTTP UI。
 - 如果你要在 macOS 上把它作为长期常驻服务运行，建议配合 `~/Library/LaunchAgents/` 做自启动与崩溃自动拉起；仓库里的 `ecosystem.config.cjs` 也可用于 PM2 常驻模式。
+- 如果修改了 `src/` 下的代码，但页面看起来还是旧版本，通常不是浏览器缓存，而是常驻进程还没重启。macOS 下请重启对应 LaunchAgent（例如 `launchctl kickstart -k gui/$(id -u)/com.gary.openclaw-control-center`）后再验证。
 - 如果你所在网络屏蔽 GitHub 22 端口，Git 远端建议改成 `ssh://git@ssh.github.com:443/<owner>/<repo>.git`，避免后续更新或提交时出现“偶发断联”。
 
 ## 分区功能说明
