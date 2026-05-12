@@ -5878,7 +5878,7 @@ async function renderHtml(
   const usageCostMode: UsageCostMode = "full";
   const sectionMeta = sectionLinks.find((item) => item.key === activeSection) ?? sectionLinks[0];
   const collaborationImmersive = false;
-  const isStaffSection = activeSection === "team";
+
   const sectionTitle = resolveDashboardSectionTitle(sectionMeta, options.language);
   const sectionLeadText =
     activeSection === "overview"
@@ -11428,7 +11428,6 @@ async function renderHtml(
           <div class="section-blurb">${escapeHtml(sectionLeadText)}</div>
         </div>
         <div class="section-head-actions">
-          ${isStaffSection ? `<button type="button" class="btn section-top-refresh-btn" id="staff-status-refresh">${escapeHtml(t("Refresh live status", "刷新实时状态"))}</button>` : ""}
           <button id="inspector-toggle" type="button" class="panel-toggle" aria-pressed="false">${escapeHtml(t("Collapse inspector", "收起检视栏"))}</button>
         </div>
       </header>
@@ -16005,7 +16004,6 @@ function renderHeaderControlsScript(language: UiLanguage = "zh"): string {
     }
 
     const staffRefreshButtons = [
-      document.getElementById('staff-status-refresh'),
       document.getElementById('staff-status-refresh-inline')
     ].filter(Boolean);
     staffRefreshButtons.forEach((button) => {
