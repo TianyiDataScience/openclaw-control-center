@@ -7271,8 +7271,13 @@ async function renderHtml(
   });
   const teamSection = activeSection === "team" ? `
     <section class="card">
-      <h2>${escapeHtml(t("Staff overview", "员工总览"))}</h2>
-      <div class="meta">${escapeHtml(t("The default view shows only name, role, current status, current work, recent output, and whether each person is on the schedule.", "默认视图只显示员工名字、角色定位、当前状态、正在处理什么、最近产出，以及是否在排班里。"))}</div>
+      <div class="section-inline-head">
+        <div>
+          <h2>${escapeHtml(t("Staff overview", "员工总览"))}</h2>
+          <div class="meta">${escapeHtml(t("The default view shows only name, role, current status, current work, recent output, and whether each person is on the schedule.", "默认视图只显示员工名字、角色定位、当前状态、正在处理什么、最近产出，以及是否在排班里。"))}</div>
+        </div>
+        <button type="button" class="btn section-refresh-btn" id="staff-status-refresh">${escapeHtml(t("Refresh live status", "刷新实时状态"))}</button>
+      </div>
       ${staffOverviewCardsHtml}
     </section>
     <details class="card compact-details">
@@ -9196,6 +9201,17 @@ async function renderHtml(
       box-shadow: var(--ring-soft), inset 0 1px 0 rgba(255, 255, 255, 0.84);
     }
     .filter-actions { margin-top: 8px; display: flex; gap: 10px; align-items: center; }
+    .section-inline-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .section-refresh-btn {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
     .btn {
       -webkit-appearance: none;
       appearance: none;
@@ -11294,6 +11310,8 @@ async function renderHtml(
       .overview-action-grid { grid-template-columns: 1fr; }
       .overview-task-strip { flex-direction: column; }
       .overview-quick-links { justify-content: flex-start; min-width: 0; }
+      .section-inline-head { flex-direction: column; align-items: stretch; }
+      .section-refresh-btn { width: 100%; }
       .task-hub-stat-grid { grid-template-columns: 1fr; }
       .task-hub-shell { grid-template-columns: 1fr; }
       .task-hub-grid { grid-template-columns: 1fr; }
@@ -15923,15 +15941,23 @@ function renderHeaderControlsScript(language: UiLanguage = "zh"): string {
   }
 
   const setupRefreshButton = () => {
+    const triggerRefresh = (button) => {
+      if (!button) return;
+      try {
+        button.setAttribute('aria-busy', 'true');
+      } catch {}
+      try { window.sessionStorage.setItem(restoreKey, JSON.stringify(captureState())); } catch {}
+      window.setTimeout(() => location.reload(), 60);
+    };
+
     const refreshButton = document.getElementById('data-refresh');
     if (refreshButton) {
-      refreshButton.addEventListener('click', () => {
-        try {
-          refreshButton.setAttribute('aria-busy', 'true');
-        } catch {}
-        try { window.sessionStorage.setItem(restoreKey, JSON.stringify(captureState())); } catch {}
-        window.setTimeout(() => location.reload(), 60);
-      });
+      refreshButton.addEventListener('click', () => triggerRefresh(refreshButton));
+    }
+
+    const staffRefreshButton = document.getElementById('staff-status-refresh');
+    if (staffRefreshButton) {
+      staffRefreshButton.addEventListener('click', () => triggerRefresh(staffRefreshButton));
     }
   };
 
