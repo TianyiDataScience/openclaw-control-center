@@ -1254,6 +1254,53 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         });
       }
 
+      if (method === "GET" && path === "/api/staff/overview") {
+        assertAllowedQueryParams(url.searchParams, ["lang"], true);
+        const language = resolveUiLanguage(url.searchParams, "zh");
+        const snapshot = await readReadModelSnapshotWithLiveSessions(toolClient);
+        const [officeRoster, officePresence, avatarPreferences, teamSnapshot, usageCost] = await Promise.all([
+          loadBestEffortAgentRoster(),
+          loadCachedOfficeSessionPresence(),
+          loadAvatarPreferences(),
+          loadTeamSnapshot(await loadBestEffortAgentRoster(), snapshot),
+          loadCachedUsageCost(snapshot, "full"),
+        ]);
+        const usageAgentTokensByKey = new Map(
+          usageCost.breakdown.byAgent.map((item) => [normalizeLookupKey(item.key), item.tokens]),
+        );
+        const allTasks = listTasks(snapshot.tasks, projectTitleMap(snapshot));
+        const realTasks = allTasks.filter((task) => !isControlCenterMappingTask(task));
+        const officeCards = buildOfficeSpaceCards(
+          snapshot,
+          realTasks,
+          officeRoster.entries.map((entry) => entry.agentId),
+          officePresence.activeSessionsByAgent,
+          language,
+        );
+        const executionAgentSummaries = buildExecutionAgentSummaries(
+          snapshot,
+          realTasks,
+          await loadOpenclawCronCatalog(language),
+          officeRoster.entries,
+          usageAgentTokensByKey,
+        );
+        const staffOverviewCards = await buildStaffOverviewCards({
+          snapshot,
+          client: toolClient,
+          members: teamSnapshot.members,
+          officeCards,
+          executionAgentSummaries,
+          language,
+        });
+        const html = renderStaffOverviewCards(staffOverviewCards, avatarPreferences.preferences, language);
+        return writeJson(res, 200, {
+          ok: true,
+          html,
+          generatedAt: snapshot.generatedAt,
+          count: staffOverviewCards.length,
+        });
+      }
+
       if (method === "GET" && path === "/api/diagnostics") {
         assertAllowedQueryParams(url.searchParams, ["format"], true);
         const format = normalizeQueryString(url.searchParams.get("format"), "format", 16, true);
@@ -5831,6 +5878,7 @@ async function renderHtml(
   const usageCostMode: UsageCostMode = "full";
   const sectionMeta = sectionLinks.find((item) => item.key === activeSection) ?? sectionLinks[0];
   const collaborationImmersive = false;
+
   const sectionTitle = resolveDashboardSectionTitle(sectionMeta, options.language);
   const sectionLeadText =
     activeSection === "overview"
@@ -7271,9 +7319,14 @@ async function renderHtml(
   });
   const teamSection = activeSection === "team" ? `
     <section class="card">
-      <h2>${escapeHtml(t("Staff overview", "员工总览"))}</h2>
-      <div class="meta">${escapeHtml(t("The default view shows only name, role, current status, current work, recent output, and whether each person is on the schedule.", "默认视图只显示员工名字、角色定位、当前状态、正在处理什么、最近产出，以及是否在排班里。"))}</div>
-      ${staffOverviewCardsHtml}
+      <div class="section-inline-head">
+        <div>
+          <h2>${escapeHtml(t("Staff overview", "员工总览"))}</h2>
+          <div class="meta">${escapeHtml(t("The default view shows only name, role, current status, current work, recent output, and whether each person is on the schedule.", "默认视图只显示员工名字、角色定位、当前状态、正在处理什么、最近产出，以及是否在排班里。"))}</div>
+        </div>
+        <button type="button" class="btn section-refresh-btn" id="staff-status-refresh-inline">${escapeHtml(t("Refresh live status", "刷新实时状态"))}</button>
+      </div>
+      <div id="staff-overview-cards" data-staff-overview-root="1">${staffOverviewCardsHtml}</div>
     </section>
     <details class="card compact-details">
       <summary>${escapeHtml(t("Shared staff mission", "员工共同目标"))}</summary>
@@ -9196,6 +9249,17 @@ async function renderHtml(
       box-shadow: var(--ring-soft), inset 0 1px 0 rgba(255, 255, 255, 0.84);
     }
     .filter-actions { margin-top: 8px; display: flex; gap: 10px; align-items: center; }
+    .section-inline-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .section-refresh-btn {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
     .btn {
       -webkit-appearance: none;
       appearance: none;
@@ -11294,6 +11358,8 @@ async function renderHtml(
       .overview-action-grid { grid-template-columns: 1fr; }
       .overview-task-strip { flex-direction: column; }
       .overview-quick-links { justify-content: flex-start; min-width: 0; }
+      .section-inline-head { flex-direction: column; align-items: stretch; }
+      .section-refresh-btn { width: 100%; }
       .task-hub-stat-grid { grid-template-columns: 1fr; }
       .task-hub-shell { grid-template-columns: 1fr; }
       .task-hub-grid { grid-template-columns: 1fr; }
@@ -15923,16 +15989,63 @@ function renderHeaderControlsScript(language: UiLanguage = "zh"): string {
   }
 
   const setupRefreshButton = () => {
+    const triggerRefresh = (button) => {
+      if (!button) return;
+      try {
+        button.setAttribute('aria-busy', 'true');
+      } catch {}
+      try { window.sessionStorage.setItem(restoreKey, JSON.stringify(captureState())); } catch {}
+      window.setTimeout(() => location.reload(), 60);
+    };
+
     const refreshButton = document.getElementById('data-refresh');
     if (refreshButton) {
-      refreshButton.addEventListener('click', () => {
-        try {
-          refreshButton.setAttribute('aria-busy', 'true');
-        } catch {}
-        try { window.sessionStorage.setItem(restoreKey, JSON.stringify(captureState())); } catch {}
-        window.setTimeout(() => location.reload(), 60);
-      });
+      refreshButton.addEventListener('click', () => triggerRefresh(refreshButton));
     }
+
+    const staffRefreshButtons = [
+      document.getElementById('staff-status-refresh-inline')
+    ].filter(Boolean);
+    staffRefreshButtons.forEach((button) => {
+      button.addEventListener('click', async () => {
+        const staffRoot = document.getElementById('staff-overview-cards');
+        const htmlRoot = document.documentElement;
+        const lang = (htmlRoot && htmlRoot.getAttribute('lang')) || 'zh';
+        if (!staffRoot) {
+          triggerRefresh(button);
+          return;
+        }
+        try {
+          button.setAttribute('aria-busy', 'true');
+        } catch {}
+        try {
+          const response = await fetch('/api/staff/overview?lang=' + encodeURIComponent(lang), {
+            headers: { 'Accept': 'application/json' },
+            cache: 'no-store'
+          });
+          if (!response.ok) throw new Error('staff overview refresh failed');
+          const payload = await response.json();
+          if (!payload || payload.ok !== true || typeof payload.html !== 'string') {
+            throw new Error('invalid staff overview payload');
+          }
+          staffRoot.innerHTML = payload.html;
+          // Re-initialize pixel avatars after DOM swap
+          const fa = Array.from(staffRoot.querySelectorAll('.staff-avatar[data-agent-id]'));
+          fa.forEach(function(av) {
+            if (window.__openclawPixelAvatar && typeof window.__openclawPixelAvatar.registerElement === 'function') {
+              window.__openclawPixelAvatar.registerElement(av);
+            }
+          });
+        } catch (error) {
+          triggerRefresh(button);
+          return;
+        } finally {
+          try {
+            button.removeAttribute('aria-busy');
+          } catch {}
+        }
+      });
+    });
   };
 
   const captureState = () => {
@@ -17589,6 +17702,18 @@ function renderAgentVisualEnhancerScript(): string {
         if (!actor.disabled) {
           render(actor.canvas, actor.animal, actor.accent, { bob: 0, sway: 0, blink: 0 });
         }
+      },
+      registerElement: (avatarEl) => {
+        if (!avatarEl) return;
+        const canvas = avatarEl.querySelector && avatarEl.querySelector(".agent-pixel-canvas");
+        if (!canvas) return;
+        const existing = motionActors.find((item) => item.canvas === canvas);
+        if (existing) return;
+        const accent = getComputedStyle(avatarEl).getPropertyValue("--agent-accent").trim() || "#4e79a7";
+        const animal = (avatarEl.dataset && avatarEl.dataset.animal ? avatarEl.dataset.animal : "default");
+        const seed = hashSeed(animal + ":" + accent + ":" + String(motionActors.length + 1));
+        motionActors.push({ canvas, accent, animal, seed, disabled: false });
+        render(canvas, animal.trim().toLowerCase(), accent, { bob: 0, sway: 0, blink: 0 });
       },
     };
   } catch {}

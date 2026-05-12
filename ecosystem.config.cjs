@@ -1,6 +1,7 @@
 const env = {
   UI_MODE: process.env.UI_MODE ?? "true",
   UI_PORT: process.env.UI_PORT ?? "4310",
+  UI_TIMEZONE: process.env.UI_TIMEZONE ?? "Europe/Budapest",
   READONLY_MODE: process.env.READONLY_MODE ?? "true",
   LOCAL_TOKEN_AUTH_REQUIRED: process.env.LOCAL_TOKEN_AUTH_REQUIRED ?? "true",
   MONITOR_CONTINUOUS: process.env.MONITOR_CONTINUOUS ?? "true",
