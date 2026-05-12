@@ -16029,6 +16029,13 @@ function renderHeaderControlsScript(language: UiLanguage = "zh"): string {
             throw new Error('invalid staff overview payload');
           }
           staffRoot.innerHTML = payload.html;
+          // Re-initialize pixel avatars after DOM swap
+          const fa = Array.from(staffRoot.querySelectorAll('.staff-avatar[data-agent-id]'));
+          fa.forEach(function(av) {
+            if (window.__openclawPixelAvatar && typeof window.__openclawPixelAvatar.registerElement === 'function') {
+              window.__openclawPixelAvatar.registerElement(av);
+            }
+          });
         } catch (error) {
           triggerRefresh(button);
           return;
@@ -17695,6 +17702,18 @@ function renderAgentVisualEnhancerScript(): string {
         if (!actor.disabled) {
           render(actor.canvas, actor.animal, actor.accent, { bob: 0, sway: 0, blink: 0 });
         }
+      },
+      registerElement: (avatarEl) => {
+        if (!avatarEl) return;
+        const canvas = avatarEl.querySelector && avatarEl.querySelector(".agent-pixel-canvas");
+        if (!canvas) return;
+        const existing = motionActors.find((item) => item.canvas === canvas);
+        if (existing) return;
+        const accent = getComputedStyle(avatarEl).getPropertyValue("--agent-accent").trim() || "#4e79a7";
+        const animal = (avatarEl.dataset && avatarEl.dataset.animal ? avatarEl.dataset.animal : "default");
+        const seed = hashSeed(animal + ":" + accent + ":" + String(motionActors.length + 1));
+        motionActors.push({ canvas, accent, animal, seed, disabled: false });
+        render(canvas, animal.trim().toLowerCase(), accent, { bob: 0, sway: 0, blink: 0 });
       },
     };
   } catch {}
