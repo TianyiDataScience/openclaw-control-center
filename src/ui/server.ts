@@ -5831,6 +5831,7 @@ async function renderHtml(
   const usageCostMode: UsageCostMode = "full";
   const sectionMeta = sectionLinks.find((item) => item.key === activeSection) ?? sectionLinks[0];
   const collaborationImmersive = false;
+  const isStaffSection = activeSection === "team";
   const sectionTitle = resolveDashboardSectionTitle(sectionMeta, options.language);
   const sectionLeadText =
     activeSection === "overview"
@@ -7276,7 +7277,7 @@ async function renderHtml(
           <h2>${escapeHtml(t("Staff overview", "员工总览"))}</h2>
           <div class="meta">${escapeHtml(t("The default view shows only name, role, current status, current work, recent output, and whether each person is on the schedule.", "默认视图只显示员工名字、角色定位、当前状态、正在处理什么、最近产出，以及是否在排班里。"))}</div>
         </div>
-        <button type="button" class="btn section-refresh-btn" id="staff-status-refresh">${escapeHtml(t("Refresh live status", "刷新实时状态"))}</button>
+        <button type="button" class="btn section-refresh-btn" id="staff-status-refresh-inline">${escapeHtml(t("Refresh live status", "刷新实时状态"))}</button>
       </div>
       ${staffOverviewCardsHtml}
     </section>
@@ -11380,6 +11381,7 @@ async function renderHtml(
           <div class="section-blurb">${escapeHtml(sectionLeadText)}</div>
         </div>
         <div class="section-head-actions">
+          ${isStaffSection ? `<button type="button" class="btn section-top-refresh-btn" id="staff-status-refresh">${escapeHtml(t("Refresh live status", "刷新实时状态"))}</button>` : ""}
           <button id="inspector-toggle" type="button" class="panel-toggle" aria-pressed="false">${escapeHtml(t("Collapse inspector", "收起检视栏"))}</button>
         </div>
       </header>
@@ -15955,10 +15957,13 @@ function renderHeaderControlsScript(language: UiLanguage = "zh"): string {
       refreshButton.addEventListener('click', () => triggerRefresh(refreshButton));
     }
 
-    const staffRefreshButton = document.getElementById('staff-status-refresh');
-    if (staffRefreshButton) {
-      staffRefreshButton.addEventListener('click', () => triggerRefresh(staffRefreshButton));
-    }
+    const staffRefreshButtons = [
+      document.getElementById('staff-status-refresh'),
+      document.getElementById('staff-status-refresh-inline')
+    ].filter(Boolean);
+    staffRefreshButtons.forEach((button) => {
+      button.addEventListener('click', () => triggerRefresh(button));
+    });
   };
 
   const captureState = () => {
