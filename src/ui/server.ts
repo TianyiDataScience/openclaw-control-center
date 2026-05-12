@@ -1254,6 +1254,53 @@ export function startUiServer(port: number, toolClient: ToolClient, options: Sta
         });
       }
 
+      if (method === "GET" && path === "/api/staff/overview") {
+        assertAllowedQueryParams(url.searchParams, ["lang"], true);
+        const language = resolveUiLanguage(url.searchParams, "zh");
+        const snapshot = await readReadModelSnapshotWithLiveSessions(toolClient);
+        const [officeRoster, officePresence, avatarPreferences, teamSnapshot, usageCost] = await Promise.all([
+          loadBestEffortAgentRoster(),
+          loadCachedOfficeSessionPresence(),
+          loadAvatarPreferences(),
+          loadTeamSnapshot(await loadBestEffortAgentRoster(), snapshot),
+          loadCachedUsageCost(snapshot, "full"),
+        ]);
+        const usageAgentTokensByKey = new Map(
+          usageCost.breakdown.byAgent.map((item) => [normalizeLookupKey(item.key), item.tokens]),
+        );
+        const allTasks = listTasks(snapshot.tasks, projectTitleMap(snapshot));
+        const realTasks = allTasks.filter((task) => !isControlCenterMappingTask(task));
+        const officeCards = buildOfficeSpaceCards(
+          snapshot,
+          realTasks,
+          officeRoster.entries.map((entry) => entry.agentId),
+          officePresence.activeSessionsByAgent,
+          language,
+        );
+        const executionAgentSummaries = buildExecutionAgentSummaries(
+          snapshot,
+          realTasks,
+          await loadOpenclawCronCatalog(language),
+          officeRoster.entries,
+          usageAgentTokensByKey,
+        );
+        const staffOverviewCards = await buildStaffOverviewCards({
+          snapshot,
+          client: toolClient,
+          members: teamSnapshot.members,
+          officeCards,
+          executionAgentSummaries,
+          language,
+        });
+        const html = renderStaffOverviewCards(staffOverviewCards, avatarPreferences.preferences, language);
+        return writeJson(res, 200, {
+          ok: true,
+          html,
+          generatedAt: snapshot.generatedAt,
+          count: staffOverviewCards.length,
+        });
+      }
+
       if (method === "GET" && path === "/api/diagnostics") {
         assertAllowedQueryParams(url.searchParams, ["format"], true);
         const format = normalizeQueryString(url.searchParams.get("format"), "format", 16, true);
@@ -7279,7 +7326,7 @@ async function renderHtml(
         </div>
         <button type="button" class="btn section-refresh-btn" id="staff-status-refresh-inline">${escapeHtml(t("Refresh live status", "刷新实时状态"))}</button>
       </div>
-      ${staffOverviewCardsHtml}
+      <div id="staff-overview-cards" data-staff-overview-root="1">${staffOverviewCardsHtml}</div>
     </section>
     <details class="card compact-details">
       <summary>${escapeHtml(t("Shared staff mission", "员工共同目标"))}</summary>
@@ -15962,7 +16009,37 @@ function renderHeaderControlsScript(language: UiLanguage = "zh"): string {
       document.getElementById('staff-status-refresh-inline')
     ].filter(Boolean);
     staffRefreshButtons.forEach((button) => {
-      button.addEventListener('click', () => triggerRefresh(button));
+      button.addEventListener('click', async () => {
+        const staffRoot = document.getElementById('staff-overview-cards');
+        const htmlRoot = document.documentElement;
+        const lang = (htmlRoot && htmlRoot.getAttribute('lang')) || 'zh';
+        if (!staffRoot) {
+          triggerRefresh(button);
+          return;
+        }
+        try {
+          button.setAttribute('aria-busy', 'true');
+        } catch {}
+        try {
+          const response = await fetch('/api/staff/overview?lang=' + encodeURIComponent(lang), {
+            headers: { 'Accept': 'application/json' },
+            cache: 'no-store'
+          });
+          if (!response.ok) throw new Error('staff overview refresh failed');
+          const payload = await response.json();
+          if (!payload || payload.ok !== true || typeof payload.html !== 'string') {
+            throw new Error('invalid staff overview payload');
+          }
+          staffRoot.innerHTML = payload.html;
+        } catch (error) {
+          triggerRefresh(button);
+          return;
+        } finally {
+          try {
+            button.removeAttribute('aria-busy');
+          } catch {}
+        }
+      });
     });
   };
 
