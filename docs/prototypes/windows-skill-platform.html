@@ -1,0 +1,979 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenClaw Windows Skill Platform Prototype</title>
+  <style>
+    :root {
+      --paper: #f7f4ec;
+      --panel: #fffdf8;
+      --ink: #26231e;
+      --muted: #746f66;
+      --line: #d9d1c0;
+      --teal: #1f8a84;
+      --teal-dark: #16625e;
+      --blue: #2d62b7;
+      --amber: #c9831d;
+      --red: #b84a3d;
+      --green: #3d7f48;
+      --shadow: 0 18px 45px rgba(38, 35, 30, 0.12);
+      --radius: 8px;
+      font-family: "Aptos", "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(90deg, rgba(31, 138, 132, 0.08) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(31, 138, 132, 0.06) 1px, transparent 1px),
+        var(--paper);
+      background-size: 28px 28px;
+      color: var(--ink);
+    }
+
+    button,
+    input,
+    textarea,
+    select {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 236px minmax(760px, 1fr) 348px;
+      min-height: 100vh;
+    }
+
+    .rail {
+      background: #2f2b25;
+      color: #f9f1df;
+      padding: 18px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      border-right: 1px solid #171512;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 8px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .brand img {
+      width: 34px;
+      height: 34px;
+      border-radius: 6px;
+      background: #fff;
+    }
+
+    .brand strong {
+      display: block;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .brand span {
+      display: block;
+      color: #cfc4b2;
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    .nav {
+      display: grid;
+      gap: 6px;
+    }
+
+    .nav button {
+      width: 100%;
+      border: 0;
+      color: #efe7d7;
+      background: transparent;
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      text-align: left;
+      padding: 10px 9px;
+      border-radius: 6px;
+    }
+
+    .nav button.active,
+    .nav button:hover {
+      background: #474036;
+    }
+
+    .nav .count {
+      color: #2f2b25;
+      background: #f0c766;
+      font-size: 11px;
+      font-weight: 700;
+      min-width: 22px;
+      text-align: center;
+      padding: 2px 6px;
+      border-radius: 999px;
+    }
+
+    .runtime {
+      margin-top: auto;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      padding: 12px;
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .runtime h3 {
+      margin: 0 0 10px;
+      font-size: 13px;
+    }
+
+    .meter {
+      height: 7px;
+      background: rgba(255, 255, 255, 0.14);
+      border-radius: 999px;
+      overflow: hidden;
+      margin: 8px 0 10px;
+    }
+
+    .meter span {
+      display: block;
+      width: 64%;
+      height: 100%;
+      background: #55c0a8;
+    }
+
+    .runtime p {
+      margin: 0;
+      color: #cfc4b2;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    main {
+      padding: 22px;
+      overflow: auto;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 16px;
+      align-items: start;
+      margin-bottom: 18px;
+    }
+
+    .title h1 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: 0;
+      line-height: 1.15;
+    }
+
+    .title p {
+      margin: 7px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .btn {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 9px 12px;
+      box-shadow: 0 1px 0 rgba(255,255,255,.5) inset;
+    }
+
+    .btn.primary {
+      background: var(--teal);
+      color: white;
+      border-color: var(--teal-dark);
+    }
+
+    .btn.warn {
+      background: #fff4db;
+      border-color: #e2b95f;
+      color: #6d4510;
+    }
+
+    .dashboard {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .panel {
+      background: rgba(255, 253, 248, 0.94);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 250, 239, 0.92);
+    }
+
+    .panel h2 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    .panel .body {
+      padding: 16px;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid transparent;
+    }
+
+    .status.ok {
+      background: #e8f4e5;
+      color: var(--green);
+      border-color: #b9d8b6;
+    }
+
+    .status.warn {
+      background: #fff2d0;
+      color: var(--amber);
+      border-color: #e6c779;
+    }
+
+    .status.block {
+      background: #ffe5df;
+      color: var(--red);
+      border-color: #e1aaa0;
+    }
+
+    .doctor {
+      display: grid;
+      gap: 8px;
+    }
+
+    .check {
+      display: grid;
+      grid-template-columns: 26px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      min-height: 46px;
+      padding: 9px 10px;
+      border: 1px solid #e6dece;
+      border-radius: 6px;
+      background: #fffaf0;
+    }
+
+    .check strong {
+      display: block;
+      font-size: 13px;
+    }
+
+    .check span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 0 4px rgba(61, 127, 72, .14);
+      justify-self: center;
+    }
+
+    .dot.warn {
+      background: var(--amber);
+      box-shadow: 0 0 0 4px rgba(201, 131, 29, .15);
+    }
+
+    .dot.block {
+      background: var(--red);
+      box-shadow: 0 0 0 4px rgba(184, 74, 61, .14);
+    }
+
+    .skills {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .skill {
+      border: 1px solid #e0d7c6;
+      border-radius: 6px;
+      padding: 12px;
+      background: #fffaf1;
+      transition: border-color .18s ease, transform .18s ease;
+    }
+
+    .skill:hover {
+      border-color: var(--teal);
+      transform: translateY(-1px);
+    }
+
+    .skill.selected {
+      border-color: var(--teal);
+      box-shadow: 0 0 0 3px rgba(31, 138, 132, .12);
+    }
+
+    .skill h3 {
+      margin: 0 0 7px;
+      font-size: 14px;
+    }
+
+    .skill p {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+
+    .tag {
+      color: #5c5246;
+      border: 1px solid #d9ccb8;
+      border-radius: 999px;
+      padding: 3px 7px;
+      font-size: 11px;
+      background: #fbf3e3;
+    }
+
+    .task-form {
+      display: grid;
+      gap: 12px;
+    }
+
+    .field label {
+      display: block;
+      font-size: 12px;
+      font-weight: 700;
+      color: #4d473d;
+      margin-bottom: 6px;
+    }
+
+    .field input,
+    .field textarea,
+    .field select {
+      width: 100%;
+      border: 1px solid #d8cebd;
+      background: #fffdf8;
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 10px;
+      outline: 0;
+    }
+
+    .field textarea {
+      min-height: 118px;
+      resize: vertical;
+      line-height: 1.5;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 10px;
+    }
+
+    .event {
+      display: grid;
+      grid-template-columns: 74px 1fr;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px dashed #dbd2c3;
+    }
+
+    .event:last-child {
+      border-bottom: 0;
+    }
+
+    .time {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .event strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 2px;
+    }
+
+    .event p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .side {
+      border-left: 1px solid var(--line);
+      background: rgba(255, 252, 244, .74);
+      padding: 22px 16px;
+      overflow: auto;
+    }
+
+    .side-section {
+      margin-bottom: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .side-section header {
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .side-section h2 {
+      margin: 0;
+      font-size: 14px;
+    }
+
+    .side-section .body {
+      padding: 12px;
+    }
+
+    .approval {
+      border: 1px solid #e8bd87;
+      background: #fff7e8;
+      padding: 12px;
+      border-radius: 6px;
+    }
+
+    .approval strong {
+      display: block;
+      margin-bottom: 6px;
+      color: #6d4510;
+    }
+
+    .approval p {
+      margin: 0 0 10px;
+      color: #76604a;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .approval .approval-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .files {
+      display: grid;
+      gap: 8px;
+    }
+
+    .file {
+      display: grid;
+      grid-template-columns: 26px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      padding: 7px 0;
+      border-bottom: 1px solid #ece3d4;
+    }
+
+    .file:last-child {
+      border-bottom: 0;
+    }
+
+    .file span:nth-child(2) {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .file code {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .setting {
+      border: 1px solid #e0d7c6;
+      border-radius: 6px;
+      padding: 12px;
+      background: #fffaf0;
+    }
+
+    .setting strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+
+    .setting span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .wide {
+      grid-column: 1 / -1;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    @media (max-width: 1180px) {
+      .app {
+        grid-template-columns: 78px minmax(0, 1fr);
+      }
+
+      .side {
+        grid-column: 1 / -1;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .brand div,
+      .nav span.label,
+      .runtime {
+        display: none;
+      }
+
+      .nav button {
+        grid-template-columns: 1fr;
+        justify-items: center;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .app {
+        display: block;
+      }
+
+      .rail {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+      }
+
+      .nav {
+        grid-template-columns: repeat(3, 1fr);
+      }
+
+      .dashboard,
+      .split,
+      .skills,
+      .settings-grid,
+      .side {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar {
+        grid-template-columns: 1fr;
+      }
+
+      main {
+        padding: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <div class="brand">
+        <img src="../assets/openclaw-control-center-icon.svg" alt="OpenClaw">
+        <div>
+          <strong>OpenClaw Workbench</strong>
+          <span>Windows Skill Platform</span>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="主导航">
+        <button class="active" data-section="dashboard"><span>◆</span><span class="label">控制台</span></button>
+        <button data-section="skills"><span>▦</span><span class="label">技能库</span><span class="count">42</span></button>
+        <button data-section="task"><span>▶</span><span class="label">新任务</span></button>
+        <button data-section="approvals"><span>!</span><span class="label">审批</span><span class="count">1</span></button>
+        <button data-section="results"><span>▣</span><span class="label">结果</span></button>
+        <button data-section="settings"><span>⚙</span><span class="label">设置</span></button>
+      </nav>
+
+      <section class="runtime">
+        <h3>本地运行时</h3>
+        <div class="meter"><span></span></div>
+        <p id="runtime-summary">OpenClaw Gateway 在线<br>工作区: D:\OpenClaw\workspace</p>
+      </section>
+    </aside>
+
+    <main>
+      <section id="dashboard" class="view">
+        <div class="topbar">
+          <div class="title">
+            <h1>本地技能工作台</h1>
+            <p>Windows 桌面端 · OpenClaw 执行底座 · 默认保守权限</p>
+          </div>
+          <div class="actions">
+            <button class="btn">导入 Skill</button>
+            <button class="btn primary" data-jump="task">新建任务</button>
+          </div>
+        </div>
+
+        <div class="dashboard">
+          <article class="panel">
+            <header>
+              <h2>首次体检</h2>
+              <span class="status warn">2 项待处理</span>
+            </header>
+            <div class="body doctor">
+              <div class="check">
+                <span class="dot"></span>
+                <div><strong>OpenClaw 配置</strong><span>%USERPROFILE%\.openclaw\openclaw.json 可读取</span></div>
+                <span class="status ok">通过</span>
+              </div>
+              <div class="check">
+                <span class="dot"></span>
+                <div><strong>Skill 根目录</strong><span>发现 3 个本地来源，42 个技能</span></div>
+                <span class="status ok">通过</span>
+              </div>
+              <div class="check">
+                <span class="dot warn"></span>
+                <div><strong>PowerShell 策略</strong><span>安装类命令需要单次确认</span></div>
+                <button class="btn warn">查看</button>
+              </div>
+              <div class="check">
+                <span class="dot block"></span>
+                <div><strong>授权工作区</strong><span>尚未选择默认任务目录</span></div>
+                <button class="btn primary">选择</button>
+              </div>
+            </div>
+          </article>
+
+          <article class="panel">
+            <header>
+              <h2>当前任务</h2>
+              <span class="status warn">等待审批</span>
+            </header>
+            <div class="body timeline">
+              <div class="event">
+                <span class="time">14:06</span>
+                <div><strong>已选择 skill: xlsx</strong><p>准备分析授权目录中的销售表。</p></div>
+              </div>
+              <div class="event">
+                <span class="time">14:07</span>
+                <div><strong>读取 6 个文件</strong><p>全部来自 D:\OpenClaw\workspace\报表。</p></div>
+              </div>
+              <div class="event">
+                <span class="time">14:08</span>
+                <div><strong>请求安装依赖</strong><p>需要确认是否允许 npm 安装图表渲染依赖。</p></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="panel wide">
+            <header>
+              <h2>推荐技能</h2>
+              <span class="status ok">本地索引完成</span>
+            </header>
+            <div class="body skills">
+              <button class="skill selected">
+                <h3>xlsx</h3>
+                <p>读取、清洗、分析 Excel，输出表格、图表和摘要。</p>
+                <div class="tags"><span class="tag">数据</span><span class="tag">本地文件</span><span class="tag">低风险</span></div>
+              </button>
+              <button class="skill">
+                <h3>pptx-creator</h3>
+                <p>根据主题、材料和大纲生成演示文稿。</p>
+                <div class="tags"><span class="tag">PPT</span><span class="tag">内容</span><span class="tag">需素材</span></div>
+              </button>
+              <button class="skill">
+                <h3>web-scraper</h3>
+                <p>抓取网页、整理来源、输出结构化报告。</p>
+                <div class="tags"><span class="tag">联网</span><span class="tag">调研</span><span class="tag">需确认</span></div>
+              </button>
+              <button class="skill">
+                <h3>skill-creator</h3>
+                <p>把重复工作沉淀为可复用 OpenClaw skill。</p>
+                <div class="tags"><span class="tag">创建</span><span class="tag">OpenClaw</span><span class="tag">进阶</span></div>
+              </button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="skills" class="view hidden">
+        <div class="topbar">
+          <div class="title">
+            <h1>技能库</h1>
+            <p>本地目录扫描，不执行 skill 代码。</p>
+          </div>
+          <div class="actions">
+            <button class="btn">扫描</button>
+            <button class="btn primary">导入文件夹</button>
+          </div>
+        </div>
+        <article class="panel">
+          <header>
+            <h2>本地 Skills</h2>
+            <span class="status ok">42 个可用</span>
+          </header>
+          <div class="body">
+            <div class="split">
+              <div class="field"><label>搜索</label><input value="文档 数据 分析"></div>
+              <div class="field"><label>来源</label><select><option>全部本地来源</option><option>~/.openclaw/skills</option><option>~/.codex/skills</option></select></div>
+            </div>
+            <div class="skills" style="margin-top:12px">
+              <button class="skill selected"><h3>data-analysis</h3><p>分析表格、生成图表、提炼业务洞察。</p><div class="tags"><span class="tag">~/.openclaw</span><span class="tag">已验证</span></div></button>
+              <button class="skill"><h3>documents</h3><p>创建、编辑和整理文档产物。</p><div class="tags"><span class="tag">~/.codex</span><span class="tag">系统</span></div></button>
+              <button class="skill"><h3>web-scraper</h3><p>读取网页并保留来源证据。</p><div class="tags"><span class="tag">联网</span><span class="tag">需授权</span></div></button>
+              <button class="skill"><h3>skill-vetter</h3><p>检查 skill 文件质量和安全风险。</p><div class="tags"><span class="tag">安全</span><span class="tag">推荐</span></div></button>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section id="task" class="view hidden">
+        <div class="topbar">
+          <div class="title">
+            <h1>新建任务</h1>
+            <p>一次只选择一个 skill，先把 v1 闭环跑稳。</p>
+          </div>
+          <div class="actions">
+            <button class="btn">保存草稿</button>
+            <button class="btn primary">开始执行</button>
+          </div>
+        </div>
+        <article class="panel">
+          <header>
+            <h2>任务输入</h2>
+            <span class="status ok">安全模式开启</span>
+          </header>
+          <div class="body task-form">
+            <div class="split">
+              <div class="field"><label>Skill</label><select><option>data-analysis</option><option>xlsx</option><option>pptx-creator</option></select></div>
+              <div class="field"><label>模型</label><select><option>默认 OpenClaw 模型</option><option>本地模型</option><option>手动选择</option></select></div>
+            </div>
+            <div class="field"><label>授权工作区</label><input value="D:\OpenClaw\workspace\销售数据 2026"></div>
+            <div class="field"><label>任务描述</label><textarea>分析这个目录里的销售 Excel，找出 5 个最值得关注的变化，并生成一份带图表的 Markdown 报告。</textarea></div>
+          </div>
+        </article>
+      </section>
+
+      <section id="approvals" class="view hidden">
+        <div class="topbar">
+          <div class="title">
+            <h1>审批</h1>
+            <p>危险动作默认暂停，确认后才继续。</p>
+          </div>
+        </div>
+        <article class="panel">
+          <header>
+            <h2>待确认动作</h2>
+            <span class="status warn">1 项</span>
+          </header>
+          <div class="body">
+            <div class="approval">
+              <strong>请求安装 npm 依赖</strong>
+              <p>任务需要安装 chart-renderer 到当前授权工作区。该动作会写入 node_modules 和 package-lock.json。</p>
+              <div class="approval-actions">
+                <button class="btn">拒绝</button>
+                <button class="btn primary">允许一次</button>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section id="results" class="view hidden">
+        <div class="topbar">
+          <div class="title">
+            <h1>结果与证据</h1>
+            <p>每次执行都保留可追溯记录。</p>
+          </div>
+          <div class="actions">
+            <button class="btn">导出 JSON</button>
+            <button class="btn primary">导出 Markdown</button>
+          </div>
+        </div>
+        <article class="panel">
+          <header>
+            <h2>销售数据分析</h2>
+            <span class="status ok">已完成</span>
+          </header>
+          <div class="body">
+            <div class="settings-grid">
+              <div class="setting"><strong>Skill</strong><span>data-analysis</span></div>
+              <div class="setting"><strong>工作区</strong><span>D:\OpenClaw\workspace\销售数据 2026</span></div>
+              <div class="setting"><strong>审批</strong><span>1 次允许，0 次拒绝</span></div>
+            </div>
+            <div class="files" style="margin-top:14px">
+              <div class="file"><span>MD</span><span>outputs\sales-insights.md</span><code>created</code></div>
+              <div class="file"><span>PNG</span><span>outputs\trend-chart.png</span><code>created</code></div>
+              <div class="file"><span>XLSX</span><span>raw\sales-q2.xlsx</span><code>read</code></div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section id="settings" class="view hidden">
+        <div class="topbar">
+          <div class="title">
+            <h1>设置</h1>
+            <p>路径、模型、安全策略和诊断。</p>
+          </div>
+          <div class="actions">
+            <button class="btn">导出诊断</button>
+            <button class="btn primary">保存</button>
+          </div>
+        </div>
+        <article class="panel">
+          <header>
+            <h2>本地配置</h2>
+            <span class="status ok">密钥已隐藏</span>
+          </header>
+          <div class="body settings-grid">
+            <div class="setting"><strong>OpenClaw Home</strong><span>%USERPROFILE%\.openclaw</span></div>
+            <div class="setting"><strong>Workspace Root</strong><span>D:\OpenClaw\workspace</span></div>
+            <div class="setting"><strong>Credential Store</strong><span>Windows Credential Manager</span></div>
+            <div class="setting"><strong>Safety Mode</strong><span>保守：高危动作必须确认</span></div>
+            <div class="setting"><strong>Skill Roots</strong><span>3 个本地来源</span></div>
+            <div class="setting"><strong>Audit Retention</strong><span>保留 30 天</span></div>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <aside class="side">
+      <section class="side-section">
+        <header>
+          <h2>任务证据</h2>
+          <span class="status ok">实时</span>
+        </header>
+        <div class="body timeline">
+          <div class="event"><span class="time">14:06</span><div><strong>任务创建</strong><p>prompt、skill、workspace 已记录。</p></div></div>
+          <div class="event"><span class="time">14:07</span><div><strong>文件读取</strong><p>6 个文件，均在授权目录内。</p></div></div>
+          <div class="event"><span class="time">14:08</span><div><strong>等待审批</strong><p>安装依赖需要确认。</p></div></div>
+        </div>
+      </section>
+
+      <section class="side-section">
+        <header>
+          <h2>输出文件</h2>
+          <span class="status warn">草稿</span>
+        </header>
+        <div class="body files">
+          <div class="file"><span>MD</span><span>sales-insights.md</span><code>pending</code></div>
+          <div class="file"><span>PNG</span><span>trend-chart.png</span><code>pending</code></div>
+          <div class="file"><span>LOG</span><span>evidence.json</span><code>live</code></div>
+        </div>
+      </section>
+
+      <section class="side-section">
+        <header>
+          <h2>权限边界</h2>
+          <span class="status ok">保守</span>
+        </header>
+        <div class="body">
+          <div class="approval">
+            <strong>授权目录</strong>
+            <p>D:\OpenClaw\workspace\销售数据 2026 以内允许读写。目录外写入、删除、安装、系统配置修改都必须暂停确认。</p>
+            <button class="btn">查看审计</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <script>
+    const navButtons = document.querySelectorAll("[data-section]");
+    const views = document.querySelectorAll(".view");
+
+    function show(section) {
+      views.forEach((view) => view.classList.toggle("hidden", view.id !== section));
+      navButtons.forEach((button) => button.classList.toggle("active", button.dataset.section === section));
+    }
+
+    navButtons.forEach((button) => {
+      button.addEventListener("click", () => show(button.dataset.section));
+    });
+
+    document.querySelectorAll("[data-jump]").forEach((button) => {
+      button.addEventListener("click", () => show(button.dataset.jump));
+    });
+
+    document.querySelectorAll(".skill").forEach((button) => {
+      button.addEventListener("click", () => {
+        const group = button.closest(".skills");
+        if (!group) return;
+        group.querySelectorAll(".skill").forEach((skill) => skill.classList.remove("selected"));
+        button.classList.add("selected");
+      });
+    });
+
+    if (window.openclawWorkbench) {
+      window.openclawWorkbench.runDoctor().then((result) => {
+        const summary = document.getElementById("runtime-summary");
+        const skillCheck = result.checks.find((check) => check.id === "skill-roots");
+        if (summary) {
+          summary.innerHTML = `${result.summary.ready ? "体检通过" : "体检需处理"}<br>${skillCheck ? skillCheck.message : "Skill 状态未知"}`;
+        }
+      }).catch(() => {
+        const summary = document.getElementById("runtime-summary");
+        if (summary) {
+          summary.innerHTML = "体检暂不可用<br>请查看桌面诊断";
+        }
+      });
+    }
+  </script>
+</body>
+</html>

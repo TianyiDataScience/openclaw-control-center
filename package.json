@@ -6,6 +6,10 @@
   "type": "commonjs",
   "scripts": {
     "dev": "node --import tsx src/index.ts",
+    "desktop:dev": "electron desktop/main.cjs",
+    "desktop:pack:win": "electron-builder --win --dir",
+    "desktop:dist:win": "electron-builder --win nsis",
+    "desktop:doctor": "node desktop/doctor.cjs",
     "dev:continuous": "cross-env MONITOR_CONTINUOUS=true node --import tsx src/index.ts",
     "dev:ui": "cross-env UI_MODE=true node --import tsx src/index.ts",
     "smoke:ui": "node scripts/ui-smoke.js",
@@ -40,7 +44,46 @@
   "devDependencies": {
     "@types/node": "^22.13.10",
     "cross-env": "^7.0.3",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
     "tsx": "^4.20.0",
     "typescript": "^5.8.2"
+  },
+  "build": {
+    "appId": "ai.openclaw.workbench",
+    "productName": "OpenClaw Workbench",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "docs/prototypes/**/*",
+      "docs/assets/openclaw-control-center-icon.png",
+      "docs/assets/openclaw-control-center-icon.svg",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "desktop/main.cjs"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName} Setup ${version}.${ext}",
+      "icon": "docs/assets/openclaw-control-center-icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OpenClaw Workbench",
+      "perMachine": false
+    }
   }
 }
