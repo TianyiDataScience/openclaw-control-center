@@ -6214,50 +6214,64 @@ async function renderHtml(
     : "disabled";
   const importGuardRows = [
     {
-      label: "只读保护",
+      label: t("Read-only Protection", "只读保护"),
       value: String(READONLY_MODE),
-      note: READONLY_MODE ? "当前只允许安全演练，不会写入真实变更。" : "允许真实写入，请确认后使用。",
+      note: READONLY_MODE
+        ? t("Currently only allows dry runs; no real changes will be written.", "当前只允许安全演练，不会写入真实变更。")
+        : t("Real writes allowed; confirm before use.", "允许真实写入，请确认后使用。"),
       status: READONLY_MODE ? "enabled" : "warn",
     },
     {
-      label: "关键操作身份验证",
+      label: t("Critical Operation Authentication", "关键操作身份验证"),
       value: String(LOCAL_TOKEN_AUTH_REQUIRED),
-      note: LOCAL_TOKEN_AUTH_REQUIRED ? "已开启，保存、导入、审批和 hall/room 写操作需要 LOCAL_API_TOKEN。" : "未开启，建议在生产环境开启。",
+      note: LOCAL_TOKEN_AUTH_REQUIRED
+        ? t("Enabled; save, import, approval, and hall/room write operations require LOCAL_API_TOKEN.", "已开启，保存、导入、审批和 hall/room 写操作需要 LOCAL_API_TOKEN。")
+        : t("Disabled; recommended to enable in production.", "未开启，建议在生产环境开启。"),
       status: LOCAL_TOKEN_AUTH_REQUIRED ? "enabled" : "warn",
     },
     {
-      label: "身份验证配置",
+      label: t("Authentication Configuration", "身份验证配置"),
       value: String(importGuard.localTokenConfigured),
-      note: importGuard.localTokenConfigured ? "已配置完成。这是当前机器上用于保护关键写入的本地口令。" : "尚未配置。LOCAL_API_TOKEN 是当前机器上用于保护关键写入的本地口令。",
+      note: importGuard.localTokenConfigured
+        ? t("Configured. This is the local token on this machine used to protect critical writes.", "已配置完成。这是当前机器上用于保护关键写入的本地口令。")
+        : t("Not configured. LOCAL_API_TOKEN is the local token on this machine used to protect critical writes.", "尚未配置。LOCAL_API_TOKEN 是当前机器上用于保护关键写入的本地口令。"),
       status: importGuard.localTokenConfigured ? "enabled" : "blocked",
     },
     {
-      label: "身份验证状态",
-      value: tokenGateStatus === "armed" ? "已就绪" : tokenGateStatus === "blocked_no_token" ? "未配置" : "未开启",
-      note: "用于保护保存、导入、审批和 hall/room 写操作。",
+      label: t("Authentication Status", "身份验证状态"),
+      value: tokenGateStatus === "armed"
+        ? t("Armed", "已就绪")
+        : tokenGateStatus === "blocked_no_token"
+          ? t("Not configured", "未配置")
+          : t("Disabled", "未开启"),
+      note: t("Used to protect save, import, approval, and hall/room write operations.", "用于保护保存、导入、审批和 hall/room 写操作。"),
       status: tokenGateStatus === "armed" ? "enabled" : tokenGateStatus === "blocked_no_token" ? "blocked" : "disabled",
     },
     {
-      label: "变更写入开关",
+      label: t("Mutation Write Toggle", "变更写入开关"),
       value: String(IMPORT_MUTATION_ENABLED),
-      note: IMPORT_MUTATION_ENABLED ? "允许写入导入变更。" : "已关闭导入写入。",
+      note: IMPORT_MUTATION_ENABLED
+        ? t("Import mutations allowed.", "允许写入导入变更。")
+        : t("Import writes disabled.", "已关闭导入写入。"),
       status: IMPORT_MUTATION_ENABLED ? "warn" : "disabled",
     },
     {
-      label: "审批写入开关",
+      label: t("Approval Write Toggle", "审批写入开关"),
       value: String(APPROVAL_ACTIONS_ENABLED),
-      note: APPROVAL_ACTIONS_ENABLED ? "允许执行审批写入。" : "已关闭审批写入。",
+      note: APPROVAL_ACTIONS_ENABLED
+        ? t("Approval writes allowed.", "允许执行审批写入。")
+        : t("Approval writes disabled.", "已关闭审批写入。"),
       status: APPROVAL_ACTIONS_ENABLED ? "warn" : "disabled",
     },
     {
-      label: "默认保护模式",
+      label: t("Default Protection Mode", "默认保护模式"),
       value: importGuard.defaultMode,
       note:
         importGuard.defaultMode === "blocked"
-          ? "当前为保护状态，仅允许演练。"
+          ? t("Currently protected; dry runs only.", "当前为保护状态，仅允许演练。")
           : importGuard.defaultMode === "dry_run"
-            ? "默认先演练，再决定是否写入。"
-            : "当前允许实时写入。",
+            ? t("Dry run first by default, then decide whether to write.", "默认先演练，再决定是否写入。")
+            : t("Live writes currently allowed.", "当前允许实时写入。"),
       status: importGuard.defaultMode,
     },
   ]
@@ -7856,9 +7870,9 @@ async function renderHtml(
     ${updateStatusSection}
     ${diagnosticsSection}
     <section class="card">
-      <h2>安全开关</h2>
+      <h2>${escapeHtml(t("Safety Switches", "安全开关"))}</h2>
       <table>
-        <thead><tr><th>项目</th><th>状态</th><th>当前值</th><th>说明</th></tr></thead>
+        <thead><tr><th>${escapeHtml(t("Item", "项目"))}</th><th>${escapeHtml(t("Status", "状态"))}</th><th>${escapeHtml(t("Current Value", "当前值"))}</th><th>${escapeHtml(t("Description", "说明"))}</th></tr></thead>
         <tbody>${importGuardRows}</tbody>
       </table>
     </section>
