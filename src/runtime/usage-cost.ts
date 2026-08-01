@@ -199,6 +199,19 @@ interface ModelContextCatalogEntry {
   provider?: string;
 }
 
+const BUILT_IN_MODEL_CONTEXT_CATALOG: readonly ModelContextCatalogEntry[] = [
+  {
+    match: "minimax-m3",
+    contextWindowTokens: 1_000_000,
+    provider: "MiniMax",
+  },
+  {
+    match: "minimax-m2.7",
+    contextWindowTokens: 204_800,
+    provider: "MiniMax",
+  },
+];
+
 interface RuntimeSessionContext {
   sessionKey: string;
   sessionId?: string;
@@ -646,10 +659,22 @@ async function loadModelContextCatalog(): Promise<ModelContextCatalogEntry[]> {
         provider: provider || undefined,
       });
     }
-    return entries;
+    return mergeModelContextCatalog(entries);
   } catch {
-    return [];
+    return mergeModelContextCatalog([]);
   }
+}
+
+function mergeModelContextCatalog(entries: ModelContextCatalogEntry[]): ModelContextCatalogEntry[] {
+  const configuredMatches = new Set(entries.map((entry) => entry.match));
+  return [
+    ...entries,
+    ...BUILT_IN_MODEL_CONTEXT_CATALOG.filter((entry) => !configuredMatches.has(entry.match)),
+  ];
+}
+
+export function getBuiltInModelContextCatalogForSmoke(): ModelContextCatalogEntry[] {
+  return BUILT_IN_MODEL_CONTEXT_CATALOG.map((entry) => ({ ...entry }));
 }
 
 async function loadOpenclawCronJobNameMap(): Promise<Map<string, string>> {

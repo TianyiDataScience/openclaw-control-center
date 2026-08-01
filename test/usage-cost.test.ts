@@ -51,6 +51,29 @@ test("usage-cost snapshot computes context percent and burn-rate status when sou
   assert.equal(usage.periods.find((item) => item.key === "today")?.sourceStatus, "connected");
 });
 
+test("usage-cost built-in catalog resolves current MiniMax context windows", async () => {
+  const { computeUsageCostSnapshot, getBuiltInModelContextCatalogForSmoke } = await import(
+    "../src/runtime/usage-cost"
+  );
+  const catalog = getBuiltInModelContextCatalogForSmoke();
+  const cases = [
+    { model: "MiniMax-M3", contextWindowTokens: 1_000_000 },
+    { model: "MiniMax-M2.7", contextWindowTokens: 204_800 },
+  ];
+
+  for (const item of cases) {
+    const usage = computeUsageCostSnapshot(
+      buildSnapshotFixture({ model: item.model }),
+      [],
+      catalog,
+    );
+
+    assert.equal(usage.contextWindows[0]?.contextLimitTokens, item.contextWindowTokens);
+    assert.equal(usage.contextWindows[0]?.provider, "MiniMax");
+    assert.equal(usage.contextWindows[0]?.dataStatus, "connected");
+  }
+});
+
 test("usage-cost snapshot uses runtime session events for real requests, trends, and breakdown rows", async () => {
   const { computeUsageCostSnapshot } = await import("../src/runtime/usage-cost");
   const snapshot = buildSnapshotFixture({
